@@ -13,9 +13,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.github.j5ik2o.akka.persistence.dynamodb.metrics
+package com.github.j5ik2o.pekko.persistence.dynamodb.metrics
 
-import com.github.j5ik2o.akka.persistence.dynamodb.config.PluginConfig
+import com.github.j5ik2o.pekko.persistence.dynamodb.config.PluginConfig
 import software.amazon.awssdk.core.metrics.CoreMetric
 import software.amazon.awssdk.metrics.{ MetricCollection, MetricPublisher }
 

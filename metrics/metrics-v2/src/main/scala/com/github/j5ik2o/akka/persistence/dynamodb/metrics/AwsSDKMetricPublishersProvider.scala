@@ -13,11 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.github.j5ik2o.akka.persistence.dynamodb.metrics
+package com.github.j5ik2o.pekko.persistence.dynamodb.metrics
 
 import org.apache.pekko.actor.DynamicAccess
-import com.github.j5ik2o.akka.persistence.dynamodb.client.v2.MetricPublishersProvider
-import com.github.j5ik2o.akka.persistence.dynamodb.config.PluginConfig
+import com.github.j5ik2o.pekko.persistence.dynamodb.client.v2.MetricPublishersProvider
+import com.github.j5ik2o.pekko.persistence.dynamodb.config.PluginConfig
 import software.amazon.awssdk.metrics.MetricPublisher
 
 class AwsSDKMetricPublishersProvider(dynamicAccess: DynamicAccess, pluginConfig: PluginConfig)

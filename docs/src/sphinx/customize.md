@@ -144,8 +144,8 @@ The state plugin has not the secondary index.
 ```
 j5ik2o.dynamo-db-journal {
   shard-count = 64
-  partition-key-resolver-class-name = "com.github.j5ik2o.akka.persistence.dynamodb.journal.PartitionKeyResolver$PersistenceIdBased"
-  sort-key-resolver-class-name = "com.github.j5ik2o.akka.persistence.dynamodb.journal.SortKeyResolver$PersistenceIdWithSeqNr" 
+  partition-key-resolver-class-name = "com.github.j5ik2o.pekko.persistence.dynamodb.journal.PartitionKeyResolver$PersistenceIdBased"
+  sort-key-resolver-class-name = "com.github.j5ik2o.pekko.persistence.dynamodb.journal.SortKeyResolver$PersistenceIdWithSeqNr" 
 }
 ```
 
@@ -158,10 +158,10 @@ j5ik2o.dynamo-db-journal {
 `partition-key-resolver-class-name` specifies the implementation class that generates `pkey` from `PersistenceId` and `Sequence Number`.
 The following two implementations are available for built-in use. 
 
-- `com.github.j5ik2o.akka.persistence.dynamodb.journal.PartitionKeyResolver.SequenceNumberBased` (Default)
+- `com.github.j5ik2o.pekko.persistence.dynamodb.journal.PartitionKeyResolver.SequenceNumberBased` (Default)
   - `pkey = ${persistenceId}-${sequenceNumber % shardCount}`
   - The same `PersistenceId` will be assigned to a different shard if the `Sequence Number` is different. This is a write-specific sharding.
-- `com.github.j5ik2o.akka.persistence.dynamodb.journal.PartitionKeyResolver.PersistenceIdBased`
+- `com.github.j5ik2o.pekko.persistence.dynamodb.journal.PartitionKeyResolver.PersistenceIdBased`
   - `pkey = ${persistenceId.prefix}-${md5(persistenceId.reverse) % shardCount}`
   - e.g. `counter-875e6ce0425e4d2b8203f3b44b9b531a`, `persistenceId.prefix` is `counter`.
   - If you choose this option, the same shard will be assigned if the `PersistenceId` is the same, so be sure to select this option if you are using DynamoDB Streams or KDS for DynamoDB.
@@ -171,10 +171,10 @@ The following two implementations are available for built-in use.
 `sort-key-resolver-class-name` specifies the implementation class that generates `skey` from `PersistenceId` and `Sequence Number`.
 The following two implementations are available for built-in use. 
 
-- `com.github.j5ik2o.akka.persistence.dynamodb.journal.SortKeyResolver$SeqNr`
+- `com.github.j5ik2o.pekko.persistence.dynamodb.journal.SortKeyResolver$SeqNr`
   - `skey = $sequenceNumber`
   - An implementation in which `pkey` is the `Sequence Number`.
-- `com.github.j5ik2o.akka.persistence.dynamodb.journal.SortKeyResolver$PersistenceIdWithSeqNr`
+- `com.github.j5ik2o.pekko.persistence.dynamodb.journal.SortKeyResolver$PersistenceIdWithSeqNr`
   - `skey = ${persistenceId.body}-${sequenceNumber}`
   - e.g. `875e6ce0425e4d2b8203f3b44b9b531a`, `persistenceId.body` is `875e6ce0425e4d2b8203f3b44b9b531a`.
   - Use `persistenceId.body` as the prefix since `shard-count` may cause multiple `persistenceId`s events to be stored in the same shard.
@@ -196,8 +196,8 @@ j5ik2o.dynamo-db-journal {
 ```
 j5ik2o.dynamo-db-snapshot {
   shard-count = 64
-  partition-key-resolver-class-name = "com.github.j5ik2o.akka.persistence.dynamodb.snapshot.PartitionKeyResolver$PersistenceIdBased"
-  sort-key-resolver-class-name = "com.github.j5ik2o.akka.persistence.dynamodb.snapshot.SortKeyResolver$PersistenceIdWithSeqNr" 
+  partition-key-resolver-class-name = "com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.PartitionKeyResolver$PersistenceIdBased"
+  sort-key-resolver-class-name = "com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.SortKeyResolver$PersistenceIdWithSeqNr" 
 }
 ```
 
@@ -210,10 +210,10 @@ j5ik2o.dynamo-db-snapshot {
 `partition-key-resolver-class-name` specifies the implementation class that generates `pkey` from `PersistenceId` and `Sequence Number`.
 The following two implementations are available for built-in use. 
 
-- `com.github.j5ik2o.akka.persistence.dynamodb.journal.PartitionKeyResolver.SequenceNumberBased` (Default)
+- `com.github.j5ik2o.pekko.persistence.dynamodb.journal.PartitionKeyResolver.SequenceNumberBased` (Default)
   - `pkey =${persistenceId}-${sequenceNumber % shardCount}`
   - The same `PersistenceId` will be assigned to a different shard if the `Sequence Number` is different. This is a write-specific sharding.
-- `com.github.j5ik2o.akka.persistence.dynamodb.journal.PartitionKeyResolver.PersistenceIdBased`
+- `com.github.j5ik2o.pekko.persistence.dynamodb.journal.PartitionKeyResolver.PersistenceIdBased`
   - `pkey = ${persistenceId.prefix}-${md5(persistenceId.reverse) % shardCount}`
   - e.g. `counter-875e6ce0425e4d2b8203f3b44b9b531a`, `persistenceId.prefix` is `counter`.
   - If you choose this option, the same shard will be assigned if the `PersistenceId` is the same, so be sure to select this option if you are using DynamoDB Streams or KDS for DynamoDB.
@@ -223,10 +223,10 @@ The following two implementations are available for built-in use.
 `sort-key-resolver-class-name` specifies the implementation class that generates `skey` from `PersistenceId` and `Sequence Number`.
 The following two implementations are available for built-in use.
 
-- `com.github.j5ik2o.akka.persistence.dynamodb.journal.SortKeyResolver$SeqNr`
+- `com.github.j5ik2o.pekko.persistence.dynamodb.journal.SortKeyResolver$SeqNr`
   - `skey = $sequenceNumber`
   - An implementation in which `pkey` is the `Sequence Number`.
-- `com.github.j5ik2o.akka.persistence.dynamodb.journal.SortKeyResolver$PersistenceIdWithSeqNr`
+- `com.github.j5ik2o.pekko.persistence.dynamodb.journal.SortKeyResolver$PersistenceIdWithSeqNr`
   - `skey = ${persistenceId.body}-${sequenceNumber}`
   - e.g. `875e6ce0425e4d2b8203f3b44b9b531a`, `persistenceId.body` is `875e6ce0425e4d2b8203f3b44b9b531a`.
   - Use `persistenceId.body` as the prefix since `shard-count` may cause multiple `persistenceId`s events to be stored in the same shard.
@@ -276,7 +276,7 @@ The state plugin has not the sort-key and SortKeyResolver.
 ```
 j5ik2o.dynamo-db-state {
   shard-count = 64
-  partition-key-resolver-class-name = "com.github.j5ik2o.akka.persistence.dynamodb.state.PartitionKeyResolver$PersistenceIdBased"
+  partition-key-resolver-class-name = "com.github.j5ik2o.pekko.persistence.dynamodb.state.PartitionKeyResolver$PersistenceIdBased"
 }
 ```
 
@@ -288,7 +288,7 @@ j5ik2o.dynamo-db-state {
 
 There are one standard implementations as follows.
 
-- `com.github.j5ik2o.akka.persistence.dynamodb.journal.PartitionKeyResolver.PersistenceIdBased`
+- `com.github.j5ik2o.pekko.persistence.dynamodb.journal.PartitionKeyResolver.PersistenceIdBased`
   - This is the same implementation as Journal or Snapshot.
 
 #### Configure your own implementation
@@ -309,14 +309,14 @@ The following factories are used to create AWS Clients inside the plugins.
 
 | key                                                           | version | async/sync | default value                                                                     |
 |:--------------------------------------------------------------|:-------:|:----------:|:----------------------------------------------------------------------------------|
-| j5ik2o.dynamo-db-?????.v2-async-client-factory-class-name     |   v2    |   async    | com.github.j5ik2o.akka.persistence.dynamodb.utils.V2AsyncClientFactory$Default    |
-| j5ik2o.dynamo-db-?????.v2-sync-client-factory-class-name      |   v2    |    sync    | com.github.j5ik2o.akka.persistence.dynamodb.utils.V2SyncClientFactory$Default     |
-| j5ik2o.dynamo-db-?????.v2-dax-async-client-factory-class-name | v2-dax  |   async    | com.github.j5ik2o.akka.persistence.dynamodb.utils.V2DaxAsyncClientFactory$Default |
-| j5ik2o.dynamo-db-?????.v2-dax-sync-client-factory-class-name  | v2-dax  |    sync    | com.github.j5ik2o.akka.persistence.dynamodb.utils.V2DaxSyncClientFactory$Default  |
-| j5ik2o.dynamo-db-?????.v1-async-client-factory-class-name     |   v1    |   async    | com.github.j5ik2o.akka.persistence.dynamodb.utils.V1AsyncClientFactory$Default    |
-| j5ik2o.dynamo-db-?????.v1-sync-client-factory-class-name      |   v1    |    sync    | com.github.j5ik2o.akka.persistence.dynamodb.utils.V1SyncClientFactory$Default     |
-| j5ik2o.dynamo-db-?????.v1-dax-async-client-factory-class-name | v1-dax  |   async    | com.github.j5ik2o.akka.persistence.dynamodb.utils.V1DaxAsyncClientFactory$Default |
-| j5ik2o.dynamo-db-?????.v1-dax-sync-client-factory-class-name  | v1-dax  |    sync    | com.github.j5ik2o.akka.persistence.dynamodb.utils.V1DaxSyncClientFactory$Default  |
+| j5ik2o.dynamo-db-?????.v2-async-client-factory-class-name     |   v2    |   async    | com.github.j5ik2o.pekko.persistence.dynamodb.utils.V2AsyncClientFactory$Default    |
+| j5ik2o.dynamo-db-?????.v2-sync-client-factory-class-name      |   v2    |    sync    | com.github.j5ik2o.pekko.persistence.dynamodb.utils.V2SyncClientFactory$Default     |
+| j5ik2o.dynamo-db-?????.v2-dax-async-client-factory-class-name | v2-dax  |   async    | com.github.j5ik2o.pekko.persistence.dynamodb.utils.V2DaxAsyncClientFactory$Default |
+| j5ik2o.dynamo-db-?????.v2-dax-sync-client-factory-class-name  | v2-dax  |    sync    | com.github.j5ik2o.pekko.persistence.dynamodb.utils.V2DaxSyncClientFactory$Default  |
+| j5ik2o.dynamo-db-?????.v1-async-client-factory-class-name     |   v1    |   async    | com.github.j5ik2o.pekko.persistence.dynamodb.utils.V1AsyncClientFactory$Default    |
+| j5ik2o.dynamo-db-?????.v1-sync-client-factory-class-name      |   v1    |    sync    | com.github.j5ik2o.pekko.persistence.dynamodb.utils.V1SyncClientFactory$Default     |
+| j5ik2o.dynamo-db-?????.v1-dax-async-client-factory-class-name | v1-dax  |   async    | com.github.j5ik2o.pekko.persistence.dynamodb.utils.V1DaxAsyncClientFactory$Default |
+| j5ik2o.dynamo-db-?????.v1-dax-sync-client-factory-class-name  | v1-dax  |    sync    | com.github.j5ik2o.pekko.persistence.dynamodb.utils.V1DaxSyncClientFactory$Default  |
 
 The AWS Clients generation process is automatic if you specify the set values, but if you wish to apply your own generation process, please do the following.
 
@@ -326,8 +326,8 @@ This plugin is useful for specifying the configuration items to the client that 
 package example
 
 import akka.actor.DynamicAccess
-import com.github.j5ik2o.akka.persistence.dynamodb.config.PluginConfig
-import com.github.j5ik2o.akka.persistence.dynamodb.utils.V2AsyncClientFactory
+import com.github.j5ik2o.pekko.persistence.dynamodb.config.PluginConfig
+import com.github.j5ik2o.pekko.persistence.dynamodb.utils.V2AsyncClientFactory
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient
 
 class MyV2AsyncClientFactory extends V2AsyncClientFactory {
@@ -383,7 +383,7 @@ You can specify your own `AwsCredentialsProvider`.
 j5ik2o.dynamo-db-????? {
   dynamo-db-client {
     v2 {
-      aws-credentials-provider-provider-class-name = "com.github.j5ik2o.akka.persistence.dynamodb.client.v2.AwsCredentialsProviderProvider$Default"
+      aws-credentials-provider-provider-class-name = "com.github.j5ik2o.pekko.persistence.dynamodb.client.v2.AwsCredentialsProviderProvider$Default"
       aws-credentials-provider-class-name = "software.amazon.awssdk.auth.credentials.AwsCredentialsProvider"
     }
   }
@@ -396,8 +396,8 @@ j5ik2o.dynamo-db-????? {
 package example
 
 import akka.actor.DynamicAccess
-import com.github.j5ik2o.akka.persistence.dynamodb.client.v2.AwsCredentialsProviderProvider
-import com.github.j5ik2o.akka.persistence.dynamodb.config.PluginConfig
+import com.github.j5ik2o.pekko.persistence.dynamodb.client.v2.AwsCredentialsProviderProvider
+import com.github.j5ik2o.pekko.persistence.dynamodb.config.PluginConfig
 import software.amazon.awssdk.auth.credentials.{ AwsCredentialsProvider, WebIdentityTokenFileCredentialsProvider }
 
 final class MyAwsCredentialsProviderProvider(@unused dynamicAccess: DynamicAccess, @unused pluginConfig: PluginConfig)
@@ -428,7 +428,7 @@ package example
 
 import akka.actor.DynamicAccess
 import software.amazon.awssdk.auth.credentials.{ AwsCredentialsProvider, AwsCredentials }
-import com.github.j5ik2o.akka.persistence.dynamodb.config.PluginConfig
+import com.github.j5ik2o.pekko.persistence.dynamodb.config.PluginConfig
 
 class MyAwsCredentialsProvider(dynamicAccess: DynamicAccess, pluginConfig: PluginConfig) extends AwsCredentialsProvider {
   override def resolveCredentials(): AwsCredentials = {
@@ -455,7 +455,7 @@ Using the MetricPublisher in the V2 sdk, metrics at the SDK level can be sent to
 package example
 
 import akka.actor.DynamicAccess
-import com.github.j5ik2o.akka.persistence.dynamodb.config.PluginConfig
+import com.github.j5ik2o.pekko.persistence.dynamodb.config.PluginConfig
 import kamon.Kamon
 import kamon.metric.{ Counter, Histogram, MeasurementUnit }
 import software.amazon.awssdk.core.metrics.CoreMetric
