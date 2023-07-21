@@ -15,11 +15,11 @@
  */
 package com.github.j5ik2o.akka.persistence.dynamodb.state.scaladsl
 
-import akka.Done
-import akka.actor.{ ActorSystem, CoordinatedShutdown }
-import akka.persistence.state.scaladsl.GetObjectResult
-import akka.serialization.{ Serialization, SerializationExtension }
-import akka.stream.scaladsl.{ Sink, Source }
+import org.apache.pekko.Done
+import org.apache.pekko.actor.{ ActorSystem, CoordinatedShutdown }
+import org.apache.pekko.persistence.state.scaladsl.GetObjectResult
+import org.apache.pekko.serialization.{ Serialization, SerializationExtension }
+import org.apache.pekko.stream.scaladsl.{ Sink, Source }
 import com.amazonaws.services.dynamodbv2.model.{ AttributeValue, DeleteItemRequest, GetItemRequest, PutItemRequest }
 import com.amazonaws.services.dynamodbv2.{ AmazonDynamoDB, AmazonDynamoDBAsync }
 import com.github.j5ik2o.akka.persistence.dynamodb.client.v1.{ StreamReadClient, StreamWriteClient }
@@ -221,6 +221,8 @@ final class DynamoDBDurableStateStoreV1[A](
     traced
   }
 
+  override def deleteObject(persistenceId: String, revision: Long): Future[Done] = deleteObject(persistenceId)
+
   override def deleteObject(persistenceId: String): Future[Done] = {
     val pid        = PersistenceId(persistenceId)
     val context    = Context.newContext(UUID.randomUUID(), pid)
@@ -267,4 +269,5 @@ final class DynamoDBDurableStateStoreV1[A](
       case _            =>
     }
   }
+
 }

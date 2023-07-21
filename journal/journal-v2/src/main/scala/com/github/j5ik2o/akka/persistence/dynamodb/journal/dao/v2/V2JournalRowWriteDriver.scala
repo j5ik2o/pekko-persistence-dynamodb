@@ -15,9 +15,9 @@
  */
 package com.github.j5ik2o.akka.persistence.dynamodb.journal.dao.v2
 
-import akka.NotUsed
-import akka.actor.ActorSystem
-import akka.stream.scaladsl.{ Flow, Source }
+import org.apache.pekko.NotUsed
+import org.apache.pekko.actor.ActorSystem
+import org.apache.pekko.stream.scaladsl.{ Flow, Source }
 import com.github.j5ik2o.akka.persistence.dynamodb.client.v2.StreamWriteClient
 import com.github.j5ik2o.akka.persistence.dynamodb.journal._
 import com.github.j5ik2o.akka.persistence.dynamodb.journal.dao.{ JournalRowWriteDriver, PersistenceIdWithSeqNr }

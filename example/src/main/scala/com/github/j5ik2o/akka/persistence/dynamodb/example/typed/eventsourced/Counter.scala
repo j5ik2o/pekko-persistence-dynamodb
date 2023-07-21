@@ -1,9 +1,9 @@
 package com.github.j5ik2o.akka.persistence.dynamodb.example.typed.eventsourced
 
-import akka.actor.typed.Behavior
-import akka.actor.typed.scaladsl.Behaviors
-import akka.persistence.typed.PersistenceId
-import akka.persistence.typed.scaladsl.{ Effect, EventSourcedBehavior }
+import org.apache.pekko.actor.typed.Behavior
+import org.apache.pekko.actor.typed.scaladsl.Behaviors
+import org.apache.pekko.persistence.typed.PersistenceId
+import org.apache.pekko.persistence.typed.scaladsl.{ Effect, EventSourcedBehavior }
 import com.github.j5ik2o.akka.persistence.dynamodb.example.CborSerializable
 import com.github.j5ik2o.akka.persistence.dynamodb.example.typed.CounterProtocol
 import com.github.j5ik2o.akka.persistence.dynamodb.example.typed.CounterProtocol.Command

@@ -15,9 +15,9 @@
  */
 package com.github.j5ik2o.akka.persistence.dynamodb.journal.dao.v1
 
-import akka.NotUsed
-import akka.actor.ActorSystem
-import akka.stream.scaladsl.{ Flow, Source }
+import org.apache.pekko.NotUsed
+import org.apache.pekko.actor.ActorSystem
+import org.apache.pekko.stream.scaladsl.{ Flow, Source }
 import com.amazonaws.services.dynamodbv2.model._
 import com.amazonaws.services.dynamodbv2.{ AmazonDynamoDB, AmazonDynamoDBAsync }
 import com.github.j5ik2o.akka.persistence.dynamodb.client.v1.StreamWriteClient

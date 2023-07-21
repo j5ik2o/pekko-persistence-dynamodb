@@ -15,9 +15,9 @@
  */
 package com.github.j5ik2o.akka.persistence.dynamodb.state.scaladsl
 
-import akka.actor.{ ActorSystem, ExtendedActorSystem }
-import akka.serialization.{ Serialization, SerializationExtension }
-import akka.testkit.{ TestKit, TestKitBase }
+import org.apache.pekko.actor.{ ActorSystem, ExtendedActorSystem }
+import org.apache.pekko.serialization.{ Serialization, SerializationExtension }
+import org.apache.pekko.testkit.{ TestKit, TestKitBase }
 import com.github.j5ik2o.akka.persistence.dynamodb.state.{ MyPayload, MyPayloadSerializer }
 import com.typesafe.config.{ Config, ConfigFactory }
 import org.scalatest.concurrent.ScalaFutures

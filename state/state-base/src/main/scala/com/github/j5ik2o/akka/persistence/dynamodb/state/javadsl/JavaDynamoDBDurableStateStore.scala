@@ -15,10 +15,10 @@
  */
 package com.github.j5ik2o.akka.persistence.dynamodb.state.javadsl
 
-import akka.Done
-import akka.actor.ActorSystem
-import akka.annotation.ApiMayChange
-import akka.persistence.state.javadsl.GetObjectResult
+import org.apache.pekko.Done
+import org.apache.pekko.actor.ActorSystem
+import org.apache.pekko.annotation.ApiMayChange
+import org.apache.pekko.persistence.state.javadsl.GetObjectResult
 import com.github.j5ik2o.akka.persistence.dynamodb.state.GetRawObjectResult
 import com.github.j5ik2o.akka.persistence.dynamodb.state.scaladsl.ScalaDurableStateUpdateStore
 
@@ -52,7 +52,8 @@ final class JavaDynamoDBDurableStateStore[A](
   override def upsertObject(persistenceId: String, revision: Long, value: A, tag: String): CompletionStage[Done] =
     toJava(underlying.upsertObject(persistenceId, revision, value, tag))
 
-  override def deleteObject(persistenceId: String): CompletionStage[Done] =
-    toJava(underlying.deleteObject(persistenceId))
 
+  override def deleteObject(persistenceId: String, revision: Long): CompletionStage[Done] = toJava(underlying.deleteObject(persistenceId, revision))
+
+  override def deleteObject(persistenceId: String): CompletionStage[Done] = toJava(underlying.deleteObject(persistenceId))
 }

@@ -16,10 +16,10 @@
  */
 package com.github.j5ik2o.akka.persistence.dynamodb.journal.dao
 
-import akka.actor.ActorSystem
-import akka.stream._
-import akka.stream.scaladsl.{ Flow, Keep, Sink, Source, SourceQueueWithComplete }
-import akka.{ Done, NotUsed }
+import org.apache.pekko.actor.ActorSystem
+import org.apache.pekko.stream._
+import org.apache.pekko.stream.scaladsl.{ Flow, Keep, Sink, Source, SourceQueueWithComplete }
+import org.apache.pekko.{ Done, NotUsed }
 import com.github.j5ik2o.akka.persistence.dynamodb.journal._
 import com.github.j5ik2o.akka.persistence.dynamodb.journal.serialization.FlowPersistentReprSerializer
 import com.github.j5ik2o.akka.persistence.dynamodb.metrics.MetricsReporter

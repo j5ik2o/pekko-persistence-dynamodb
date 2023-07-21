@@ -15,12 +15,12 @@
  */
 package com.github.j5ik2o.akka.persistence.dynamodb.jmh.typed
 
-import akka.actor.typed.ActorSystem
+import org.apache.pekko.actor.typed.ActorSystem
 
 import java.util.concurrent.TimeUnit
-import akka.actor.typed.scaladsl.AskPattern._
-import akka.actor.typed.scaladsl.adapter._
-import akka.util.Timeout
+import org.apache.pekko.actor.typed.scaladsl.AskPattern._
+import org.apache.pekko.actor.typed.scaladsl.adapter._
+import org.apache.pekko.util.Timeout
 import com.github.j5ik2o.akka.persistence.dynamodb.jmh.typed.TypedCounter.{ Increment, IncrementReply }
 import org.openjdk.jmh.annotations._
 

@@ -15,7 +15,7 @@
  */
 package com.github.j5ik2o.akka.persistence.dynamodb.snapshot.dao
 
-import akka.serialization.Serialization
+import org.apache.pekko.serialization.Serialization
 
 trait SnapshotDaoFactory {
   def create(

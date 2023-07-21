@@ -1,6 +1,6 @@
 package com.github.j5ik2o.akka.persistence.dynamodb.example.typed
 
-import akka.actor.typed.ActorRef
+import org.apache.pekko.actor.typed.ActorRef
 import com.github.j5ik2o.akka.persistence.dynamodb.example.CborSerializable
 
 object CounterProtocol {

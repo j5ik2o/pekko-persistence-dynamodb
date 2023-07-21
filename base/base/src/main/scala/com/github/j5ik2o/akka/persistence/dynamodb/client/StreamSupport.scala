@@ -15,9 +15,9 @@
  */
 package com.github.j5ik2o.akka.persistence.dynamodb.client
 
-import akka.NotUsed
-import akka.stream.RestartSettings
-import akka.stream.scaladsl.{ Flow, RestartFlow }
+import org.apache.pekko.NotUsed
+import org.apache.pekko.stream.RestartSettings
+import org.apache.pekko.stream.scaladsl.{ Flow, RestartFlow }
 import com.github.j5ik2o.akka.persistence.dynamodb.config.BackoffConfig
 
 trait StreamSupport {

@@ -15,8 +15,8 @@
  */
 package com.github.j5ik2o.akka.persistence.dynamodb.trace
 
-import akka.actor.{ ActorSystem, DynamicAccess }
-import akka.testkit.TestKit
+import org.apache.pekko.actor.{ ActorSystem, DynamicAccess }
+import org.apache.pekko.testkit.TestKit
 import com.github.j5ik2o.akka.persistence.dynamodb.PluginTestUtils
 import com.github.j5ik2o.akka.persistence.dynamodb.config.PluginConfig
 import com.github.j5ik2o.akka.persistence.dynamodb.context.PluginContext

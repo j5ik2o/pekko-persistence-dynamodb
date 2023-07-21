@@ -16,9 +16,9 @@
  */
 package com.github.j5ik2o.akka.persistence.dynamodb.snapshot.dao
 
-import akka.NotUsed
-import akka.persistence.SnapshotMetadata
-import akka.stream.scaladsl.Source
+import org.apache.pekko.NotUsed
+import org.apache.pekko.persistence.SnapshotMetadata
+import org.apache.pekko.stream.scaladsl.Source
 import com.github.j5ik2o.akka.persistence.dynamodb.model.{ PersistenceId, SequenceNumber }
 
 import scala.concurrent.ExecutionContext

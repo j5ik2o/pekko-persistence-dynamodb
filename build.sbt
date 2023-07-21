@@ -57,11 +57,11 @@ lazy val baseSettings = Seq(
     ) ++ crossScalacOptions(scalaVersion.value)
   ),
   resolvers ++= Seq(
-    Resolver.sonatypeRepo("snapshots"),
-    Resolver.sonatypeRepo("releases"),
     "Seasar Repository" at "https://maven.seasar.org/maven2/",
     "DynamoDB Local Repository" at "https://s3-us-west-2.amazonaws.com/dynamodb-local/release"
   ),
+  resolvers ++= Resolver.sonatypeOssRepos("snapshots"),
+  resolvers ++= Resolver.sonatypeOssRepos("releases"),
   semanticdbEnabled := true,
   semanticdbVersion := scalafixSemanticdb.revision,
   Test / publishArtifact := false,
@@ -85,7 +85,7 @@ lazy val test = (project in file("test"))
   .settings(
     name := "akka-persistence-dynamodb-test",
     libraryDependencies ++= Seq(
-      akka.stream(akka26Version),
+      pekko.stream(akka26Version),
       amazonaws.dynamodb,
       testcontainers.testcontainers,
       dimafeng.testcontainerScala,
@@ -110,13 +110,14 @@ lazy val `base` = (project in file("base/base"))
     libraryDependencies ++= Seq(
       slf4j.api,
       iheart.ficus,
-      akka.slf4j(akka26Version),
-      akka.stream(akka26Version),
-      akka.testkit(akka26Version)             % Test,
+      pekko.slf4j(akka26Version),
+      pekko.stream(akka26Version),
+      "org.scala-lang.modules" %% "scala-java8-compat" % "1.0.2",
+      pekko.testkit(akka26Version)             % Test,
       logback.classic                         % Test,
       slf4j.julToSlf4J                        % Test,
       dimafeng.testcontainerScalaScalaTest    % Test,
-      akka.streamTestkit(akka26Version)       % Test,
+      pekko.streamTestkit(akka26Version)       % Test,
       scalatest.scalatest(scalaTest32Version) % Test
     ),
     libraryDependencies ++= {
@@ -164,10 +165,10 @@ lazy val `journal-base` = (project in file("journal/journal-base"))
   .settings(
     name := "akka-persistence-dynamodb-journal-base",
     libraryDependencies ++= Seq(
-      akka.persistence(akka26Version),
-      akka.testkit(akka26Version)             % Test,
-      akka.streamTestkit(akka26Version)       % Test,
-      akka.persistenceTck(akka26Version)      % Test,
+      pekko.persistence(akka26Version),
+      pekko.testkit(akka26Version)             % Test,
+      pekko.streamTestkit(akka26Version)       % Test,
+      pekko.persistenceTck(akka26Version)      % Test,
       scalatest.scalatest(scalaTest32Version) % Test,
       "ch.qos.logback"                        % "logback-classic" % logbackVersion % Test,
       "org.slf4j"                             % "jul-to-slf4j"    % slf4jVersion   % Test
@@ -179,10 +180,10 @@ lazy val `journal-v1` = (project in file("journal/journal-v1"))
   .settings(
     name := "akka-persistence-dynamodb-journal-v1",
     libraryDependencies ++= Seq(
-      akka.persistence(akka26Version),
-      akka.testkit(akka26Version)             % Test,
-      akka.streamTestkit(akka26Version)       % Test,
-      akka.persistenceTck(akka26Version)      % Test,
+      pekko.persistence(akka26Version),
+      pekko.testkit(akka26Version)             % Test,
+      pekko.streamTestkit(akka26Version)       % Test,
+      pekko.persistenceTck(akka26Version)      % Test,
       scalatest.scalatest(scalaTest32Version) % Test,
       "ch.qos.logback"                        % "logback-classic" % logbackVersion % Test,
       "org.slf4j"                             % "jul-to-slf4j"    % slf4jVersion   % Test
@@ -194,10 +195,10 @@ lazy val `journal-v2` = (project in file("journal/journal-v2"))
   .settings(
     name := "akka-persistence-dynamodb-journal-v2",
     libraryDependencies ++= Seq(
-      akka.persistence(akka26Version),
-      akka.testkit(akka26Version)             % Test,
-      akka.streamTestkit(akka26Version)       % Test,
-      akka.persistenceTck(akka26Version)      % Test,
+      pekko.persistence(akka26Version),
+      pekko.testkit(akka26Version)             % Test,
+      pekko.streamTestkit(akka26Version)       % Test,
+      pekko.persistenceTck(akka26Version)      % Test,
       scalatest.scalatest(scalaTest32Version) % Test,
       "ch.qos.logback"                        % "logback-classic" % logbackVersion % Test,
       "org.slf4j"                             % "jul-to-slf4j"    % slf4jVersion   % Test
@@ -209,7 +210,7 @@ lazy val `snapshot-base` = (project in file("snapshot/snapshot-base"))
   .settings(
     name := "akka-persistence-dynamodb-snapshot-base",
     libraryDependencies ++= Seq(
-      akka.persistence(akka26Version)
+      pekko.persistence(akka26Version)
     )
   ).dependsOn(base)
 
@@ -218,10 +219,10 @@ lazy val `snapshot-v1` = (project in file("snapshot/snapshot-v1"))
   .settings(
     name := "akka-persistence-dynamodb-snapshot-v1",
     libraryDependencies ++= Seq(
-      akka.persistence(akka26Version),
-      akka.testkit(akka26Version)             % Test,
-      akka.streamTestkit(akka26Version)       % Test,
-      akka.persistenceTck(akka26Version)      % Test,
+      pekko.persistence(akka26Version),
+      pekko.testkit(akka26Version)             % Test,
+      pekko.streamTestkit(akka26Version)       % Test,
+      pekko.persistenceTck(akka26Version)      % Test,
       scalatest.scalatest(scalaTest32Version) % Test,
       logback.classic                         % Test,
       slf4j.julToSlf4J                        % Test
@@ -235,10 +236,10 @@ lazy val `snapshot-v2` = (project in file("snapshot/snapshot-v2"))
     libraryDependencies ++= Seq(
       logback.classic  % Test,
       slf4j.julToSlf4J % Test,
-      akka.persistence(akka26Version),
-      akka.testkit(akka26Version)             % Test,
-      akka.streamTestkit(akka26Version)       % Test,
-      akka.persistenceTck(akka26Version)      % Test,
+      pekko.persistence(akka26Version),
+      pekko.testkit(akka26Version)             % Test,
+      pekko.streamTestkit(akka26Version)       % Test,
+      pekko.persistenceTck(akka26Version)      % Test,
       scalatest.scalatest(scalaTest32Version) % Test
     )
   ).dependsOn(`snapshot-base`, base % "test->test", `base-v2`)
@@ -248,10 +249,10 @@ lazy val `state-base` = (project in file("state/state-base"))
   .settings(
     name := "akka-persistence-dynamodb-state-base",
     libraryDependencies ++= Seq(
-      akka.persistence(akka26Version),
-      akka.testkit(akka26Version)             % Test,
-      akka.streamTestkit(akka26Version)       % Test,
-      akka.persistenceTck(akka26Version)      % Test,
+      pekko.persistence(akka26Version),
+      pekko.testkit(akka26Version)             % Test,
+      pekko.streamTestkit(akka26Version)       % Test,
+      pekko.persistenceTck(akka26Version)      % Test,
       scalatest.scalatest(scalaTest32Version) % Test,
       "ch.qos.logback"                        % "logback-classic" % logbackVersion % Test,
       "org.slf4j"                             % "jul-to-slf4j"    % slf4jVersion   % Test
@@ -263,10 +264,10 @@ lazy val `state-v1` = (project in file("state/state-v1"))
   .settings(
     name := "akka-persistence-dynamodb-state-v1",
     libraryDependencies ++= Seq(
-      akka.persistence(akka26Version),
-      akka.testkit(akka26Version)             % Test,
-      akka.streamTestkit(akka26Version)       % Test,
-      akka.persistenceTck(akka26Version)      % Test,
+      pekko.persistence(akka26Version),
+      pekko.testkit(akka26Version)             % Test,
+      pekko.streamTestkit(akka26Version)       % Test,
+      pekko.persistenceTck(akka26Version)      % Test,
       scalatest.scalatest(scalaTest32Version) % Test,
       "ch.qos.logback"                        % "logback-classic" % logbackVersion % Test,
       "org.slf4j"                             % "jul-to-slf4j"    % slf4jVersion   % Test,
@@ -284,10 +285,10 @@ lazy val `state-v2` = (project in file("state/state-v2"))
   .settings(
     name := "akka-persistence-dynamodb-state-v2",
     libraryDependencies ++= Seq(
-      akka.persistence(akka26Version),
-      akka.testkit(akka26Version)             % Test,
-      akka.streamTestkit(akka26Version)       % Test,
-      akka.persistenceTck(akka26Version)      % Test,
+      pekko.persistence(akka26Version),
+      pekko.testkit(akka26Version)             % Test,
+      pekko.streamTestkit(akka26Version)       % Test,
+      pekko.persistenceTck(akka26Version)      % Test,
       scalatest.scalatest(scalaTest32Version) % Test,
       "ch.qos.logback"                        % "logback-classic" % logbackVersion % Test,
       "org.slf4j"                             % "jul-to-slf4j"    % slf4jVersion   % Test,
@@ -310,8 +311,8 @@ lazy val benchmark = (project in file("benchmark"))
       slf4j.api,
       slf4j.julToSlf4J,
       dimafeng.testcontainerScala,
-      akka.slf4j(akka26Version),
-      akka.persistenceTyped(akka26Version)
+      pekko.slf4j(akka26Version),
+      pekko.persistenceTyped(akka26Version)
     )
   )
   .enablePlugins(JmhPlugin)
@@ -328,11 +329,11 @@ lazy val example = (project in file("example"))
       slf4j.julToSlf4J,
       dimafeng.testcontainerScala,
       fasterxml.jacksonModuleScala,
-      akka.slf4j(akka26Version),
-      akka.persistenceTyped(akka26Version),
-      akka.serializationJackson(akka26Version),
+      pekko.slf4j(akka26Version),
+      pekko.persistenceTyped(akka26Version),
+      pekko.serializationJackson(akka26Version),
       scalatest.scalatest(scalaTest32Version) % Test,
-      akka.persistenceTestkit(akka26Version)  % Test,
+      pekko.persistenceTestkit(akka26Version)  % Test,
       "com.github.j5ik2o"                    %% "docker-controller-scala-scalatest"      % "1.14.148",
       "com.github.j5ik2o"                    %% "docker-controller-scala-dynamodb-local" % "1.14.148"
     )

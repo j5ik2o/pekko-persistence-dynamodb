@@ -1,6 +1,6 @@
 package com.github.j5ik2o.akka.persistence.dynamodb.snapshot.serialization
 
-import akka.persistence.SnapshotMetadata
+import org.apache.pekko.persistence.SnapshotMetadata
 
 import scala.concurrent.{ ExecutionContext, Future }
 

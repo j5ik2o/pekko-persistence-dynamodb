@@ -16,8 +16,8 @@
  */
 package com.github.j5ik2o.akka.persistence.dynamodb.journal.serialization
 
-import akka.persistence.journal.Tagged
-import akka.persistence.{ AtomicWrite, PersistentRepr }
+import org.apache.pekko.persistence.journal.Tagged
+import org.apache.pekko.persistence.{ AtomicWrite, PersistentRepr }
 
 import scala.collection.immutable._
 import scala.concurrent.{ ExecutionContext, Future }

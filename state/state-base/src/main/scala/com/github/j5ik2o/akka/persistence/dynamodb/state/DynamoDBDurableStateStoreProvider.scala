@@ -15,13 +15,13 @@
  */
 package com.github.j5ik2o.akka.persistence.dynamodb.state
 
-import akka.actor.ExtendedActorSystem
-import akka.annotation.ApiMayChange
-import akka.event.LoggingAdapter
-import akka.persistence.state.DurableStateStoreProvider
-import akka.persistence.state.javadsl.{ DurableStateUpdateStore => JavaDurableStateUpdateStore }
-import akka.persistence.state.scaladsl.{ DurableStateUpdateStore => ScalaDurableStateUpdateStore }
-import akka.stream.{ Materializer, SystemMaterializer }
+import org.apache.pekko.actor.ExtendedActorSystem
+import org.apache.pekko.annotation.ApiMayChange
+import org.apache.pekko.event.LoggingAdapter
+import org.apache.pekko.persistence.state.DurableStateStoreProvider
+import org.apache.pekko.persistence.state.javadsl.{ DurableStateUpdateStore => JavaDurableStateUpdateStore }
+import org.apache.pekko.persistence.state.scaladsl.{ DurableStateUpdateStore => ScalaDurableStateUpdateStore }
+import org.apache.pekko.stream.{ Materializer, SystemMaterializer }
 import com.github.j5ik2o.akka.persistence.dynamodb.config.client.ClientVersion
 import com.github.j5ik2o.akka.persistence.dynamodb.state.config.StatePluginConfig
 import com.github.j5ik2o.akka.persistence.dynamodb.state.javadsl.JavaDynamoDBDurableStateStore

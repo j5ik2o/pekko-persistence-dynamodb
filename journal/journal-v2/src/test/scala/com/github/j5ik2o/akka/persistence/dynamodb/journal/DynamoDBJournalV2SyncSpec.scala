@@ -15,8 +15,8 @@
  */
 package com.github.j5ik2o.akka.persistence.dynamodb.journal
 
-import akka.persistence.CapabilityFlag
-import akka.persistence.journal.JournalSpec
+import org.apache.pekko.persistence.CapabilityFlag
+import org.apache.pekko.persistence.journal.JournalSpec
 import com.github.j5ik2o.akka.persistence.dynamodb.config.client.{ ClientType, ClientVersion }
 import com.github.j5ik2o.akka.persistence.dynamodb.utils.{ ConfigHelper, DynamoDBSpecSupport, RandomPortUtil }
 import org.scalatest.concurrent.ScalaFutures

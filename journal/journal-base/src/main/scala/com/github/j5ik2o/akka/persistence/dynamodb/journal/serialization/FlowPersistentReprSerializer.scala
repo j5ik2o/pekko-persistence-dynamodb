@@ -16,9 +16,9 @@
  */
 package com.github.j5ik2o.akka.persistence.dynamodb.journal.serialization
 
-import akka.NotUsed
-import akka.persistence.PersistentRepr
-import akka.stream.scaladsl.Flow
+import org.apache.pekko.NotUsed
+import org.apache.pekko.persistence.PersistentRepr
+import org.apache.pekko.stream.scaladsl.Flow
 
 import scala.concurrent.ExecutionContext
 import scala.util.{ Failure, Success, Try }

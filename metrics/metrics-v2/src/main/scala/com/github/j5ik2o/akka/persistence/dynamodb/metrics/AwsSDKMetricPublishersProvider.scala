@@ -15,7 +15,7 @@
  */
 package com.github.j5ik2o.akka.persistence.dynamodb.metrics
 
-import akka.actor.DynamicAccess
+import org.apache.pekko.actor.DynamicAccess
 import com.github.j5ik2o.akka.persistence.dynamodb.client.v2.MetricPublishersProvider
 import com.github.j5ik2o.akka.persistence.dynamodb.config.PluginConfig
 import software.amazon.awssdk.metrics.MetricPublisher

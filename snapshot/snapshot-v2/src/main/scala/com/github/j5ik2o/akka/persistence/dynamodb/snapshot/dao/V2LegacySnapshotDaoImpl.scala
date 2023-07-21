@@ -16,10 +16,10 @@
  */
 package com.github.j5ik2o.akka.persistence.dynamodb.snapshot.dao
 
-import akka.NotUsed
-import akka.persistence.SnapshotMetadata
-import akka.serialization.Serialization
-import akka.stream.scaladsl.Source
+import org.apache.pekko.NotUsed
+import org.apache.pekko.persistence.SnapshotMetadata
+import org.apache.pekko.serialization.Serialization
+import org.apache.pekko.stream.scaladsl.Source
 import com.github.j5ik2o.akka.persistence.dynamodb.client.v2.{ StreamReadClient, StreamWriteClient }
 import com.github.j5ik2o.akka.persistence.dynamodb.model.{ PersistenceId, SequenceNumber }
 import com.github.j5ik2o.akka.persistence.dynamodb.snapshot.SnapshotPluginContext

@@ -1,8 +1,8 @@
 package com.github.j5ik2o.akka.persistence.dynamodb.example.typed.durablestate
 
-import akka.actor.typed.scaladsl.Behaviors
-import akka.actor.typed.{ ActorSystem, Behavior }
-import akka.util.Timeout
+import org.apache.pekko.actor.typed.scaladsl.Behaviors
+import org.apache.pekko.actor.typed.{ ActorSystem, Behavior }
+import org.apache.pekko.util.Timeout
 import com.github.j5ik2o.akka.persistence.dynamodb.example.typed.CounterProtocol
 import com.github.j5ik2o.akka.persistence.dynamodb.utils.DynamoDBContainerHelper
 import com.typesafe.config.{ Config, ConfigFactory }

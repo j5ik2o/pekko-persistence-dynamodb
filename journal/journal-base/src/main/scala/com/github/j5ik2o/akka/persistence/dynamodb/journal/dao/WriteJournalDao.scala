@@ -15,10 +15,10 @@
  */
 package com.github.j5ik2o.akka.persistence.dynamodb.journal.dao
 
-import akka.NotUsed
-import akka.actor.Scheduler
-import akka.persistence.PersistentRepr
-import akka.stream.scaladsl.Source
+import org.apache.pekko.NotUsed
+import org.apache.pekko.actor.Scheduler
+import org.apache.pekko.persistence.PersistentRepr
+import org.apache.pekko.stream.scaladsl.Source
 import com.github.j5ik2o.akka.persistence.dynamodb.journal.JournalRow
 import com.github.j5ik2o.akka.persistence.dynamodb.model.{ PersistenceId, SequenceNumber }
 

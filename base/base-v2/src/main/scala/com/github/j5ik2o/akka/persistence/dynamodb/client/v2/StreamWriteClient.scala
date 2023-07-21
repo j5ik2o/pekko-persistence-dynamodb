@@ -15,10 +15,10 @@
  */
 package com.github.j5ik2o.akka.persistence.dynamodb.client.v2
 
-import akka.NotUsed
-import akka.japi.function
-import akka.stream.javadsl.{ Flow => JavaFlow }
-import akka.stream.scaladsl.{ Concat, Flow, Source }
+import org.apache.pekko.NotUsed
+import org.apache.pekko.japi.function
+import org.apache.pekko.stream.javadsl.{ Flow => JavaFlow }
+import org.apache.pekko.stream.scaladsl.{ Concat, Flow, Source }
 import com.github.j5ik2o.akka.persistence.dynamodb.client.StreamSupport
 import com.github.j5ik2o.akka.persistence.dynamodb.config.BackoffConfig
 import com.github.j5ik2o.akka.persistence.dynamodb.context.PluginContext

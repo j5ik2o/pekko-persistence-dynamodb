@@ -16,15 +16,15 @@
  */
 package com.github.j5ik2o.akka.persistence.dynamodb.journal
 
-import akka.Done
-import akka.actor.{ ActorLogging, ActorSystem }
-import akka.event.LoggingAdapter
-import akka.pattern.pipe
-import akka.persistence.journal.AsyncWriteJournal
-import akka.persistence.{ AtomicWrite, PersistentRepr }
-import akka.serialization.{ Serialization, SerializationExtension }
-import akka.stream.scaladsl.Sink
-import akka.stream.{ Materializer, SystemMaterializer }
+import org.apache.pekko.Done
+import org.apache.pekko.actor.{ ActorLogging, ActorSystem }
+import org.apache.pekko.event.LoggingAdapter
+import org.apache.pekko.pattern.pipe
+import org.apache.pekko.persistence.journal.AsyncWriteJournal
+import org.apache.pekko.persistence.{ AtomicWrite, PersistentRepr }
+import org.apache.pekko.serialization.{ Serialization, SerializationExtension }
+import org.apache.pekko.stream.scaladsl.Sink
+import org.apache.pekko.stream.{ Materializer, SystemMaterializer }
 import com.github.j5ik2o.akka.persistence.dynamodb.journal.config.JournalPluginConfig
 import com.github.j5ik2o.akka.persistence.dynamodb.journal.dao._
 import com.github.j5ik2o.akka.persistence.dynamodb.journal.serialization.{

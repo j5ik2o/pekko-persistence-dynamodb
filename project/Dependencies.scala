@@ -9,7 +9,7 @@ object Dependencies {
 
     val scalaCollectionCompatVersion = "2.11.0"
 
-    val akka26Version = "2.6.19"
+    val akka26Version = "1.0.0"
 
     val logbackVersion      = "1.2.12"
     val slf4jVersion        = "1.7.36"
@@ -58,17 +58,17 @@ object Dependencies {
     val dax      = "com.amazonaws" % "amazon-dax-client"     % awsSdkV1DaxVersion
   }
 
-  object akka {
-    def slf4j(version: String): ModuleID                = "com.typesafe.akka" %% "akka-slf4j"                 % version
-    def stream(version: String): ModuleID               = "com.typesafe.akka" %% "akka-stream"                % version
-    def testkit(version: String): ModuleID              = "com.typesafe.akka" %% "akka-testkit"               % version
-    def streamTestkit(version: String): ModuleID        = "com.typesafe.akka" %% "akka-stream-testkit"        % version
-    def persistence(version: String): ModuleID          = "com.typesafe.akka" %% "akka-persistence"           % version
-    def persistenceTestkit(version: String): ModuleID   = "com.typesafe.akka" %% "akka-persistence-testkit"   % version
-    def persistenceQuery(version: String): ModuleID     = "com.typesafe.akka" %% "akka-persistence-query"     % version
-    def persistenceTyped(version: String): ModuleID     = "com.typesafe.akka" %% "akka-persistence-typed"     % version
-    def persistenceTck(version: String): ModuleID       = "com.typesafe.akka" %% "akka-persistence-tck"       % version
-    def serializationJackson(version: String): ModuleID = "com.typesafe.akka" %% "akka-serialization-jackson" % version
+  object pekko {
+    def slf4j(version: String): ModuleID                = "org.apache.pekko" %% "pekko-slf4j"                 % version
+    def stream(version: String): ModuleID               = "org.apache.pekko" %% "pekko-stream"                % version
+    def testkit(version: String): ModuleID              = "org.apache.pekko" %% "pekko-testkit"               % version
+    def streamTestkit(version: String): ModuleID        = "org.apache.pekko" %% "pekko-stream-testkit"        % version
+    def persistence(version: String): ModuleID          = "org.apache.pekko" %% "pekko-persistence"           % version
+    def persistenceTestkit(version: String): ModuleID   = "org.apache.pekko" %% "pekko-persistence-testkit"   % version
+    def persistenceQuery(version: String): ModuleID     = "org.apache.pekko" %% "pekko-persistence-query"     % version
+    def persistenceTyped(version: String): ModuleID     = "org.apache.pekko" %% "pekko-persistence-typed"     % version
+    def persistenceTck(version: String): ModuleID       = "org.apache.pekko" %% "pekko-persistence-tck"       % version
+    def serializationJackson(version: String): ModuleID = "org.apache.pekko" %% "pekko-serialization-jackson" % version
   }
 
   object scalatest {

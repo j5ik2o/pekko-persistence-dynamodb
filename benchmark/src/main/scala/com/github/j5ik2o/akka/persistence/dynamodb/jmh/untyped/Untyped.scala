@@ -15,8 +15,8 @@
  */
 package com.github.j5ik2o.akka.persistence.dynamodb.jmh.untyped
 
-import akka.pattern.ask
-import akka.util.Timeout
+import org.apache.pekko.pattern.ask
+import org.apache.pekko.util.Timeout
 import com.github.j5ik2o.akka.persistence.dynamodb.jmh.untyped.UntypedCounter.Increment
 import org.openjdk.jmh.annotations._
 

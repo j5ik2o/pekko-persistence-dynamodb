@@ -16,13 +16,13 @@
  */
 package com.github.j5ik2o.akka.persistence.dynamodb.snapshot
 
-import akka.actor.ExtendedActorSystem
-import akka.event.LoggingAdapter
-import akka.persistence.snapshot.SnapshotStore
-import akka.persistence.{ SelectedSnapshot, SnapshotMetadata, SnapshotSelectionCriteria }
-import akka.serialization.SerializationExtension
-import akka.stream.scaladsl.{ Sink, Source }
-import akka.stream.{ Materializer, SystemMaterializer }
+import org.apache.pekko.actor.ExtendedActorSystem
+import org.apache.pekko.event.LoggingAdapter
+import org.apache.pekko.persistence.snapshot.SnapshotStore
+import org.apache.pekko.persistence.{ SelectedSnapshot, SnapshotMetadata, SnapshotSelectionCriteria }
+import org.apache.pekko.serialization.SerializationExtension
+import org.apache.pekko.stream.scaladsl.{ Sink, Source }
+import org.apache.pekko.stream.{ Materializer, SystemMaterializer }
 import com.github.j5ik2o.akka.persistence.dynamodb.config.client.ClientVersion
 import com.github.j5ik2o.akka.persistence.dynamodb.model.{ Context, PersistenceId, SequenceNumber }
 import com.github.j5ik2o.akka.persistence.dynamodb.snapshot.config.SnapshotPluginConfig

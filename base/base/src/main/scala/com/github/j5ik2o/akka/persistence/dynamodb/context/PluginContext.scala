@@ -15,7 +15,7 @@
  */
 package com.github.j5ik2o.akka.persistence.dynamodb.context
 
-import akka.actor.{ ActorSystem, DynamicAccess, ExtendedActorSystem }
+import org.apache.pekko.actor.{ ActorSystem, DynamicAccess, ExtendedActorSystem }
 import com.github.j5ik2o.akka.persistence.dynamodb.config.PluginConfig
 import com.github.j5ik2o.akka.persistence.dynamodb.utils.DynamicAccessor
 

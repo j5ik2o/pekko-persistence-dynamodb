@@ -15,7 +15,7 @@
  */
 package com.github.j5ik2o.akka.persistence.dynamodb.state
 
-import akka.serialization._
+import org.apache.pekko.serialization._
 
 final case class MyPayload(data: String)
 

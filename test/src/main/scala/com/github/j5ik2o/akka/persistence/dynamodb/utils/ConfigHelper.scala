@@ -32,9 +32,9 @@ object ConfigHelper {
       softDelete: Boolean = true
   ): Config = {
     val configString = s"""
-       |akka.persistence.journal.plugin = "j5ik2o.dynamo-db-journal"
-       |akka.persistence.snapshot-store.plugin = "j5ik2o.dynamo-db-snapshot"
-       |akka.persistence.state.plugin = "j5ik2o.dynamo-db-state"
+       |pekko.persistence.journal.plugin = "j5ik2o.dynamo-db-journal"
+       |pekko.persistence.snapshot-store.plugin = "j5ik2o.dynamo-db-snapshot"
+       |pekko.persistence.state.plugin = "j5ik2o.dynamo-db-state"
        |j5ik2o.dynamo-db-journal {
        |  legacy-config-format = $legacyConfigFormat
        |  shard-count = 1024

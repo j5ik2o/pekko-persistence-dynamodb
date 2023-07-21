@@ -1,7 +1,7 @@
 package com.github.j5ik2o.akka.persistence.dynamodb.example.typed.durablestate
 
-import akka.persistence.typed.PersistenceId
-import akka.persistence.typed.state.scaladsl.{ DurableStateBehavior, Effect }
+import org.apache.pekko.persistence.typed.PersistenceId
+import org.apache.pekko.persistence.typed.state.scaladsl.{ DurableStateBehavior, Effect }
 import com.github.j5ik2o.akka.persistence.dynamodb.example.CborSerializable
 import com.github.j5ik2o.akka.persistence.dynamodb.example.typed.CounterProtocol
 import com.github.j5ik2o.akka.persistence.dynamodb.example.typed.CounterProtocol.Command

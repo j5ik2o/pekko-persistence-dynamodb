@@ -16,8 +16,8 @@
 package com.github.j5ik2o.akka.persistence.dynamodb.jmh.typed
 
 import java.util.UUID
-import akka.actor.typed.scaladsl.adapter._
-import akka.actor.{ typed, ActorSystem }
+import org.apache.pekko.actor.typed.scaladsl.adapter._
+import org.apache.pekko.actor.{ typed, ActorSystem }
 import com.github.j5ik2o.akka.persistence.dynamodb.jmh
 import com.github.j5ik2o.akka.persistence.dynamodb.utils.{ ConfigHelper, DynamoDBContainerHelper }
 import org.openjdk.jmh.annotations.{ Setup, TearDown }

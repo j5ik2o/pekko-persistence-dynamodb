@@ -15,7 +15,7 @@
  */
 package com.github.j5ik2o.akka.persistence.dynamodb.state
 
-import akka.serialization.{ AsyncSerializer, Serialization, Serializer, Serializers }
+import org.apache.pekko.serialization.{ AsyncSerializer, Serialization, Serializer, Serializers }
 import com.github.j5ik2o.akka.persistence.dynamodb.metrics.MetricsReporter
 import com.github.j5ik2o.akka.persistence.dynamodb.model.{ Context, PersistenceId }
 import com.github.j5ik2o.akka.persistence.dynamodb.trace.TraceReporter

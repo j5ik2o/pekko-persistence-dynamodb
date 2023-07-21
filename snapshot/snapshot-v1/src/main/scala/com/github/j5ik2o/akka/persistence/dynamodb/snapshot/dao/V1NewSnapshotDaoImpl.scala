@@ -15,10 +15,10 @@
  */
 package com.github.j5ik2o.akka.persistence.dynamodb.snapshot.dao
 
-import akka.NotUsed
-import akka.persistence.SnapshotMetadata
-import akka.serialization.Serialization
-import akka.stream.scaladsl.Source
+import org.apache.pekko.NotUsed
+import org.apache.pekko.persistence.SnapshotMetadata
+import org.apache.pekko.serialization.Serialization
+import org.apache.pekko.stream.scaladsl.Source
 import com.amazonaws.services.dynamodbv2.model._
 import com.amazonaws.services.dynamodbv2.{ AmazonDynamoDB, AmazonDynamoDBAsync }
 import com.github.j5ik2o.akka.persistence.dynamodb.client.v1.{ StreamReadClient, StreamWriteClient }

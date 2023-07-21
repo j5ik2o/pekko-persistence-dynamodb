@@ -1,7 +1,7 @@
 package com.github.j5ik2o.akka.persistence.dynamodb.example.untyped.eventsourced
 
-import akka.actor.{ ActorRef, ActorSystem }
-import akka.testkit.{ ImplicitSender, TestKit, TestProbe }
+import org.apache.pekko.actor.{ ActorRef, ActorSystem }
+import org.apache.pekko.testkit.{ ImplicitSender, TestKit, TestProbe }
 import com.amazonaws.services.dynamodbv2.model.{ AttributeValue, QueryRequest, QueryResult }
 import com.github.j5ik2o.akka.persistence.dynamodb.config.client.{ ClientType, ClientVersion }
 import com.github.j5ik2o.akka.persistence.dynamodb.example.untyped.eventsourced.CounterProtocol.GetValueReply

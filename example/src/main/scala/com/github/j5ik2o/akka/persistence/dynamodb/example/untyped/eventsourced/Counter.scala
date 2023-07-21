@@ -1,7 +1,7 @@
 package com.github.j5ik2o.akka.persistence.dynamodb.example.untyped.eventsourced
 
-import akka.actor.{ ActorLogging, ActorRef, Props }
-import akka.persistence.{
+import org.apache.pekko.actor.{ ActorLogging, ActorRef, Props }
+import org.apache.pekko.persistence.{
   DeleteMessagesSuccess,
   DeleteSnapshotSuccess,
   PersistentActor,

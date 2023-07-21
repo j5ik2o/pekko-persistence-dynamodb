@@ -15,8 +15,8 @@
  */
 package com.github.j5ik2o.akka.persistence.dynamodb.journal.dao.v2
 
-import akka.NotUsed
-import akka.stream.scaladsl.Source
+import org.apache.pekko.NotUsed
+import org.apache.pekko.stream.scaladsl.Source
 import com.github.j5ik2o.akka.persistence.dynamodb.client.v2.StreamReadClient
 import com.github.j5ik2o.akka.persistence.dynamodb.journal.{ JournalPluginContext, JournalRow }
 import com.github.j5ik2o.akka.persistence.dynamodb.journal.dao.JournalRowReadDriver

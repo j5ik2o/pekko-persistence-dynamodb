@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package akka.stream.scaladsl
+package org.apache.pekko.stream.scaladsl
 
 import scala.concurrent.Future
 

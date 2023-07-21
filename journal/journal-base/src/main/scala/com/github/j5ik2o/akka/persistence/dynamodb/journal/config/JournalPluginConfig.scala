@@ -15,7 +15,7 @@
  */
 package com.github.j5ik2o.akka.persistence.dynamodb.journal.config
 
-import akka.stream.OverflowStrategy
+import org.apache.pekko.stream.OverflowStrategy
 import com.github.j5ik2o.akka.persistence.dynamodb.config.BackoffConfig
 import com.github.j5ik2o.akka.persistence.dynamodb.config.PluginConfig._
 import com.github.j5ik2o.akka.persistence.dynamodb.config.client.{

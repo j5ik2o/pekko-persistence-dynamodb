@@ -15,7 +15,7 @@
  */
 package com.github.j5ik2o.akka.persistence.dynamodb.jmh.untyped
 
-import akka.persistence._
+import org.apache.pekko.persistence._
 import com.github.j5ik2o.akka.persistence.dynamodb.jmh.untyped.UntypedCounter.{ Increment, IncrementReply }
 
 import java.util.UUID

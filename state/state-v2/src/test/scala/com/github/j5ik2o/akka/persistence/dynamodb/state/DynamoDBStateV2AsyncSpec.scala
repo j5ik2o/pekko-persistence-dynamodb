@@ -15,7 +15,7 @@
  */
 package com.github.j5ik2o.akka.persistence.dynamodb.state
 
-import akka.persistence.state.DurableStateStoreRegistry
+import org.apache.pekko.persistence.state.DurableStateStoreRegistry
 import com.github.j5ik2o.akka.persistence.dynamodb.config.client.{ ClientType, ClientVersion }
 import com.github.j5ik2o.akka.persistence.dynamodb.state.scaladsl.{ DynamoDBDurableStateStoreV2, StateSpecBase }
 import com.github.j5ik2o.akka.persistence.dynamodb.utils.{ ConfigHelper, DynamoDBSpecSupport, RandomPortUtil }
@@ -61,8 +61,8 @@ final class DynamoDBStateV2AsyncSpec
         val revision = 1
         val data     = "abc"
         val tag      = ""
-        store.upsertObject(id, revision, data, tag).futureValue()
-        val result = store.getObject(id).futureValue()
+        store.upsertObject(id, revision, data, tag).futureValue
+        val result = store.getObject(id).futureValue
         result.value shouldBe Some(data)
       }
       {
@@ -70,8 +70,8 @@ final class DynamoDBStateV2AsyncSpec
         val revision = 1
         val data     = "def"
         val tag      = UUID.randomUUID().toString
-        store.upsertObject(id, revision, data, tag).futureValue()
-        val result = store.getRawObject(id).futureValue()
+        store.upsertObject(id, revision, data, tag).futureValue
+        val result = store.getRawObject(id).futureValue
         result match {
           case just: GetRawObjectResult.Just[String] =>
             just.value shouldBe data

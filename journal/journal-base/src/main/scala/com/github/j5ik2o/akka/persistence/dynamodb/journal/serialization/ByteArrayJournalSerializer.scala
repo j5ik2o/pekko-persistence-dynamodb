@@ -16,8 +16,8 @@
  */
 package com.github.j5ik2o.akka.persistence.dynamodb.journal.serialization
 
-import akka.persistence.PersistentRepr
-import akka.serialization.{ AsyncSerializer, Serialization, Serializer }
+import org.apache.pekko.persistence.PersistentRepr
+import org.apache.pekko.serialization.{ AsyncSerializer, Serialization, Serializer }
 import com.github.j5ik2o.akka.persistence.dynamodb.journal.JournalRow
 import com.github.j5ik2o.akka.persistence.dynamodb.metrics.MetricsReporter
 import com.github.j5ik2o.akka.persistence.dynamodb.model.{ Context, PersistenceId, SequenceNumber }

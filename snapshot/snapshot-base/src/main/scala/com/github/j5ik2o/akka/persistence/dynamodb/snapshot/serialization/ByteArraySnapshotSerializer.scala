@@ -16,9 +16,9 @@
  */
 package com.github.j5ik2o.akka.persistence.dynamodb.snapshot.serialization
 
-import akka.persistence.SnapshotMetadata
-import akka.persistence.serialization.Snapshot
-import akka.serialization.{ AsyncSerializer, Serialization, Serializer }
+import org.apache.pekko.persistence.SnapshotMetadata
+import org.apache.pekko.persistence.serialization.Snapshot
+import org.apache.pekko.serialization.{ AsyncSerializer, Serialization, Serializer }
 import com.github.j5ik2o.akka.persistence.dynamodb.metrics.MetricsReporter
 import com.github.j5ik2o.akka.persistence.dynamodb.model.{ Context, PersistenceId, SequenceNumber }
 import com.github.j5ik2o.akka.persistence.dynamodb.snapshot.dao.SnapshotRow

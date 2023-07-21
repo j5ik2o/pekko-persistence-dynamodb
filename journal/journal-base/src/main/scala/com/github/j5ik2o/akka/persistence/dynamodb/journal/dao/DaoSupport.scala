@@ -15,10 +15,10 @@
  */
 package com.github.j5ik2o.akka.persistence.dynamodb.journal.dao
 
-import akka.persistence.PersistentRepr
-import akka.stream.Materializer
-import akka.stream.scaladsl.{ Sink, Source }
-import akka.{ actor, NotUsed }
+import org.apache.pekko.persistence.PersistentRepr
+import org.apache.pekko.stream.Materializer
+import org.apache.pekko.stream.scaladsl.{ Sink, Source }
+import org.apache.pekko.{ actor, NotUsed }
 import com.github.j5ik2o.akka.persistence.dynamodb.journal.JournalRow
 import com.github.j5ik2o.akka.persistence.dynamodb.journal.dao.DaoSupport.{
   Continue,
@@ -126,7 +126,7 @@ trait DaoSupport {
           case Continue => retrieveNextBatch()
           case ContinueDelayed =>
             val (delay, scheduler) = refreshInterval.get
-            akka.pattern.after(delay, scheduler)(retrieveNextBatch())
+            org.apache.pekko.pattern.after(delay, scheduler)(retrieveNextBatch())
         }
       }
       .mapConcat(identity)
