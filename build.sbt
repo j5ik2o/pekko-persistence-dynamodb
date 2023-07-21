@@ -83,7 +83,7 @@ lazy val baseSettings = Seq(
 lazy val test = (project in file("test"))
   .settings(baseSettings)
   .settings(
-    name := "akka-persistence-dynamodb-test",
+    name := "pekko-persistence-dynamodb-test",
     libraryDependencies ++= Seq(
       pekko.stream(akka26Version),
       amazonaws.dynamodb,
@@ -106,7 +106,7 @@ lazy val test = (project in file("test"))
 lazy val `base` = (project in file("base/base"))
   .settings(baseSettings)
   .settings(
-    name := "akka-persistence-dynamodb-base",
+    name := "pekko-persistence-dynamodb-base",
     libraryDependencies ++= Seq(
       slf4j.api,
       iheart.ficus,
@@ -135,7 +135,7 @@ lazy val `base` = (project in file("base/base"))
 lazy val `base-v1` = (project in file("base/base-v1"))
   .settings(baseSettings)
   .settings(
-    name := "akka-persistence-dynamodb-base-v1",
+    name := "pekko-persistence-dynamodb-base-v1",
     libraryDependencies ++= Seq(
       slf4j.api,
       amazonaws.dynamodb,
@@ -149,7 +149,7 @@ lazy val `base-v1` = (project in file("base/base-v1"))
 lazy val `base-v2` = (project in file("base/base-v2"))
   .settings(baseSettings)
   .settings(
-    name := "akka-persistence-dynamodb-base-v2",
+    name := "pekko-persistence-dynamodb-base-v2",
     libraryDependencies ++= Seq(
       slf4j.api,
       softwareamazon.dynamodb,
@@ -163,7 +163,7 @@ lazy val `base-v2` = (project in file("base/base-v2"))
 lazy val `journal-base` = (project in file("journal/journal-base"))
   .settings(baseSettings)
   .settings(
-    name := "akka-persistence-dynamodb-journal-base",
+    name := "pekko-persistence-dynamodb-journal-base",
     libraryDependencies ++= Seq(
       pekko.persistence(akka26Version),
       pekko.testkit(akka26Version)            % Test,
@@ -178,7 +178,7 @@ lazy val `journal-base` = (project in file("journal/journal-base"))
 lazy val `journal-v1` = (project in file("journal/journal-v1"))
   .settings(baseSettings)
   .settings(
-    name := "akka-persistence-dynamodb-journal-v1",
+    name := "pekko-persistence-dynamodb-journal-v1",
     libraryDependencies ++= Seq(
       pekko.persistence(akka26Version),
       pekko.testkit(akka26Version)            % Test,
@@ -193,7 +193,7 @@ lazy val `journal-v1` = (project in file("journal/journal-v1"))
 lazy val `journal-v2` = (project in file("journal/journal-v2"))
   .settings(baseSettings)
   .settings(
-    name := "akka-persistence-dynamodb-journal-v2",
+    name := "pekko-persistence-dynamodb-journal-v2",
     libraryDependencies ++= Seq(
       pekko.persistence(akka26Version),
       pekko.testkit(akka26Version)            % Test,
@@ -208,7 +208,7 @@ lazy val `journal-v2` = (project in file("journal/journal-v2"))
 lazy val `snapshot-base` = (project in file("snapshot/snapshot-base"))
   .settings(baseSettings)
   .settings(
-    name := "akka-persistence-dynamodb-snapshot-base",
+    name := "pekko-persistence-dynamodb-snapshot-base",
     libraryDependencies ++= Seq(
       pekko.persistence(akka26Version)
     )
@@ -217,7 +217,7 @@ lazy val `snapshot-base` = (project in file("snapshot/snapshot-base"))
 lazy val `snapshot-v1` = (project in file("snapshot/snapshot-v1"))
   .settings(baseSettings)
   .settings(
-    name := "akka-persistence-dynamodb-snapshot-v1",
+    name := "pekko-persistence-dynamodb-snapshot-v1",
     libraryDependencies ++= Seq(
       pekko.persistence(akka26Version),
       pekko.testkit(akka26Version)            % Test,
@@ -232,7 +232,7 @@ lazy val `snapshot-v1` = (project in file("snapshot/snapshot-v1"))
 lazy val `snapshot-v2` = (project in file("snapshot/snapshot-v2"))
   .settings(baseSettings)
   .settings(
-    name := "akka-persistence-dynamodb-snapshot-v2",
+    name := "pekko-persistence-dynamodb-snapshot-v2",
     libraryDependencies ++= Seq(
       logback.classic  % Test,
       slf4j.julToSlf4J % Test,
@@ -247,7 +247,7 @@ lazy val `snapshot-v2` = (project in file("snapshot/snapshot-v2"))
 lazy val `state-base` = (project in file("state/state-base"))
   .settings(baseSettings)
   .settings(
-    name := "akka-persistence-dynamodb-state-base",
+    name := "pekko-persistence-dynamodb-state-base",
     libraryDependencies ++= Seq(
       pekko.persistence(akka26Version),
       pekko.testkit(akka26Version)            % Test,
@@ -262,7 +262,7 @@ lazy val `state-base` = (project in file("state/state-base"))
 lazy val `state-v1` = (project in file("state/state-v1"))
   .settings(baseSettings)
   .settings(
-    name := "akka-persistence-dynamodb-state-v1",
+    name := "pekko-persistence-dynamodb-state-v1",
     libraryDependencies ++= Seq(
       pekko.persistence(akka26Version),
       pekko.testkit(akka26Version)            % Test,
@@ -283,7 +283,7 @@ lazy val `state-v1` = (project in file("state/state-v1"))
 lazy val `state-v2` = (project in file("state/state-v2"))
   .settings(baseSettings)
   .settings(
-    name := "akka-persistence-dynamodb-state-v2",
+    name := "pekko-persistence-dynamodb-state-v2",
     libraryDependencies ++= Seq(
       pekko.persistence(akka26Version),
       pekko.testkit(akka26Version)            % Test,
@@ -304,7 +304,7 @@ lazy val `state-v2` = (project in file("state/state-v2"))
 lazy val benchmark = (project in file("benchmark"))
   .settings(baseSettings)
   .settings(
-    name := "akka-persistence-dynamodb-benchmark",
+    name := "pekko-persistence-dynamodb-benchmark",
     publish / skip := true,
     libraryDependencies ++= Seq(
       logback.classic,
@@ -321,7 +321,7 @@ lazy val benchmark = (project in file("benchmark"))
 lazy val example = (project in file("example"))
   .settings(baseSettings)
   .settings(
-    name := "akka-persistence-dynamodb-example",
+    name := "pekko-persistence-dynamodb-example",
     publish / skip := true,
     libraryDependencies ++= Seq(
       logback.classic,
@@ -361,7 +361,7 @@ lazy val docs = (project in file("docs"))
 lazy val root = (project in file("."))
   .settings(baseSettings)
   .settings(
-    name := "akka-persistence-dynamodb-root",
+    name := "pekko-persistence-dynamodb-root",
     publish / skip := true
   )
   .aggregate(
