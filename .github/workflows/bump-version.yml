@@ -35,10 +35,10 @@ jobs:
           --grep='^revert:' \
           --grep='^chore:' | awk 'END{print NR}')
         echo "steps.changes.outputs.count = $COUNT"
-        if [[ "${{ github.events.inputs.force }}" = "1" ]]; then
-          echo "::set-output name=count::1"
+        if [[ "${{ inputs.force }}" = "1" ]]; then
+          echo "count=1" >> $GITHUB_OUTPUT
         else
-          echo "::set-output name=count::$COUNT"
+          echo "count=$COUNT" >> $GITHUB_OUTPUT
         fi
     - name: Bump version and push tag
       id: tag_version
