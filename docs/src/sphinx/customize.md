@@ -8,7 +8,7 @@ Specify the dispatcher to be used inside the plugin. The default is "akka.actor.
 
 ```
 j5ik2o.dynamo-db-journal {
-  plugin-dispatcher = "akka.actor.default-dispatcher"
+  plugin-dispatcher = "pekko.actor.default-dispatcher"
 }
 ```
 
@@ -16,7 +16,7 @@ j5ik2o.dynamo-db-journal {
 
 ```
 j5ik2o.dynamo-db-snapshot {
-  plugin-dispatcher = "akka.actor.default-dispatcher"
+  plugin-dispatcher = "pekko.actor.default-dispatcher"
 }
 ```
 
@@ -24,7 +24,7 @@ j5ik2o.dynamo-db-snapshot {
 
 ```
 j5ik2o.dynamo-db-state {
-  plugin-dispatcher = "akka.actor.default-dispatcher"
+  plugin-dispatcher = "pekko.actor.default-dispatcher"
 }
 ```
 
@@ -325,7 +325,7 @@ This plugin is useful for specifying the configuration items to the client that 
 ```scala V2 AWS Client Factory
 package example
 
-import akka.actor.DynamicAccess
+import org.apache.pekko.actor.DynamicAccess
 import com.github.j5ik2o.pekko.persistence.dynamodb.config.PluginConfig
 import com.github.j5ik2o.pekko.persistence.dynamodb.utils.V2AsyncClientFactory
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient
@@ -426,7 +426,7 @@ j5ik2o.dynamo-db-????? {
 ```scala
 package example
 
-import akka.actor.DynamicAccess
+import org.apache.pekko.actor.DynamicAccess
 import software.amazon.awssdk.auth.credentials.{ AwsCredentialsProvider, AwsCredentials }
 import com.github.j5ik2o.pekko.persistence.dynamodb.config.PluginConfig
 
@@ -454,7 +454,7 @@ Using the MetricPublisher in the V2 sdk, metrics at the SDK level can be sent to
 ```scala
 package example
 
-import akka.actor.DynamicAccess
+import org.apache.pekko.actor.DynamicAccess
 import com.github.j5ik2o.pekko.persistence.dynamodb.config.PluginConfig
 import kamon.Kamon
 import kamon.metric.{ Counter, Histogram, MeasurementUnit }
