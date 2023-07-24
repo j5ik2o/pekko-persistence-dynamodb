@@ -30,8 +30,8 @@ The following modules are required to use the plugins.
 
 - pekko typed
   - [pekko-actor-typed](https://pekko.apache.org/docs/pekko/current/typed/index.html)
-  - [pekko-persistence-typed](https://doc.akka.io/docs/akka/current/typed/index-persistence.html)
-- akka classic
+  - [pekko-persistence-typed](https://pekko.apache.org/docs/pekko/current/typed/index-persistence.html)
+- pekko classic
   - [pekko-actor](https://pekko.apache.org/docs/pekko/current/actors.html)
   - [pekko-persistence](https://pekko.apache.org/docs/pekko/current/persistence.html)
 
