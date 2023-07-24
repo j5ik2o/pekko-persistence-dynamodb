@@ -4,7 +4,7 @@
   <meta charset="utf-8" /><meta name="generator" content="Docutils 0.17.1: http://docutils.sourceforge.net/" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Customize &mdash; j5ik2o/pekko-persistence-dynamodb 1.0.5+2-f710630a-SNAPSHOT documentation</title>
+  <title>Customize &mdash; j5ik2o/pekko-persistence-dynamodb 1.0.5+3-877b496b-SNAPSHOT documentation</title>
       <link rel="stylesheet" href="_static/pygments.css" type="text/css" />
       <link rel="stylesheet" href="_static/css/my_theme.css" type="text/css" />
   <!--[if lt IE 9]>
@@ -172,7 +172,7 @@
 <section id="journal">
 <h3>Journal<a class="headerlink" href="#journal" title="Permalink to this heading">¶</a></h3>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">j5ik2o</span><span class="o">.</span><span class="n">dynamo</span><span class="o">-</span><span class="n">db</span><span class="o">-</span><span class="n">journal</span> <span class="p">{</span>
-  <span class="n">plugin</span><span class="o">-</span><span class="n">dispatcher</span> <span class="o">=</span> <span class="s2">&quot;akka.actor.default-dispatcher&quot;</span>
+  <span class="n">plugin</span><span class="o">-</span><span class="n">dispatcher</span> <span class="o">=</span> <span class="s2">&quot;pekko.actor.default-dispatcher&quot;</span>
 <span class="p">}</span>
 </pre></div>
 </div>
@@ -180,7 +180,7 @@
 <section id="snapshot">
 <h3>Snapshot<a class="headerlink" href="#snapshot" title="Permalink to this heading">¶</a></h3>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">j5ik2o</span><span class="o">.</span><span class="n">dynamo</span><span class="o">-</span><span class="n">db</span><span class="o">-</span><span class="n">snapshot</span> <span class="p">{</span>
-  <span class="n">plugin</span><span class="o">-</span><span class="n">dispatcher</span> <span class="o">=</span> <span class="s2">&quot;akka.actor.default-dispatcher&quot;</span>
+  <span class="n">plugin</span><span class="o">-</span><span class="n">dispatcher</span> <span class="o">=</span> <span class="s2">&quot;pekko.actor.default-dispatcher&quot;</span>
 <span class="p">}</span>
 </pre></div>
 </div>
@@ -188,7 +188,7 @@
 <section id="state">
 <h3>State<a class="headerlink" href="#state" title="Permalink to this heading">¶</a></h3>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">j5ik2o</span><span class="o">.</span><span class="n">dynamo</span><span class="o">-</span><span class="n">db</span><span class="o">-</span><span class="n">state</span> <span class="p">{</span>
-  <span class="n">plugin</span><span class="o">-</span><span class="n">dispatcher</span> <span class="o">=</span> <span class="s2">&quot;akka.actor.default-dispatcher&quot;</span>
+  <span class="n">plugin</span><span class="o">-</span><span class="n">dispatcher</span> <span class="o">=</span> <span class="s2">&quot;pekko.actor.default-dispatcher&quot;</span>
 <span class="p">}</span>
 </pre></div>
 </div>
@@ -631,7 +631,7 @@ The following two implementations are available for built-in use.</p>
 <p>This plugin is useful for specifying the configuration items to the client that are not supported by this plugin, or for dynamically specifying configuration items within the program.</p>
 <div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">package</span><span class="w"> </span><span class="n">example</span>
 
-<span class="k">import</span><span class="w"> </span><span class="nn">akka</span><span class="p">.</span><span class="nn">actor</span><span class="p">.</span><span class="nc">DynamicAccess</span>
+<span class="k">import</span><span class="w"> </span><span class="nn">org</span><span class="p">.</span><span class="nn">apache</span><span class="p">.</span><span class="nn">pekko</span><span class="p">.</span><span class="nn">actor</span><span class="p">.</span><span class="nc">DynamicAccess</span>
 <span class="k">import</span><span class="w"> </span><span class="nn">com</span><span class="p">.</span><span class="nn">github</span><span class="p">.</span><span class="nn">j5ik2o</span><span class="p">.</span><span class="nn">pekko</span><span class="p">.</span><span class="nn">persistence</span><span class="p">.</span><span class="nn">dynamodb</span><span class="p">.</span><span class="nn">config</span><span class="p">.</span><span class="nc">PluginConfig</span>
 <span class="k">import</span><span class="w"> </span><span class="nn">com</span><span class="p">.</span><span class="nn">github</span><span class="p">.</span><span class="nn">j5ik2o</span><span class="p">.</span><span class="nn">pekko</span><span class="p">.</span><span class="nn">persistence</span><span class="p">.</span><span class="nn">dynamodb</span><span class="p">.</span><span class="nn">utils</span><span class="p">.</span><span class="nc">V2AsyncClientFactory</span>
 <span class="k">import</span><span class="w"> </span><span class="nn">software</span><span class="p">.</span><span class="nn">amazon</span><span class="p">.</span><span class="nn">awssdk</span><span class="p">.</span><span class="nn">services</span><span class="p">.</span><span class="nn">dynamodb</span><span class="p">.</span><span class="nc">DynamoDbAsyncClient</span>
@@ -727,7 +727,7 @@ The following two implementations are available for built-in use.</p>
 <h4>Custom AWSCredentialsProvider by using <code class="docutils literal notranslate"><span class="pre">aws-credentials-provider-class-name</span></code><a class="headerlink" href="#custom-awscredentialsprovider-by-using-aws-credentials-provider-class-name" title="Permalink to this heading">¶</a></h4>
 <div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">package</span><span class="w"> </span><span class="n">example</span>
 
-<span class="k">import</span><span class="w"> </span><span class="nn">akka</span><span class="p">.</span><span class="nn">actor</span><span class="p">.</span><span class="nc">DynamicAccess</span>
+<span class="k">import</span><span class="w"> </span><span class="nn">org</span><span class="p">.</span><span class="nn">apache</span><span class="p">.</span><span class="nn">pekko</span><span class="p">.</span><span class="nn">actor</span><span class="p">.</span><span class="nc">DynamicAccess</span>
 <span class="k">import</span><span class="w"> </span><span class="nn">software</span><span class="p">.</span><span class="nn">amazon</span><span class="p">.</span><span class="nn">awssdk</span><span class="p">.</span><span class="nn">auth</span><span class="p">.</span><span class="nn">credentials</span><span class="p">.{</span><span class="w"> </span><span class="nc">AwsCredentialsProvider</span><span class="p">,</span><span class="w"> </span><span class="nc">AwsCredentials</span><span class="w"> </span><span class="p">}</span>
 <span class="k">import</span><span class="w"> </span><span class="nn">com</span><span class="p">.</span><span class="nn">github</span><span class="p">.</span><span class="nn">j5ik2o</span><span class="p">.</span><span class="nn">pekko</span><span class="p">.</span><span class="nn">persistence</span><span class="p">.</span><span class="nn">dynamodb</span><span class="p">.</span><span class="nn">config</span><span class="p">.</span><span class="nc">PluginConfig</span>
 
@@ -753,7 +753,7 @@ The following two implementations are available for built-in use.</p>
 <p>Using the MetricPublisher in the V2 sdk, metrics at the SDK level can be sent to Datadog and Newrelic via Kamon.</p>
 <div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">package</span><span class="w"> </span><span class="n">example</span>
 
-<span class="k">import</span><span class="w"> </span><span class="nn">akka</span><span class="p">.</span><span class="nn">actor</span><span class="p">.</span><span class="nc">DynamicAccess</span>
+<span class="k">import</span><span class="w"> </span><span class="nn">org</span><span class="p">.</span><span class="nn">apache</span><span class="p">.</span><span class="nn">pekko</span><span class="p">.</span><span class="nn">actor</span><span class="p">.</span><span class="nc">DynamicAccess</span>
 <span class="k">import</span><span class="w"> </span><span class="nn">com</span><span class="p">.</span><span class="nn">github</span><span class="p">.</span><span class="nn">j5ik2o</span><span class="p">.</span><span class="nn">pekko</span><span class="p">.</span><span class="nn">persistence</span><span class="p">.</span><span class="nn">dynamodb</span><span class="p">.</span><span class="nn">config</span><span class="p">.</span><span class="nc">PluginConfig</span>
 <span class="k">import</span><span class="w"> </span><span class="nn">kamon</span><span class="p">.</span><span class="nc">Kamon</span>
 <span class="k">import</span><span class="w"> </span><span class="nn">kamon</span><span class="p">.</span><span class="nn">metric</span><span class="p">.{</span><span class="w"> </span><span class="nc">Counter</span><span class="p">,</span><span class="w"> </span><span class="nc">Histogram</span><span class="p">,</span><span class="w"> </span><span class="nc">MeasurementUnit</span><span class="w"> </span><span class="p">}</span>

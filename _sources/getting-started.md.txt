@@ -15,8 +15,8 @@ val version = "..."
 val awsClientVersion = "v2" // or "v1"
 
 libraryDependencies += Seq(
-  "com.github.j5ik2o" %% s"akka-persistence-dynamodb-journal-$awsClientVersion" % version,
-  "com.github.j5ik2o" %% s"akka-persistence-dynamodb-snapshot-$awsClientVersion" % version
+  "com.github.j5ik2o" %% s"pekko-persistence-dynamodb-journal-$awsClientVersion" % version,
+  "com.github.j5ik2o" %% s"pekko-persistence-dynamodb-snapshot-$awsClientVersion" % version
 )
 ```
 
@@ -36,7 +36,7 @@ val version = "..."
 val awsClientVersion = "v2" // or "v1"
 
 libraryDependencies += Seq(
-  "com.github.j5ik2o" %% s"akka-persistence-dynamodb-state-$awsClientVersion" % version
+  "com.github.j5ik2o" %% s"pekko-persistence-dynamodb-state-$awsClientVersion" % version
 )
 ```
 
@@ -61,7 +61,7 @@ $ aws dynamodb create-table --cli-input-json file://./tools/journal-table.json
 Please add the following settings to your `application.conf`.
 
 ```
-akka.persistence.journal.plugin = "j5ik2o.dynamo-db-journal"
+pekko.persistence.journal.plugin = "j5ik2o.dynamo-db-journal"
 ```
 
 If you use the v1 module, the following configuration is required.
@@ -107,7 +107,7 @@ The snapshot table format has changed since 1.9. If you want to use the old tabl
 Please add the following settings to your `application.conf`.
 
 ```
-akka.persistence.snapshot-store.plugin = "j5ik2o.dynamo-db-snapshot"
+pekko.persistence.snapshot-store.plugin = "j5ik2o.dynamo-db-snapshot"
 ```
 
 If you use the v1 module, the following configuration is required.
@@ -149,7 +149,7 @@ $ aws dynamodb create-table --cli-input-json file://./tools/state-table.json
 Please add the following settings to your `application.conf`.
 
 ```
-akka.persistence.state.plugin = "j5ik2o.dynamo-db-state"
+pekko.persistence.state.plugin = "j5ik2o.dynamo-db-state"
 ```
 
 If you use the v1 module, the following configuration is required.
@@ -180,19 +180,19 @@ Do not use the above method in the production environment. Be sure to use IAM Ro
 
 See below for an example implementation of a persistent actor by using akka typed. Note that akka classic is not recommended.
 
-- [Event Sourced](https://github.com/j5ik2o/akka-persistence-dynamodb/tree/main/example/src/main/scala/com/github/j5ik2o/akka/persistence/dynamodb/example/typed/eventsourced)
-- [Durable State](https://github.com/j5ik2o/akka-persistence-dynamodb/tree/main/example/src/main/scala/com/github/j5ik2o/akka/persistence/dynamodb/example/typed/durablestate)
+- [Event Sourced](https://github.com/j5ik2o/pekko-persistence-dynamodb/tree/main/example/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/example/typed/eventsourced)
+- [Durable State](https://github.com/j5ik2o/pekko-persistence-dynamodb/tree/main/example/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/example/typed/durablestate)
 
-Please also see [the official documentation](https://doc.akka.io/docs/akka/current/typed/persistence.html).
+Please also see [the official documentation](https://pekko.apache.org/docs/pekko/current/typed/index-persistence.html).
 
 ## Configurations for the plugin
 
 Please refer to the following for the setting items of each plugin.
 
-- [Journal Plugin - reference.conf](https://github.com/j5ik2o/akka-persistence-dynamodb/blob/main/journal/journal-base/src/main/resources/reference.conf)
-- [Snapshot Plugin - reference.conf](https://github.com/j5ik2o/akka-persistence-dynamodb/blob/main/snapshot/snapshot-base/src/main/resources/reference.conf)  
-- [State Plugin - reference.conf](https://github.com/j5ik2o/akka-persistence-dynamodb/blob/main/state/state-base/src/main/resources/reference.conf)
+- [Journal Plugin - reference.conf](https://github.com/j5ik2o/pekko-persistence-dynamodb/blob/main/journal/journal-base/src/main/resources/reference.conf)
+- [Snapshot Plugin - reference.conf](https://github.com/j5ik2o/pekko-persistence-dynamodb/blob/main/snapshot/snapshot-base/src/main/resources/reference.conf)  
+- [State Plugin - reference.conf](https://github.com/j5ik2o/pekko-persistence-dynamodb/blob/main/state/state-base/src/main/resources/reference.conf)
   
 Common configuration items are defined in `reference.conf` of the base project.
  
-[Common - reference.conf](https://github.com/j5ik2o/akka-persistence-dynamodb/blob/main/base/base/src/main/resources/reference.conf)
+[Common - reference.conf](https://github.com/j5ik2o/pekko-persistence-dynamodb/blob/main/base/base/src/main/resources/reference.conf)
