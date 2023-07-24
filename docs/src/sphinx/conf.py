@@ -48,7 +48,7 @@ source_suffix = {
 master_doc = 'index'
 
 # General information about the project.
-project = u'j5ik2o/akka-persistence-dynamodb'
+project = u'j5ik2o/pekko-persistence-dynamodb'
 copyright = u'Copyright [2019] Junichi Kato'
 
 # The version info for the project you're documenting, acts as replacement for
