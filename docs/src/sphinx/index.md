@@ -7,7 +7,7 @@ Status of This Document: [WIP]
 [![Maven Central](https://maven-badges.herokuapp.com/maven-central/com.github.j5ik2o/pekko-persistence-dynamodb-journal-v2_2.13/badge.svg)](https://maven-badges.herokuapp.com/maven-central/com.github.j5ik2o/pekko-persistence-dynamodb-journal-v2_2.13)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
-`j5ik2o/akka-persistence-dynamodb` is a plugin for akka-persistence.
+`j5ik2o/pekko-persistence-dynamodb` is a plugin for akka-persistence.
 You can persist your Actor's state to `AWS DynamoDB` without having to worry about detailed persistence techniques.
 
 The plugin features the following.
