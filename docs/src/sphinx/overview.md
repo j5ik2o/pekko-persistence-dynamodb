@@ -20,7 +20,7 @@ Since version 1.7.x, the query plugin was discontinued. You can't get throughput
 
 ### Programming Language Support
 
-Java 1.8+ or Scala 2.12.x or 2.13.x
+Java 1.8+ or Scala 2.12.x or 2.13.x or 3.x.x
 
 ### Akka Support
 
