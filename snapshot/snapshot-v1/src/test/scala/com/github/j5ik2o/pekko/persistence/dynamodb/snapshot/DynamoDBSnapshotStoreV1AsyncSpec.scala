@@ -16,15 +16,15 @@
 package com.github.j5ik2o.pekko.persistence.dynamodb.snapshot
 
 import org.apache.pekko.persistence.snapshot.SnapshotStoreSpec
-import com.github.j5ik2o.pekko.persistence.dynamodb.utils.{ DynamoDBSpecSupport, RandomPortUtil }
+import com.github.j5ik2o.pekko.persistence.dynamodb.utils.{ DynamoDBContainerHelper, RandomPortUtil }
 import com.typesafe.config.ConfigFactory
+import org.scalatest.BeforeAndAfter
 import org.scalatest.concurrent.ScalaFutures
-import org.testcontainers.DockerClientFactory
 
 import scala.concurrent.duration._
 
 object DynamoDBSnapshotStoreV1AsyncSpec {
-  val dynamoDBHost: String = DockerClientFactory.instance().dockerHostIpAddress()
+  val dynamoDBHost: String = "localhost"
   val dynamoDBPort: Int    = RandomPortUtil.temporaryServerPort()
 }
 
@@ -53,14 +53,21 @@ final class DynamoDBSnapshotStoreV1AsyncSpec
         ).withFallback(ConfigFactory.load("snapshot-reference"))
     )
     with ScalaFutures
-    with DynamoDBSpecSupport {
+    with BeforeAndAfter
+    with DynamoDBContainerHelper {
 
   implicit val pc: PatienceConfig = PatienceConfig(30.seconds, 1.seconds)
 
-  override protected lazy val dynamoDBPort: Int = DynamoDBSnapshotStoreV1AsyncSpec.dynamoDBPort
+  override lazy val dynamoDBPort: Int = DynamoDBSnapshotStoreV1AsyncSpec.dynamoDBPort
 
-  before { createTable() }
+  override def afterStartContainers(): Unit = {
+    super.afterStartContainers()
+    createTable()
+  }
 
-  after { deleteTable() }
+  override def beforeStopContainers(): Unit = {
+    deleteTable()
+    super.beforeStopContainers()
+  }
 
 }

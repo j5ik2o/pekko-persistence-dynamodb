@@ -5,7 +5,7 @@ object Dependencies {
   object Versions {
     val scala212Version = "2.12.18"
     val scala213Version = "2.13.11"
-    val scala3Version   = "3.0.1"
+    val scala3Version   = "3.3.0"
 
     val scalaCollectionCompatVersion = "2.11.0"
 
@@ -19,8 +19,7 @@ object Dependencies {
     val awsSdkV2Version     = "2.20.109"
     val reactiveAwsDynamoDB = "1.2.6"
 
-    val scalaTest32Version      = "3.2.4"
-    val scalaTest30Version      = "3.0.8"
+    val scalaTest32Version      = "3.2.16"
     val scalaJava8CompatVersion = "1.0.2"
 
     val reactiveStreamsVersion = "1.0.3"
@@ -73,22 +72,6 @@ object Dependencies {
 
   object scalatest {
     def scalatest(version: String) = "org.scalatest" %% "scalatest" % version
-  }
-
-  object testcontainers {
-    val testcontainersVersion    = "1.18.3"
-    val testcontainers           = "org.testcontainers" % "testcontainers" % testcontainersVersion
-    val testcontainersLocalStack = "org.testcontainers" % "localstack"     % testcontainersVersion
-    val testcontainersKafka      = "org.testcontainers" % "kafka"          % testcontainersVersion
-  }
-
-  object dimafeng {
-    val testcontainersScalaVersion  = "0.40.17"
-    val testcontainerScala          = "com.dimafeng" %% "testcontainers-scala"           % testcontainersScalaVersion
-    val testcontainerScalaScalaTest = "com.dimafeng" %% "testcontainers-scala-scalatest" % testcontainersScalaVersion
-    //    val testcontainerScalaMsql       = "com.dimafeng" %% "testcontainers-scala-mysql" % testcontainersScalaVersion
-    val testcontainerScalaKafka      = "com.dimafeng" %% "testcontainers-scala-kafka"      % testcontainersScalaVersion
-    val testcontainerScalaLocalstack = "com.dimafeng" %% "testcontainers-scala-localstack" % testcontainersScalaVersion
   }
 
   object javaDevJnv {
