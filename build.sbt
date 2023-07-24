@@ -347,7 +347,7 @@ lazy val docs = (project in file("docs"))
   .settings(baseSettings)
   .settings(
     name := "documents",
-    git.remoteRepo := "git@github.com:j5ik2o/akka-persistence-dynamodb.git",
+    git.remoteRepo := "git@github.com:j5ik2o/pekko-persistence-dynamodb.git",
     ghpagesNoJekyll := true
   )
 
