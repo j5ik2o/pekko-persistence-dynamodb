@@ -9,7 +9,7 @@ object Dependencies {
 
     val scalaCollectionCompatVersion = "2.11.0"
 
-    val akka26Version = "1.0.0"
+    val pekkoVersion = "1.0.0"
 
     val logbackVersion      = "1.2.12"
     val slf4jVersion        = "1.7.36"
