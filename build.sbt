@@ -40,7 +40,8 @@ lazy val baseSettings = Seq(
   scalaVersion := Versions.scala213Version,
   crossScalaVersions := Seq(
     Versions.scala212Version,
-    Versions.scala213Version
+    Versions.scala213Version,
+    Versions.scala3Version
   ),
   scalacOptions ++= (
     Seq(
@@ -87,9 +88,9 @@ lazy val test = (project in file("test"))
     libraryDependencies ++= Seq(
       pekko.stream(akka26Version),
       amazonaws.dynamodb,
-      testcontainers.testcontainers,
-      dimafeng.testcontainerScala,
-      javaDevJnv.jna
+      javaDevJnv.jna,
+      "com.github.j5ik2o" %% "docker-controller-scala-scalatest"      % "1.15.0",
+      "com.github.j5ik2o" %% "docker-controller-scala-dynamodb-local" % "1.15.0"
     ),
     libraryDependencies ++= {
       CrossVersion.partialVersion(scalaVersion.value) match {
@@ -116,7 +117,6 @@ lazy val `base` = (project in file("base/base"))
       pekko.testkit(akka26Version)            % Test,
       logback.classic                         % Test,
       slf4j.julToSlf4J                        % Test,
-      dimafeng.testcontainerScalaScalaTest    % Test,
       pekko.streamTestkit(akka26Version)      % Test,
       scalatest.scalatest(scalaTest32Version) % Test
     ),
@@ -140,9 +140,8 @@ lazy val `base-v1` = (project in file("base/base-v1"))
       slf4j.api,
       amazonaws.dynamodb,
       amazonaws.dax,
-      logback.classic                      % Test,
-      slf4j.julToSlf4J                     % Test,
-      dimafeng.testcontainerScalaScalaTest % Test
+      logback.classic  % Test,
+      slf4j.julToSlf4J % Test
     )
   ).dependsOn(base, test % "test->compile")
 
@@ -153,10 +152,9 @@ lazy val `base-v2` = (project in file("base/base-v2"))
     libraryDependencies ++= Seq(
       slf4j.api,
       softwareamazon.dynamodb,
-      "software.amazon.dax"                % "amazon-dax-client" % "2.0.4",
-      logback.classic                      % Test,
-      slf4j.julToSlf4J                     % Test,
-      dimafeng.testcontainerScalaScalaTest % Test
+      "software.amazon.dax" % "amazon-dax-client" % "2.0.4",
+      logback.classic       % Test,
+      slf4j.julToSlf4J      % Test
     )
   ).dependsOn(base, test % "test->compile")
 
@@ -270,8 +268,7 @@ lazy val `state-v1` = (project in file("state/state-v1"))
       pekko.persistenceTck(akka26Version)     % Test,
       scalatest.scalatest(scalaTest32Version) % Test,
       "ch.qos.logback"                        % "logback-classic" % logbackVersion % Test,
-      "org.slf4j"                             % "jul-to-slf4j"    % slf4jVersion   % Test,
-      dimafeng.testcontainerScalaScalaTest    % Test
+      "org.slf4j"                             % "jul-to-slf4j"    % slf4jVersion   % Test
     )
   ).dependsOn(
     base         % "test->test",
@@ -291,8 +288,7 @@ lazy val `state-v2` = (project in file("state/state-v2"))
       pekko.persistenceTck(akka26Version)     % Test,
       scalatest.scalatest(scalaTest32Version) % Test,
       "ch.qos.logback"                        % "logback-classic" % logbackVersion % Test,
-      "org.slf4j"                             % "jul-to-slf4j"    % slf4jVersion   % Test,
-      dimafeng.testcontainerScalaScalaTest    % Test
+      "org.slf4j"                             % "jul-to-slf4j"    % slf4jVersion   % Test
     )
   ).dependsOn(
     base         % "test->test",
@@ -310,7 +306,6 @@ lazy val benchmark = (project in file("benchmark"))
       logback.classic,
       slf4j.api,
       slf4j.julToSlf4J,
-      dimafeng.testcontainerScala,
       pekko.slf4j(akka26Version),
       pekko.persistenceTyped(akka26Version)
     )
@@ -327,13 +322,11 @@ lazy val example = (project in file("example"))
       logback.classic,
       slf4j.api,
       slf4j.julToSlf4J,
-      dimafeng.testcontainerScala,
       fasterxml.jacksonModuleScala,
       pekko.slf4j(akka26Version),
       pekko.persistenceTyped(akka26Version),
       pekko.serializationJackson(akka26Version),
       scalatest.scalatest(scalaTest32Version) % Test,
-      pekko.persistenceTestkit(akka26Version) % Test,
       "com.github.j5ik2o"                    %% "docker-controller-scala-scalatest"      % "1.15.0",
       "com.github.j5ik2o"                    %% "docker-controller-scala-dynamodb-local" % "1.15.0"
     )

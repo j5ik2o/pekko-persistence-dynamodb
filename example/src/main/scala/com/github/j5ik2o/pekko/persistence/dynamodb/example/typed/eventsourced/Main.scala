@@ -4,7 +4,7 @@ import org.apache.pekko.actor.typed.scaladsl.Behaviors
 import org.apache.pekko.actor.typed.{ ActorSystem, Behavior }
 import org.apache.pekko.util.Timeout
 import com.github.j5ik2o.pekko.persistence.dynamodb.example.typed.CounterProtocol
-import com.github.j5ik2o.pekko.persistence.dynamodb.utils.DynamoDBContainerHelper
+import com.github.j5ik2o.pekko.persistence.dynamodb.utils.DockerControllerHelperUtil
 import com.typesafe.config.{ Config, ConfigFactory }
 
 import java.util.UUID
@@ -12,7 +12,7 @@ import scala.concurrent.Await
 import scala.concurrent.duration._
 import scala.util.Try
 
-object Main extends App with DynamoDBContainerHelper {
+object Main extends App with DockerControllerHelperUtil {
 
   trait Message
 
@@ -55,9 +55,9 @@ object Main extends App with DynamoDBContainerHelper {
 
   }
 
-  override protected lazy val dynamoDBPort = 8000
+  override lazy val dynamoDBPort = 8000
 
-  dynamoDbLocalContainer.start()
+  stopContainer()
   Thread.sleep(1000)
   createTable()
 
@@ -66,6 +66,5 @@ object Main extends App with DynamoDBContainerHelper {
 
   Await.result(system.whenTerminated, Duration.Inf)
 
-  dynamoDbLocalContainer.stop()
-
+  stopContainer()
 }

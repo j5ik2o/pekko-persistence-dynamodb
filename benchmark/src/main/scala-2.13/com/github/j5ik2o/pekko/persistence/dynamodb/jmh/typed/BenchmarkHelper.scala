@@ -19,11 +19,11 @@ import java.util.UUID
 import org.apache.pekko.actor.typed.scaladsl.adapter._
 import org.apache.pekko.actor.{ typed, ActorSystem }
 import com.github.j5ik2o.pekko.persistence.dynamodb.jmh
-import com.github.j5ik2o.pekko.persistence.dynamodb.utils.{ ConfigHelper, DynamoDBContainerHelper }
+import com.github.j5ik2o.pekko.persistence.dynamodb.utils.{ ConfigHelper, DockerControllerHelperUtil }
 import org.openjdk.jmh.annotations.{ Setup, TearDown }
 import com.typesafe.config.Config
 
-trait BenchmarkHelper extends DynamoDBContainerHelper {
+trait BenchmarkHelper extends DockerControllerHelperUtil {
   def clientVersion: String
   def clientType: String
 
@@ -32,7 +32,7 @@ trait BenchmarkHelper extends DynamoDBContainerHelper {
       None,
       legacyConfigFormat = false,
       legacyJournalMode = false,
-      dynamoDBHost,
+      dockerHost,
       dynamoDBPort,
       clientVersion,
       clientType
@@ -42,7 +42,7 @@ trait BenchmarkHelper extends DynamoDBContainerHelper {
 
   @Setup
   def setup(): Unit = {
-    dynamoDbLocalContainer.start()
+    startContainer()
     Thread.sleep(1000)
     createTable()
     system = ActorSystem("benchmark-" + UUID.randomUUID().toString, config)
@@ -52,7 +52,7 @@ trait BenchmarkHelper extends DynamoDBContainerHelper {
 
   @TearDown
   def tearDown(): Unit = {
-    dynamoDbLocalContainer.stop()
+    stopContainer()
     system.terminate()
   }
 }

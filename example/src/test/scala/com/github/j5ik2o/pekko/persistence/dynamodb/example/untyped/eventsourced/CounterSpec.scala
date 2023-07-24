@@ -6,18 +6,16 @@ import com.amazonaws.services.dynamodbv2.model.{ AttributeValue, QueryRequest, Q
 import com.github.j5ik2o.pekko.persistence.dynamodb.config.client.{ ClientType, ClientVersion }
 import com.github.j5ik2o.pekko.persistence.dynamodb.example.untyped.eventsourced.CounterProtocol.GetValueReply
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.config.JournalPluginConfig
-import com.github.j5ik2o.pekko.persistence.dynamodb.utils.{ ConfigHelper, DynamoDBSpecSupport, RandomPortUtil }
+import com.github.j5ik2o.pekko.persistence.dynamodb.utils.{ ConfigHelper, DynamoDBContainerHelper, RandomPortUtil }
 import org.scalatest.BeforeAndAfterAll
 import org.scalatest.concurrent.ScalaFutures
 import org.scalatest.freespec.AnyFreeSpecLike
-import org.testcontainers.DockerClientFactory
 
 import java.util.UUID
 import scala.concurrent.duration._
 import scala.jdk.CollectionConverters._
 
 object CounterSpec {
-  val dynamoDBHost: String = DockerClientFactory.instance().dockerHostIpAddress()
 
   val legacyJournalMode = false
 }
@@ -35,7 +33,7 @@ abstract class BaseCounterSpec(
             Some("persistence-reference"),
             legacyConfigFormat = false,
             legacyJournalMode = CounterSpec.legacyJournalMode,
-            dynamoDBHost = CounterSpec.dynamoDBHost,
+            dynamoDBHost = "127.0.0.1",
             dynamoDBPort = _dynamoDBPort,
             clientVersion = clientVersion.toString,
             clientType = clientType.toString,
@@ -47,24 +45,22 @@ abstract class BaseCounterSpec(
     with BeforeAndAfterAll
     with ImplicitSender
     with ScalaFutures
-    with DynamoDBSpecSupport {
-  val testTimeFactor: Int = sys.env.getOrElse("TEST_TIME_FACTOR", "1").toInt
-  logger.debug(s"testTimeFactor = $testTimeFactor")
+    with DynamoDBContainerHelper {
 
   implicit val pc: PatienceConfig = PatienceConfig(30.seconds, 1.seconds)
 
-  override protected lazy val dynamoDBPort: Int = _dynamoDBPort
+  override lazy val dynamoDBPort: Int = _dynamoDBPort
 
   override val legacyJournalTable: Boolean = CounterSpec.legacyJournalMode
 
-  override def beforeAll(): Unit = {
-    super.beforeAll()
+  override def afterStartContainers(): Unit = {
+    super.afterStartContainers()
     createTable()
   }
 
-  override def afterAll(): Unit = {
+  override def beforeStopContainers(): Unit = {
     deleteTable()
-    super.afterAll()
+    super.beforeStopContainers()
   }
 
   def newId(): String = UUID.randomUUID().toString.replace("-", "")
