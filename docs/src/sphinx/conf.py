@@ -175,7 +175,7 @@ html_static_path = ['static']
 #html_file_suffix = None
 
 # Output file base name for HTML help builder.
-htmlhelp_basename = "j5ik2o/akka-persistence-dynamodb"
+htmlhelp_basename = "j5ik2o/pekko-persistence-dynamodb"
 
 
 # -- Options for LaTeX output --------------------------------------------------
@@ -194,7 +194,7 @@ latex_elements = {
 # Grouping the document tree into LaTeX files. List of tuples
 # (source start file, target name, title, author, documentclass [howto/manual]).
 latex_documents = [
-  ('index', 'gm.tex', u"j5ik2o/akka-persistence-dynamodb",
+  ('index', 'gm.tex', u"j5ik2o/pekko-persistence-dynamodb",
    u'Josh Suereth', 'manual', True),
 ]
 
@@ -224,8 +224,8 @@ latex_documents = [
 # One entry per manual page. List of tuples
 # (source start file, name, description, authors, manual section).
 man_pages = [
-#    ('index', 'oneshot', u'j5ik2o/akka-persistence-dynamodb',
-#     [u'Josh Suereth'], 1)
+  #    ('index', 'oneshot', u'j5ik2o/pekko-persistence-dynamodb',
+  #     [u'Josh Suereth'], 1)
 ]
 
 # If true, show URL addresses after external links.
@@ -238,9 +238,9 @@ man_pages = [
 # (source start file, target name, title, author,
 #  dir menu entry, description, category)
 texinfo_documents = [
-#  ('index', 'Oneshot', u'j5ik2o/akka-persistence-dynamodb',
-#   u'Josh Suereth', 'j5ik2o/akka-persistence-dynamodb', 'One line description of project.',
-#   'Miscellaneous'),
+  #  ('index', 'Oneshot', u'j5ik2o/pekko-persistence-dynamodb',
+  #   u'Josh Suereth', 'j5ik2o/pekko-persistence-dynamodb', 'One line description of project.',
+  #   'Miscellaneous'),
 ]
 
 # Documents to append as an appendix to all manuals.
@@ -257,7 +257,7 @@ texinfo_documents = [
 # -- Options for Epub output ---------------------------------------------------
 
 # Bibliographic Dublin Core info.
-# epub_title = u"j5ik2o/akka-persistence-dynamodb"
+# epub_title = u"j5ik2o/pekko-persistence-dynamodb"
 # epub_author = u'Junichi Kato'
 # epub_publisher = u'Junichi Kato'
 # epub_copyright = u'2019, Junichi Kato'
