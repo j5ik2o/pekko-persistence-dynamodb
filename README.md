@@ -19,6 +19,10 @@ The plugin features the following.
 
 NOTE: This plugin is derived from [akka/akka-persistence-jdbc](https://github.com/akka/akka-persistence-jdbc), not [akka/akka-persistence-dynamodb](https://github.com/akka/akka-persistence-dynamodb).
 
+## Programming Language Support
+
+Java 1.8+ or Scala 2.12.x or 2.13.x or 3.x.x
+
 ## User's Guide
 
 To use the plugins, please see the [User's Guide](https://pekko-persistence-dynamodb.readthedocs.io/en/latest/getting-started.html)
