@@ -2,7 +2,7 @@
 
 ## Plugin dispatcher
 
-Specify the dispatcher to be used inside the plugin. The default is "akka.actor.default-dispatcher".
+Specify the dispatcher to be used inside the plugin. The default is "pekko.actor.default-dispatcher".
 
 ### Journal
 

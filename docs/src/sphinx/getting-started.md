@@ -178,7 +178,7 @@ Do not use the above method in the production environment. Be sure to use IAM Ro
 
 ## Persistent Actor Implementation
 
-See below for an example implementation of a persistent actor by using akka typed. Note that akka classic is not recommended.
+See below for an example implementation of a persistent actor by using pekko typed. Note that pekko classic is not recommended.
 
 - [Event Sourced](https://github.com/j5ik2o/pekko-persistence-dynamodb/tree/main/example/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/example/typed/eventsourced)
 - [Durable State](https://github.com/j5ik2o/pekko-persistence-dynamodb/tree/main/example/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/example/typed/durablestate)
