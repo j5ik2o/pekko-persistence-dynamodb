@@ -1,22 +1,21 @@
 <!DOCTYPE html>
-<html class="writer-html5" lang="en" >
+<html class="writer-html5" lang="en" data-content_root="./">
 <head>
-  <meta charset="utf-8" /><meta name="generator" content="Docutils 0.17.1: http://docutils.sourceforge.net/" />
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>j5ik2o/pekko-persistence-dynamodb &mdash; j5ik2o/pekko-persistence-dynamodb 1.0.41+48-5aec8f85-SNAPSHOT documentation</title>
-      <link rel="stylesheet" href="_static/pygments.css" type="text/css" />
-      <link rel="stylesheet" href="_static/css/my_theme.css" type="text/css" />
+  <title>j5ik2o/pekko-persistence-dynamodb &mdash; j5ik2o/pekko-persistence-dynamodb 1.0.42+150-b8937ec7-SNAPSHOT documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=fa44fd50" />
+      <link rel="stylesheet" type="text/css" href="_static/css/my_theme.css?v=fb7a0e8a" />
+
+  
   <!--[if lt IE 9]>
     <script src="_static/js/html5shiv.min.js"></script>
   <![endif]-->
   
-        <script data-url_root="./" id="documentation_options" src="_static/documentation_options.js"></script>
-        <script src="_static/jquery.js"></script>
-        <script src="_static/underscore.js"></script>
-        <script src="_static/_sphinx_javascript_frameworks_compat.js"></script>
-        <script src="_static/doctools.js"></script>
-        <script src="_static/sphinx_highlight.js"></script>
+        <script src="_static/documentation_options.js?v=727c07a5"></script>
+        <script src="_static/doctools.js?v=888ff710"></script>
+        <script src="_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="_static/js/theme.js"></script>
     <link rel="index" title="Index" href="genindex.html" />
     <link rel="search" title="Search" href="search.html" />
@@ -28,14 +27,18 @@
     <nav data-toggle="wy-nav-shift" class="wy-nav-side">
       <div class="wy-side-scroll">
         <div class="wy-side-nav-search" >
-            <a href="#" class="icon icon-home"> j5ik2o/pekko-persistence-dynamodb
+
+          
+          
+          <a href="#" class="icon icon-home">
+            j5ik2o/pekko-persistence-dynamodb
           </a>
               <div class="version">
                 1.0
               </div>
 <div role="search">
   <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
-    <input type="text" name="q" placeholder="Search docs" />
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
     <input type="hidden" name="check_keywords" value="yes" />
     <input type="hidden" name="area" value="default" />
   </form>
@@ -118,10 +121,10 @@
 <li class="toctree-l4"><a class="reference internal" href="customize.html#id15">Configure your own implementation</a></li>
 </ul>
 </li>
-<li class="toctree-l3"><a class="reference internal" href="customize.html#id16">State</a><ul>
-<li class="toctree-l4"><a class="reference internal" href="customize.html#id17">Shard Count</a></li>
-<li class="toctree-l4"><a class="reference internal" href="customize.html#id18">Partition Key Resolver Class Name</a></li>
-<li class="toctree-l4"><a class="reference internal" href="customize.html#id19">Configure your own implementation</a></li>
+<li class="toctree-l3"><a class="reference internal" href="customize.html#id17">State</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="customize.html#id18">Shard Count</a></li>
+<li class="toctree-l4"><a class="reference internal" href="customize.html#id19">Partition Key Resolver Class Name</a></li>
+<li class="toctree-l4"><a class="reference internal" href="customize.html#id20">Configure your own implementation</a></li>
 </ul>
 </li>
 </ul>
@@ -154,8 +157,8 @@
         <div class="rst-content">
           <div role="navigation" aria-label="Page navigation">
   <ul class="wy-breadcrumbs">
-      <li><a href="#" class="icon icon-home"></a> &raquo;</li>
-      <li>j5ik2o/pekko-persistence-dynamodb</li>
+      <li><a href="#" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">j5ik2o/pekko-persistence-dynamodb</li>
       <li class="wy-breadcrumbs-aside">
             <a href="_sources/index.md.txt" rel="nofollow"> View page source</a>
       </li>
@@ -166,7 +169,7 @@
            <div itemprop="articleBody">
              
   <section id="j5ik2o-pekko-persistence-dynamodb">
-<h1>j5ik2o/pekko-persistence-dynamodb<a class="headerlink" href="#j5ik2o-pekko-persistence-dynamodb" title="Permalink to this heading">¶</a></h1>
+<h1>j5ik2o/pekko-persistence-dynamodb<a class="headerlink" href="#j5ik2o-pekko-persistence-dynamodb" title="Link to this heading">¶</a></h1>
 <p>Status of This Document: [WIP]</p>
 <p><a class="reference external" href="https://github.com/j5ik2o/pekko-persistence-dynamodb/actions?query=workflow%3ACI"><img alt="CI" src="https://github.com/j5ik2o/pekko-persistence-dynamodb/workflows/CI/badge.svg" /></a>
 <a class="reference external" href="https://scala-steward.org"><img alt="Scala Steward badge" src="https://img.shields.io/badge/Scala_Steward-helping-blue.svg?style=flat&amp;logo=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAA4AAAAQCAMAAAARSr4IAAAAVFBMVEUAAACHjojlOy5NWlrKzcYRKjGFjIbp293YycuLa3pYY2LSqql4f3pCUFTgSjNodYRmcXUsPD/NTTbjRS+2jomhgnzNc223cGvZS0HaSD0XLjbaSjElhIr+AAAAAXRSTlMAQObYZgAAAHlJREFUCNdNyosOwyAIhWHAQS1Vt7a77/3fcxxdmv0xwmckutAR1nkm4ggbyEcg/wWmlGLDAA3oL50xi6fk5ffZ3E2E3QfZDCcCN2YtbEWZt+Drc6u6rlqv7Uk0LdKqqr5rk2UCRXOk0vmQKGfc94nOJyQjouF9H/wCc9gECEYfONoAAAAASUVORK5CYII=" /></a>
@@ -184,7 +187,7 @@ You can persist your Actor’s state to <code class="docutils literal notranslat
 <li><p><a class="reference external" href="https://pekko.apache.org/docs/pekko/current/typed/index-persistence-durable-state.html">Durable state</a></p></li>
 </ul>
 <section id="sitemap">
-<h2>Sitemap<a class="headerlink" href="#sitemap" title="Permalink to this heading">¶</a></h2>
+<h2>Sitemap<a class="headerlink" href="#sitemap" title="Link to this heading">¶</a></h2>
 <div class="toctree-wrapper compound">
 <ul>
 <li class="toctree-l1"><a class="reference internal" href="overview.html">Overview</a><ul>
