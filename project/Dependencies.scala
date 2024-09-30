@@ -3,9 +3,9 @@ import sbt._
 object Dependencies {
 
   object Versions {
-    val scala212Version = "2.12.18"
-    val scala213Version = "2.13.11"
-    val scala3Version   = "3.3.1"
+    val scala212Version = "2.12.19"
+    val scala213Version = "2.13.14"
+    val scala3Version   = "3.3.3"
 
     val scalaCollectionCompatVersion = "2.11.0"
 
@@ -40,7 +40,7 @@ object Dependencies {
 
   object fasterxml {
 
-    val jacksonModuleScala = "com.fasterxml.jackson.module" %% "jackson-module-scala" % "2.17.0"
+    val jacksonModuleScala = "com.fasterxml.jackson.module" %% "jackson-module-scala" % "2.17.2"
 
   }
 
@@ -75,7 +75,7 @@ object Dependencies {
   }
 
   object javaDevJnv {
-    val jna = "net.java.dev.jna" % "jna" % "5.14.0"
+    val jna = "net.java.dev.jna" % "jna" % "5.15.0"
   }
 
   object scalaLangModules {
