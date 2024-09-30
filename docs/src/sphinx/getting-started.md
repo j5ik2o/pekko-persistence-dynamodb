@@ -15,8 +15,8 @@ val version = "..."
 val awsClientVersion = "v2" // or "v1"
 
 libraryDependencies += Seq(
-  "com.github.j5ik2o" %% s"pekko-persistence-dynamodb-journal-$awsClientVersion" % version,
-  "com.github.j5ik2o" %% s"pekko-persistence-dynamodb-snapshot-$awsClientVersion" % version
+  "io.github.j5ik2o" %% s"pekko-persistence-dynamodb-journal-$awsClientVersion" % version,
+  "io.github.j5ik2o" %% s"pekko-persistence-dynamodb-snapshot-$awsClientVersion" % version
 )
 ```
 
