@@ -1,7 +1,10 @@
 import Dependencies._
 import Dependencies.Versions._
+import xerial.sbt.Sonatype.sonatypeCentralHost
 
-ThisBuild / scalafixScalaBinaryVersion := CrossVersion.binaryScalaVersion(scalaVersion.value)
+ThisBuild / publishTo := sonatypePublishToBundle.value
+ThisBuild / sonatypeCredentialHost := sonatypeCentralHost
+ThisBuild / scalaBinaryVersion := CrossVersion.binaryScalaVersion(scalaVersion.value)
 
 def crossScalacOptions(scalaVersion: String): Seq[String] =
   CrossVersion.partialVersion(scalaVersion) match {
@@ -78,7 +81,8 @@ lazy val baseSettings = Seq(
     }
   },
   envVars := Map(
-    "AWS_REGION" -> "ap-northeast-1"
+    "AWS_REGION"                                   -> "ap-northeast-1",
+    "AWS_JAVA_V1_DISABLE_DEPRECATION_ANNOUNCEMENT" -> "true"
   )
 )
 
@@ -343,14 +347,14 @@ lazy val example = (project in file("example"))
     `state-v2`
   )
 
-lazy val docs = (project in file("docs"))
-  .enablePlugins(SphinxPlugin, SiteScaladocPlugin, GhpagesPlugin, PreprocessPlugin)
-  .settings(baseSettings)
-  .settings(
-    name := "documents",
-    git.remoteRepo := "git@github.com:j5ik2o/pekko-persistence-dynamodb.git",
-    ghpagesNoJekyll := true
-  )
+//lazy val docs = (project in file("docs"))
+//  .enablePlugins(SphinxPlugin, SiteScaladocPlugin, GhpagesPlugin, PreprocessPlugin)
+//  .settings(baseSettings)
+//  .settings(
+//    name := "documents",
+//    git.remoteRepo := "git@github.com:j5ik2o/pekko-persistence-dynamodb.git",
+//    ghpagesNoJekyll := true
+//  )
 
 lazy val root = (project in file("."))
   .settings(baseSettings)
@@ -359,7 +363,6 @@ lazy val root = (project in file("."))
     publish / skip := true
   )
   .aggregate(
-    docs,
     test,
     base,
     `base-v1`,
