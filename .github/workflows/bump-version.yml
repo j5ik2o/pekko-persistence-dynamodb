@@ -2,10 +2,11 @@ name: Bump Version
 on:
   workflow_dispatch:
     inputs:
-      force:
-        description: 'force release'
-        required: false
-        default: '0'
+      force_bump:
+        description: 'Force version bump'
+        required: true
+        default: 'false'
+        type: boolean        
   schedule:
     - cron: '0 0 * * *'
 jobs:
@@ -35,7 +36,7 @@ jobs:
           --grep='^revert:' \
           --grep='^chore:' | awk 'END{print NR}')
         echo "steps.changes.outputs.count = $COUNT"
-        if [[ "${{ inputs.force }}" = "1" ]]; then
+        if [[ "${{ inputs.force_bump }}" == "true" ]]; then
           echo "count=1" >> $GITHUB_OUTPUT
         else
           echo "count=$COUNT" >> $GITHUB_OUTPUT
