@@ -23,4 +23,4 @@ jobs:
         distribution: 'temurin'
         java-version: '11'
         cache: 'sbt'
-    - run: sbt --debug -v -Dsun.net.client.defaultReadTimeout=60000 ci-release
+    - run: sbt -debug -Dsbt.log.noformat=true -Dsun.net.client.defaultReadTimeout=60000 ci-release
