@@ -10,6 +10,10 @@ jobs:
       JAVA_OPTS: -Xms2048M -Xmx2048M -Xss6M -XX:ReservedCodeCacheSize=256M -Dfile.encoding=UTF-8
       JVM_OPTS:  -Xms2048M -Xmx2048M -Xss6M -XX:ReservedCodeCacheSize=256M -Dfile.encoding=UTF-8
       AWS_JAVA_V1_DISABLE_DEPRECATION_ANNOUNCEMENT: true
+      PGP_PASSPHRASE: ${{ secrets.PGP_PASSPHRASE }}
+      PGP_SECRET: ${{ secrets.PGP_SECRET }}
+      SONATYPE_PASSWORD: ${{ secrets.SONATYPE_PASSWORD }}
+      SONATYPE_USERNAME: ${{ secrets.SONATYPE_USERNAME }}
     steps:
     - uses: actions/checkout@v4
       with:
@@ -19,9 +23,4 @@ jobs:
         distribution: 'temurin'
         java-version: '11'
         cache: 'sbt'
-    - run: sbt -v -Dsun.net.client.defaultReadTimeout=60000 ci-release
-      env:
-        PGP_PASSPHRASE: ${{ secrets.PGP_PASSPHRASE }}
-        PGP_SECRET: ${{ secrets.PGP_SECRET }}
-        SONATYPE_PASSWORD: ${{ secrets.SONATYPE_PASSWORD }}
-        SONATYPE_USERNAME: ${{ secrets.SONATYPE_USERNAME }}
+    - run: sbt --debug -v -Dsun.net.client.defaultReadTimeout=60000 ci-release
