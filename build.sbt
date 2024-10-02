@@ -345,15 +345,6 @@ lazy val example = (project in file("example"))
     `state-v2`
   )
 
-//lazy val docs = (project in file("docs"))
-//  .enablePlugins(SphinxPlugin, SiteScaladocPlugin, GhpagesPlugin, PreprocessPlugin)
-//  .settings(baseSettings)
-//  .settings(
-//    name := "documents",
-//    git.remoteRepo := "git@github.com:j5ik2o/pekko-persistence-dynamodb.git",
-//    ghpagesNoJekyll := true
-//  )
-
 lazy val root = (project in file("."))
   .settings(baseSettings)
   .settings(
