@@ -11,7 +11,7 @@ object Dependencies {
 
     val pekkoVersion = "1.0.1"
 
-    val logbackVersion      = "1.5.8"
+    val logbackVersion      = "1.5.9"
     val slf4jVersion        = "1.7.36"
     val ficusVersion        = "1.5.2"
     val awsSdkV1Version     = "1.12.773"
