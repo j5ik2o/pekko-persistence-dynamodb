@@ -8,6 +8,7 @@
 
 `j5ik2o/pekko-persistence-dynamodb` is an `pekko-persistence` plugin for persist `pekko-actor` to AWS DynamoDB. 
 
+
 Forked from [j5ik2o/akka-persistence-dynamodb](https://github.com/j5ik2o/akka-persistence-dynamodb).
 
 The plugin features the following.

@@ -7,16 +7,16 @@ object Dependencies {
     val scala213Version = "2.13.15"
     val scala3Version   = "3.3.4"
 
-    val scalaCollectionCompatVersion = "2.12.0"
+    val scalaCollectionCompatVersion = "2.13.0"
 
     val pekkoVersion = "1.1.1"
 
-    val logbackVersion      = "1.5.16"
+    val logbackVersion      = "1.5.18"
     val slf4jVersion        = "1.7.36"
     val ficusVersion        = "1.5.2"
-    val awsSdkV1Version     = "1.12.780"
+    val awsSdkV1Version     = "1.12.782"
     val awsSdkV1DaxVersion  = "1.0.230341.0"
-    val awsSdkV2Version     = "2.29.46"
+    val awsSdkV2Version     = "2.31.24"
     val reactiveAwsDynamoDB = "1.2.6"
 
     val scalaTest32Version      = "3.2.16"
@@ -40,7 +40,7 @@ object Dependencies {
 
   object fasterxml {
 
-    val jacksonModuleScala = "com.fasterxml.jackson.module" %% "jackson-module-scala" % "2.18.2"
+    val jacksonModuleScala = "com.fasterxml.jackson.module" %% "jackson-module-scala" % "2.18.3"
 
   }
 
@@ -75,7 +75,7 @@ object Dependencies {
   }
 
   object javaDevJnv {
-    val jna = "net.java.dev.jna" % "jna" % "5.16.0"
+    val jna = "net.java.dev.jna" % "jna" % "5.17.0"
   }
 
   object scalaLangModules {
