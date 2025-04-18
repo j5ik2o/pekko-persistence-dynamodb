@@ -4,7 +4,7 @@ import Dependencies.Versions._
 ThisBuild / publishMavenStyle := true
 ThisBuild / publishTo := Some(
   "GitHub Package Registry" at
-  "https://maven.pkg.github.com/j5ik2o/pekko-persistence-effector"
+  "https://maven.pkg.github.com/j5ik2o/pekko-persistence-dynamodb"
 )
 ThisBuild / credentials += Credentials(
   "GitHub Package Registry",
