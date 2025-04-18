@@ -1,18 +1,6 @@
 import Dependencies._
 import Dependencies.Versions._
 
-ThisBuild / publishMavenStyle := true
-ThisBuild / publishTo := Some(
-  "GitHub Package Registry" at
-  "https://maven.pkg.github.com/j5ik2o/pekko-persistence-dynamodb"
-)
-ThisBuild / credentials += Credentials(
-  "GitHub Package Registry",
-  "maven.pkg.github.com",
-  sys.env.getOrElse("GITHUB_ACTOR", ""),
-  sys.env.getOrElse("GITHUB_TOKEN", "")
-)
-
 ThisBuild / scalaBinaryVersion := CrossVersion.binaryScalaVersion(scalaVersion.value)
 
 def crossScalacOptions(scalaVersion: String): Seq[String] =
@@ -32,8 +20,8 @@ def crossScalacOptions(scalaVersion: String): Seq[String] =
   }
 
 lazy val baseSettings = Seq(
-  organization := "io.github.j5ik2o",
-  organizationName := "io.github.j5ik2o",
+  organization := "com.github.j5ik2o",
+  organizationName := "com.github.j5ik2o",
   homepage := Some(url("https://github.com/j5ik2o/pekko-persistence-dynamodb")),
   licenses := List("Apache-2.0" -> url("https://www.apache.org/licenses/LICENSE-2.0")),
   developers := List(
@@ -90,6 +78,17 @@ lazy val baseSettings = Seq(
   envVars := Map(
     "AWS_REGION"                                   -> "ap-northeast-1",
     "AWS_JAVA_V1_DISABLE_DEPRECATION_ANNOUNCEMENT" -> "true"
+  ),
+  publishMavenStyle := true,
+  publishTo := Some(
+    "GitHub Package Registry" at
+    "https://maven.pkg.github.com/j5ik2o/pekko-persistence-dynamodb"
+  ),
+  credentials += Credentials(
+    "GitHub Package Registry",
+    "maven.pkg.github.com",
+    sys.env.getOrElse("GITHUB_ACTOR", ""),
+    sys.env.getOrElse("GITHUB_TOKEN", "")
   )
 )
 
