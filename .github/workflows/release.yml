@@ -1,32 +1,54 @@
-name: Release
+name: release
 on:
   push:
-    tags:
-      - v[0-9]+.[0-9]+.[0-9]+
+    tags: [ 'v*' ]
+    branches: [ main ]
 jobs:
   release:
     runs-on: ubuntu-latest
     env:
-      JAVA_OPTS: -Xms2048M -Xmx2048M -Xss6M -XX:ReservedCodeCacheSize=256M -Dfile.encoding=UTF-8
-      JVM_OPTS:  -Xms2048M -Xmx2048M -Xss6M -XX:ReservedCodeCacheSize=256M -Dfile.encoding=UTF-8
-      AWS_JAVA_V1_DISABLE_DEPRECATION_ANNOUNCEMENT: true
-      GITHUB_ACTOR: j5ik2o
-      GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+      SONATYPE_USERNAME: ${{ secrets.SONATYPE_USERNAME }}
+      SONATYPE_PASSWORD: ${{ secrets.SONATYPE_PASSWORD }}
+      PGP_PASSPHRASE: ${{ secrets.PGP_PASSPHRASE }}
     steps:
-    - uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-    - uses: actions/setup-java@v4
-      with:
-        distribution: 'temurin'
-        java-version: '11'
-        cache: 'sbt'
-    - uses: sbt/setup-sbt@v1
-    - name: publish
-      run: |
-        VERSION=${GITHUB_REF#refs/tags/}
-        VERSION=${VERSION#v}
-        echo "Publishing version=$VERSION"
-
-        sbt -v -Dsbt.log.noformat=true \
-          "set ThisBuild / version := \"${VERSION}\"; +publish"
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-java@v3
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: sbt
+      - uses: sbt/setup-sbt@v1
+      - name: Configure Sonatype credentials
+        run: |
+          mkdir -p ~/.sbt/1.0
+          cat > ~/.sbt/1.0/sonatype_credentials <<EOF
+          realm=Sonatype Nexus Repository Manager
+          host=central.sonatype.com
+          user=$SONATYPE_USERNAME
+          password=$SONATYPE_PASSWORD
+          EOF
+      - name: Import GPG key
+        run: |
+          echo "${{ secrets.PGP_SECRET }}" | base64 -d | gpg --batch --import
+      - name: Publish release bundle
+        if: startsWith(github.ref,'refs/tags/v')
+        run: |
+          sbt \
+            'set every publishTo := { val d = baseDirectory.value / "central-bundle"; Some("bundle" at s"file://${d.getAbsolutePath}") }' \
+            +publishSigned
+          PROJECT=$(basename "$GITHUB_REPOSITORY")
+          VERSION=${GITHUB_REF_NAME##v}
+          DATE_TIME=$(date +%Y%m%d-%H%M%S)
+          ZIP_FILE="${PROJECT}-v${VERSION}-${DATE_TIME}.zip"
+          (cd central-bundle && zip -rq ../"$ZIP_FILE" .)
+          curl -sf \
+            -u "$SONATYPE_USERNAME:$SONATYPE_PASSWORD" \
+            -F bundle=@"$ZIP_FILE" \
+            "https://central.sonatype.com/api/v1/publisher/upload?publishingType=AUTOMATIC"
+      - name: Publish SNAPSHOT
+        if: github.ref == 'refs/heads/main'
+        run: |
+          sbt \
+            'set every publishTo := Some("central-snapshots" at "https://central.sonatype.com/repository/maven-snapshots/")' \
+            +publishSigned

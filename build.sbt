@@ -20,8 +20,8 @@ def crossScalacOptions(scalaVersion: String): Seq[String] =
   }
 
 lazy val baseSettings = Seq(
-  organization := "com.github.j5ik2o",
-  organizationName := "com.github.j5ik2o",
+  organization := "io.github.j5ik2o",
+  organizationName := "io.github.j5ik2o",
   homepage := Some(url("https://github.com/j5ik2o/pekko-persistence-dynamodb")),
   licenses := List("Apache-2.0" -> url("https://www.apache.org/licenses/LICENSE-2.0")),
   developers := List(
@@ -78,19 +78,14 @@ lazy val baseSettings = Seq(
   envVars := Map(
     "AWS_REGION"                                   -> "ap-northeast-1",
     "AWS_JAVA_V1_DISABLE_DEPRECATION_ANNOUNCEMENT" -> "true"
-  ),
-  publishMavenStyle := true,
-  publishTo := Some(
-    "GitHub Package Registry" at
-    "https://maven.pkg.github.com/j5ik2o/pekko-persistence-dynamodb"
-  ),
-  credentials += Credentials(
-    "GitHub Package Registry",
-    "maven.pkg.github.com",
-    sys.env.getOrElse("GITHUB_ACTOR", ""),
-    sys.env.getOrElse("GITHUB_TOKEN", "")
   )
 )
+
+ThisBuild / dynverSonatypeSnapshots := true
+ThisBuild / dynverSeparator := "-"
+ThisBuild / publishMavenStyle := true
+ThisBuild / pomIncludeRepository := (_ => false)
+ThisBuild / credentials += Credentials(Path.userHome / ".sbt" / "1.0" / "sonatype_credentials")
 
 lazy val test = (project in file("test"))
   .settings(baseSettings)
@@ -338,8 +333,7 @@ lazy val example = (project in file("example"))
       pekko.persistenceTyped(pekkoVersion),
       pekko.serializationJackson(pekkoVersion),
       scalatest.scalatest(scalaTest32Version) % Test,
-      "com.github.j5ik2o"                    %% "docker-controller-scala-scalatest"      % "1.15.34",
-      "com.github.j5ik2o"                    %% "docker-controller-scala-dynamodb-local" % "1.15.34"
+      "com.github.j5ik2o"                    %% "docker-controller-scala-scalatest" % "1.15.34"
     )
   )
   .dependsOn(
