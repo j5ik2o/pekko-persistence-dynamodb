@@ -1,99 +1,86 @@
 import Dependencies._
 import Dependencies.Versions._
 
-ThisBuild / scalaBinaryVersion := CrossVersion.binaryScalaVersion(scalaVersion.value)
-
-def crossScalacOptions(scalaVersion: String): Seq[String] =
-  CrossVersion.partialVersion(scalaVersion) match {
-    case Some((3L, _)) =>
+ThisBuild / organization := "io.github.j5ik2o"
+ThisBuild / organizationName := "io.github.j5ik2o"
+ThisBuild / homepage := Some(url("https://github.com/j5ik2o/pekko-persistence-dynamodb"))
+ThisBuild / licenses := List("Apache-2.0" -> url("https://www.apache.org/licenses/LICENSE-2.0"))
+ThisBuild / developers := List(
+  Developer(
+    id = "j5ik2o",
+    name = "Junichi Kato",
+    email = "j5ik2o@gmail.com",
+    url = url("https://blog.j5ik2o.me")
+  )
+)
+ThisBuild / scmInfo := Some(
+  ScmInfo(
+    url("https://github.com/j5ik2o/pekko-persistence-dynamodb"),
+    "scm:git@github.com:j5ik2o/pekko-persistence-dynamodb.git"
+  )
+)
+ThisBuild / scalaVersion := Versions.scala213Version
+ThisBuild / crossScalaVersions := Seq(
+  Versions.scala212Version,
+  Versions.scala213Version,
+  Versions.scala3Version
+)
+val commonFlags = Seq(
+  "-feature",
+  "-deprecation",
+  "-unchecked",
+  "-encoding",
+  "UTF-8"
+)
+def extraFlags(scalaVer: String): Seq[String] =
+  CrossVersion.partialVersion(scalaVer) match {
+    case Some((3, _)) =>
       Seq(
         "-source:3.0-migration",
-        "-Xignore-scala2-macros"
+        "-Xignore-scala2-macros",
+        "-Xtarget:8",
+        "-Wunused:all"
       )
-    case Some((2L, scalaMajor)) if scalaMajor >= 12 =>
+    case Some((2, _)) =>
       Seq(
+        "-language:_",
         "-Ydelambdafy:method",
         "-target:jvm-1.8",
         "-Yrangepos",
         "-Ywarn-unused"
       )
+    case _ => Nil
   }
-
-lazy val baseSettings = Seq(
-  organization := "com.github.j5ik2o",
-  organizationName := "com.github.j5ik2o",
-  homepage := Some(url("https://github.com/j5ik2o/pekko-persistence-dynamodb")),
-  licenses := List("Apache-2.0" -> url("https://www.apache.org/licenses/LICENSE-2.0")),
-  developers := List(
-    Developer(
-      id = "j5ik2o",
-      name = "Junichi Kato",
-      email = "j5ik2o@gmail.com",
-      url = url("https://blog.j5ik2o.me")
-    )
-  ),
-  scmInfo := Some(
-    ScmInfo(
-      url("https://github.com/j5ik2o/pekko-persistence-dynamodb"),
-      "scm:git@github.com:j5ik2o/pekko-persistence-dynamodb.git"
-    )
-  ),
-  scalaVersion := Versions.scala213Version,
-  crossScalaVersions := Seq(
-    Versions.scala212Version,
-    Versions.scala213Version,
-    Versions.scala3Version
-  ),
-  scalacOptions ++= (
-    Seq(
-      "-feature",
-      "-deprecation",
-      "-unchecked",
-      "-encoding",
-      "UTF-8",
-      "-language:_",
-      "-Ydelambdafy:method",
-      "-target:jvm-1.8",
-      "-Yrangepos",
-      "-Ywarn-unused"
-    ) ++ crossScalacOptions(scalaVersion.value)
-  ),
-  resolvers ++= Seq(
-    "Seasar Repository" at "https://maven.seasar.org/maven2/",
-    "DynamoDB Local Repository" at "https://s3-us-west-2.amazonaws.com/dynamodb-local/release"
-  ),
-  semanticdbEnabled := true,
-  semanticdbVersion := scalafixSemanticdb.revision,
-  Test / publishArtifact := false,
-  Test / fork := true,
-  Test / parallelExecution := false,
-  Compile / doc / sources := {
-    val old = (Compile / doc / sources).value
-    if (scalaVersion.value == scala3Version) {
-      Nil
-    } else {
-      old
-    }
-  },
-  envVars := Map(
-    "AWS_REGION"                                   -> "ap-northeast-1",
-    "AWS_JAVA_V1_DISABLE_DEPRECATION_ANNOUNCEMENT" -> "true"
-  ),
-  publishMavenStyle := true,
-  publishTo := Some(
-    "GitHub Package Registry" at
-    "https://maven.pkg.github.com/j5ik2o/pekko-persistence-dynamodb"
-  ),
-  credentials += Credentials(
-    "GitHub Package Registry",
-    "maven.pkg.github.com",
-    sys.env.getOrElse("GITHUB_ACTOR", ""),
-    sys.env.getOrElse("GITHUB_TOKEN", "")
-  )
+ThisBuild / scalacOptions ++= commonFlags ++ extraFlags(scalaVersion.value)
+ThisBuild / resolvers ++= Seq(
+  "Seasar Repository" at "https://maven.seasar.org/maven2/",
+  "DynamoDB Local Repository" at "https://s3-us-west-2.amazonaws.com/dynamodb-local/release"
 )
+ThisBuild / semanticdbEnabled := true
+ThisBuild / semanticdbVersion := scalafixSemanticdb.revision
+ThisBuild / Test / publishArtifact := false
+ThisBuild / Test / fork := true
+ThisBuild / Test / parallelExecution := false
+ThisBuild / Compile / doc / sources := {
+  val old = (Compile / doc / sources).value
+  if (scalaVersion.value == scala3Version) {
+    Nil
+  } else {
+    old
+  }
+}
+ThisBuild / envVars := Map(
+  "AWS_REGION"                                   -> "ap-northeast-1",
+  "AWS_JAVA_V1_DISABLE_DEPRECATION_ANNOUNCEMENT" -> "true"
+)
+ThisBuild / scalaBinaryVersion := CrossVersion.binaryScalaVersion(scalaVersion.value)
+ThisBuild / dynverSonatypeSnapshots := true
+ThisBuild / dynverSeparator := "-"
+ThisBuild / publishMavenStyle := true
+ThisBuild / pomIncludeRepository := (_ => false)
+ThisBuild / credentials += Credentials(Path.userHome / ".sbt" / "1.0" / "sonatype_credentials")
 
 lazy val test = (project in file("test"))
-  .settings(baseSettings)
   .settings(
     name := "pekko-persistence-dynamodb-test",
     libraryDependencies ++= Seq(
@@ -116,7 +103,6 @@ lazy val test = (project in file("test"))
   )
 
 lazy val `base` = (project in file("base/base"))
-  .settings(baseSettings)
   .settings(
     name := "pekko-persistence-dynamodb-base",
     libraryDependencies ++= Seq(
@@ -144,7 +130,6 @@ lazy val `base` = (project in file("base/base"))
   ).dependsOn(test % "test->compile")
 
 lazy val `base-v1` = (project in file("base/base-v1"))
-  .settings(baseSettings)
   .settings(
     name := "pekko-persistence-dynamodb-base-v1",
     libraryDependencies ++= Seq(
@@ -157,7 +142,6 @@ lazy val `base-v1` = (project in file("base/base-v1"))
   ).dependsOn(base, test % "test->compile")
 
 lazy val `base-v2` = (project in file("base/base-v2"))
-  .settings(baseSettings)
   .settings(
     name := "pekko-persistence-dynamodb-base-v2",
     libraryDependencies ++= Seq(
@@ -170,7 +154,6 @@ lazy val `base-v2` = (project in file("base/base-v2"))
   ).dependsOn(base, test % "test->compile")
 
 lazy val `journal-base` = (project in file("journal/journal-base"))
-  .settings(baseSettings)
   .settings(
     name := "pekko-persistence-dynamodb-journal-base",
     libraryDependencies ++= Seq(
@@ -185,7 +168,6 @@ lazy val `journal-base` = (project in file("journal/journal-base"))
   ).dependsOn(base)
 
 lazy val `journal-v1` = (project in file("journal/journal-v1"))
-  .settings(baseSettings)
   .settings(
     name := "pekko-persistence-dynamodb-journal-v1",
     libraryDependencies ++= Seq(
@@ -200,7 +182,6 @@ lazy val `journal-v1` = (project in file("journal/journal-v1"))
   ).dependsOn(`journal-base`, base % "test->test", `base-v1`, `snapshot-base` % "test->compile")
 
 lazy val `journal-v2` = (project in file("journal/journal-v2"))
-  .settings(baseSettings)
   .settings(
     name := "pekko-persistence-dynamodb-journal-v2",
     libraryDependencies ++= Seq(
@@ -215,7 +196,6 @@ lazy val `journal-v2` = (project in file("journal/journal-v2"))
   ).dependsOn(`journal-base`, base % "test->test", `base-v2`, `snapshot-base` % "test->compile")
 
 lazy val `snapshot-base` = (project in file("snapshot/snapshot-base"))
-  .settings(baseSettings)
   .settings(
     name := "pekko-persistence-dynamodb-snapshot-base",
     libraryDependencies ++= Seq(
@@ -224,7 +204,6 @@ lazy val `snapshot-base` = (project in file("snapshot/snapshot-base"))
   ).dependsOn(base)
 
 lazy val `snapshot-v1` = (project in file("snapshot/snapshot-v1"))
-  .settings(baseSettings)
   .settings(
     name := "pekko-persistence-dynamodb-snapshot-v1",
     libraryDependencies ++= Seq(
@@ -239,7 +218,6 @@ lazy val `snapshot-v1` = (project in file("snapshot/snapshot-v1"))
   ).dependsOn(`snapshot-base`, base % "test->test", `base-v1`)
 
 lazy val `snapshot-v2` = (project in file("snapshot/snapshot-v2"))
-  .settings(baseSettings)
   .settings(
     name := "pekko-persistence-dynamodb-snapshot-v2",
     libraryDependencies ++= Seq(
@@ -254,7 +232,6 @@ lazy val `snapshot-v2` = (project in file("snapshot/snapshot-v2"))
   ).dependsOn(`snapshot-base`, base % "test->test", `base-v2`)
 
 lazy val `state-base` = (project in file("state/state-base"))
-  .settings(baseSettings)
   .settings(
     name := "pekko-persistence-dynamodb-state-base",
     libraryDependencies ++= Seq(
@@ -269,7 +246,6 @@ lazy val `state-base` = (project in file("state/state-base"))
   ).dependsOn(base)
 
 lazy val `state-v1` = (project in file("state/state-v1"))
-  .settings(baseSettings)
   .settings(
     name := "pekko-persistence-dynamodb-state-v1",
     libraryDependencies ++= Seq(
@@ -289,7 +265,6 @@ lazy val `state-v1` = (project in file("state/state-v1"))
   )
 
 lazy val `state-v2` = (project in file("state/state-v2"))
-  .settings(baseSettings)
   .settings(
     name := "pekko-persistence-dynamodb-state-v2",
     libraryDependencies ++= Seq(
@@ -309,7 +284,6 @@ lazy val `state-v2` = (project in file("state/state-v2"))
   )
 
 lazy val benchmark = (project in file("benchmark"))
-  .settings(baseSettings)
   .settings(
     name := "pekko-persistence-dynamodb-benchmark",
     publish / skip := true,
@@ -325,7 +299,6 @@ lazy val benchmark = (project in file("benchmark"))
   .dependsOn(test, `journal-v1`, `journal-v2`, `snapshot-v1`, `snapshot-v2`)
 
 lazy val example = (project in file("example"))
-  .settings(baseSettings)
   .settings(
     name := "pekko-persistence-dynamodb-example",
     publish / skip := true,
@@ -338,8 +311,7 @@ lazy val example = (project in file("example"))
       pekko.persistenceTyped(pekkoVersion),
       pekko.serializationJackson(pekkoVersion),
       scalatest.scalatest(scalaTest32Version) % Test,
-      "com.github.j5ik2o"                    %% "docker-controller-scala-scalatest"      % "1.15.34",
-      "com.github.j5ik2o"                    %% "docker-controller-scala-dynamodb-local" % "1.15.34"
+      "com.github.j5ik2o"                    %% "docker-controller-scala-scalatest" % "1.15.34"
     )
   )
   .dependsOn(
@@ -354,7 +326,6 @@ lazy val example = (project in file("example"))
   )
 
 lazy val root = (project in file("."))
-  .settings(baseSettings)
   .settings(
     name := "pekko-persistence-dynamodb-root",
     publish / skip := true
