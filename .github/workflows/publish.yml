@@ -1,4 +1,4 @@
-name: release
+name: publish
 on:
   push:
     tags: [ 'v*' ]
@@ -31,7 +31,7 @@ jobs:
       - name: Import GPG key
         run: |
           echo "${{ secrets.PGP_SECRET }}" | base64 -d | gpg --batch --import
-      - name: Publish release bundle
+      - name: Publish Release JAR
         if: startsWith(github.ref,'refs/tags/v')
         run: |
           sbt \
@@ -42,11 +42,12 @@ jobs:
           DATE_TIME=$(date +%Y%m%d-%H%M%S)
           ZIP_FILE="${PROJECT}-v${VERSION}-${DATE_TIME}.zip"
           (cd central-bundle && zip -rq ../"$ZIP_FILE" .)
-          curl -sf \
+          curl --fail-with-body -sS \
             -u "$SONATYPE_USERNAME:$SONATYPE_PASSWORD" \
             -F bundle=@"$ZIP_FILE" \
+            -w "\nHTTP %{http_code}\n" \
             "https://central.sonatype.com/api/v1/publisher/upload?publishingType=AUTOMATIC"
-      - name: Publish SNAPSHOT
+      - name: Publish Snapshot JAR
         if: github.ref == 'refs/heads/main'
         run: |
           sbt \
