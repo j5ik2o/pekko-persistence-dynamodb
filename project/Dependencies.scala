@@ -79,7 +79,7 @@ object Dependencies {
   }
 
   object scalaLangModules {
-    val scalaCollectionCompat = "org.scala-lang.modules" %% "scala-collection-compat" % scalaCollectionCompatVersion,
+    val scalaCollectionCompat = "org.scala-lang.modules" %% "scala-collection-compat" % scalaCollectionCompatVersion
   }
 
 }
