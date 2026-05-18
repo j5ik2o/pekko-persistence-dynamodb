@@ -199,7 +199,8 @@ lazy val `snapshot-base` = (project in file("snapshot/snapshot-base"))
   .settings(
     name := "pekko-persistence-dynamodb-snapshot-base",
     libraryDependencies ++= Seq(
-      pekko.persistence(pekkoVersion)
+      pekko.persistence(pekkoVersion),
+      scalatest.scalatest(scalaTest32Version) % Test
     )
   ).dependsOn(base)
 

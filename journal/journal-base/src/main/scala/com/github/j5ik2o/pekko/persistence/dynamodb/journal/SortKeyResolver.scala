@@ -54,6 +54,21 @@ object SortKeyResolverProvider {
 
 object SortKeyResolver {
 
+  private[journal] def persistenceIdWithSeqNrSKey(
+      persistenceId: PersistenceId,
+      sequenceNumber: SequenceNumber,
+      separator: String
+  ): String = {
+    val bodyOpt = new PersistenceIdOps(persistenceId, separator).body
+    val seq     = sequenceNumber.value
+    bodyOpt match {
+      case Some(pid) =>
+        "%s-%019d".format(pid, seq)
+      case None =>
+        "%s-%019d".format(persistenceId.asString, seq)
+    }
+  }
+
   final class SeqNr extends SortKeyResolver {
 
     // ${sequenceNumber}
@@ -71,17 +86,9 @@ object SortKeyResolver {
       pluginContext.pluginConfig.sourceConfig
         .getAs[String]("persistence-id-separator").getOrElse(PersistenceId.Separator)
 
-    // ${persistenceId.body}-${sequenceNumber}
+    // ${persistenceId.bodyOrFullPersistenceId}-${sequenceNumber}
     override def resolve(persistenceId: PersistenceId, sequenceNumber: SequenceNumber): SortKey = {
-      val bodyOpt = persistenceId.body
-      val seq     = sequenceNumber.value
-      val skey = bodyOpt match {
-        case Some(pid) =>
-          "%s-%019d".format(pid, seq)
-        case None => // fallback
-          "%019d".format(seq)
-      }
-      SortKey(skey)
+      SortKey(persistenceIdWithSeqNrSKey(persistenceId, sequenceNumber, separator))
     }
 
   }

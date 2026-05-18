@@ -178,6 +178,7 @@ The following two implementations are available for built-in use.
   - `skey = ${persistenceId.body}-${sequenceNumber}`
   - e.g. `875e6ce0425e4d2b8203f3b44b9b531a`, `persistenceId.body` is `875e6ce0425e4d2b8203f3b44b9b531a`.
   - Use `persistenceId.body` as the prefix since `shard-count` may cause multiple `persistenceId`s events to be stored in the same shard.
+  - If the `persistenceId` does not contain the separator, the full `persistenceId` is used as the prefix: `${persistenceId}-${sequenceNumber}`.
 
 
 #### Configure your own implementation
@@ -230,6 +231,11 @@ The following two implementations are available for built-in use.
   - `skey = ${persistenceId.body}-${sequenceNumber}`
   - e.g. `875e6ce0425e4d2b8203f3b44b9b531a`, `persistenceId.body` is `875e6ce0425e4d2b8203f3b44b9b531a`.
   - Use `persistenceId.body` as the prefix since `shard-count` may cause multiple `persistenceId`s events to be stored in the same shard.
+  - If the `persistenceId` does not contain the separator, the full `persistenceId` is used as the prefix: `${persistenceId}-${sequenceNumber}`.
+
+```{admonition} Compatibility note
+Older versions stored `PersistenceIdWithSeqNr` sort keys as only `${sequenceNumber}` when the `persistenceId` did not contain the separator. New writes use `${persistenceId}-${sequenceNumber}` to avoid overwriting records that share the same `(pkey, sequenceNumber)`. Existing rows that were written with the old sort-key format can still be read through the `persistence-id` / `sequence-nr` secondary index, but delete and update operations calculate the table primary key from the current resolver. If you already have rows with the old format, migrate those rows to the new sort-key format before relying on delete or update for separator-less persistence ids.
+```
 
 #### Configure your own implementation
     
@@ -534,4 +540,3 @@ j5ik2o.dynamo-db-????? {
   }
 }
 ```
-
