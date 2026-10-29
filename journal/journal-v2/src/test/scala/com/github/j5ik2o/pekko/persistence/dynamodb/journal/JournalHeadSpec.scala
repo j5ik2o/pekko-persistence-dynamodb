@@ -16,6 +16,7 @@
 package com.github.j5ik2o.pekko.persistence.dynamodb.journal
 
 import org.apache.pekko.actor.{ ActorRef, ActorSystem, Props }
+import org.apache.pekko.persistence.journal.Tagged
 import org.apache.pekko.persistence.{ PersistentActor, PersistentRepr }
 import org.apache.pekko.serialization.SerializationExtension
 import org.apache.pekko.stream.{ Materializer, SystemMaterializer }
@@ -63,6 +64,9 @@ object JournalHeadSpec {
   final case class Persist(payload: String)
   final case class PersistAllPayloads(payloads: immutable.Seq[String])
   final case class PersistTwice(first: String, second: String)
+  final case class PersistRejectedThenPersist(overLimitCount: Int, after: String)
+  final case class PersistThenOverLimit(first: String, overLimitCount: Int)
+  final case class PersistTaggedAll(count: Int, tagLength: Int)
   final case class DeleteTo(sequenceNr: Long)
   final case class Persisted(payload: String)
   final case class PersistedAll(size: Int)
@@ -90,6 +94,17 @@ object JournalHeadSpec {
         // two persist calls in one command handler create two writes in one asyncWriteMessages call
         persist(first) { _ => () }
         persist(second) { p => sender() ! PersistedSecond(p) }
+      case PersistRejectedThenPersist(overLimitCount, after) =>
+        // the rejected write is the first of two writes in one asyncWriteMessages call
+        persistAll((1 to overLimitCount).map(index => s"over$index")) { _ => () }
+        persist(after) { p => sender() ! Persisted(p) }
+      case PersistThenOverLimit(first, overLimitCount) =>
+        // the first write is confirmed and the second one is rejected: a failure in the middle of a batch
+        persist(first) { _ => () }
+        persistAll((1 to overLimitCount).map(index => s"over$index")) { _ => () }
+      case PersistTaggedAll(count, tagLength) =>
+        val tag = "t" * tagLength
+        persistAll((1 to count).map(index => Tagged(s"e$index", Set(tag)))) { _ => () }
       case DeleteTo(sequenceNr) =>
         deleteMessages(sequenceNr)
       case org.apache.pekko.persistence.DeleteMessagesSuccess(_) =>
@@ -343,19 +358,47 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
       headMessages shouldBe journalMessages
     }
 
-    "reject a write whose sequence numbers have a gap and write nothing" in {
+    "accept a write whose sequence numbers have a gap" in {
       val pid = "head-gap-1"
       persistAllOk(headEnabledSystem, pid, immutable.Seq("e1", "e2", "e3"))
       headSequenceNr(pid) shouldBe Some(3L)
 
+      val dao = newWriteJournalDao(headEnabledSystem)
+      try {
+        implicit val mat: Materializer = SystemMaterializer(headEnabledSystem).materializer
+        Await.result(dao.putMessages(Seq(journalRow(headEnabledSystem, pid, 5L, "e5"))).runWith(Sink.head), 60.seconds)
+      } finally dao.dispose()
+
+      // a gap is accepted (a rejected write of the same actor leaves one), and the head moves to the written seqNr
+      journalSequenceNrs(pid) shouldBe Seq(1L, 2L, 3L, 5L)
+      headSequenceNr(pid) shouldBe Some(5L)
+    }
+
+    "reject a write whose JournalHead item is ahead" in {
+      val pid = "head-ahead-1"
+      persistAllOk(headEnabledSystem, pid, immutable.Seq("e1", "e2", "e3"))
+
+      // another writer got ahead of this one
+      val headAheadItem = new com.amazonaws.services.dynamodbv2.model.PutItemRequest()
+        .withTableName(journalHeadTableName)
+        .withItem(
+          Map(
+            "persistence-id" -> new AttributeValue().withS(pid),
+            "sequence-nr"    -> new AttributeValue().withN("10"),
+            "events"         -> new AttributeValue().withL(java.util.Collections.emptyList[AttributeValue]())
+          ).asJava
+        )
+      dynamoDBClient.putItem(headAheadItem)
+
       val dao       = newWriteJournalDao(headEnabledSystem)
-      val exception = failedWith(dao, Seq(journalRow(headEnabledSystem, pid, 5L, "e5")))
+      val exception = failedWith(dao, Seq(journalRow(headEnabledSystem, pid, 4L, "e4")))
+      dao.dispose()
 
       exception shouldBe a[JournalHeadSequenceMismatchException]
-      exception.asInstanceOf[JournalHeadSequenceMismatchException].expectedPreviousSequenceNr shouldBe 4L
-      exception.asInstanceOf[JournalHeadSequenceMismatchException].actualSequenceNr shouldBe 3L
+      exception.asInstanceOf[JournalHeadSequenceMismatchException].expectedPreviousSequenceNr shouldBe 3L
+      exception.asInstanceOf[JournalHeadSequenceMismatchException].actualSequenceNr shouldBe 10L
       journalSequenceNrs(pid) shouldBe Seq(1L, 2L, 3L)
-      headSequenceNr(pid) shouldBe Some(3L)
+      headSequenceNr(pid) shouldBe Some(10L)
     }
 
     "reject a duplicate write and write nothing" in {
@@ -385,6 +428,50 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
       journalSequenceNrs(pid) shouldBe Seq(1L, 2L)
       headSequenceNr(pid) shouldBe Some(2L)
       headItem(pid).get("events").getL.asScala.map(_.getM.get("sequence-nr").getN.toLong) shouldBe Seq(2L)
+    }
+
+    "keep the actor alive after a rejected write and accept the next write" in {
+      val pid = "head-rejected-then-persist-1"
+      persistOk(headEnabledSystem, pid, "e1")
+      headSequenceNr(pid) shouldBe Some(1L)
+
+      withActor(headEnabledSystem, pid) { (actor, probe) =>
+        actor.tell(PersistRejectedThenPersist(100, "after"), probe.ref)
+        // Pekko does not take the 100 rejected sequence numbers back, so "after" is written above the head
+        probe.fishForMessage(60.seconds, "a rejected write followed by a successful persist") {
+          case PersistRejected(_) => false
+          case Persisted(_)       => true
+        }
+      }
+
+      // a gap is left where the rejected write was, and the head moves to the write that succeeded
+      journalSequenceNrs(pid) shouldBe Seq(1L, 102L)
+      headSequenceNr(pid) shouldBe Some(102L)
+      headItem(pid).get("events").getL.asScala.map(_.getM.get("sequence-nr").getN.toLong) shouldBe Seq(102L)
+    }
+
+    "write the first write and reject the second one of the same batch" in {
+      val pid = "head-batch-partial-1"
+      withActor(headEnabledSystem, pid) { (actor, probe) =>
+        actor.tell(PersistThenOverLimit("e1", 100), probe.ref)
+        probe.expectMsgType[PersistRejected](60.seconds)
+      }
+
+      // the first write of the batch is durable, the rejected one wrote nothing
+      journalSequenceNrs(pid) shouldBe Seq(1L)
+      headSequenceNr(pid) shouldBe Some(1L)
+    }
+
+    "reject a write whose transaction would exceed 4 MB" in {
+      val pid = "head-4mb-1"
+      withActor(headEnabledSystem, pid) { (actor, probe) =>
+        // 99 events with a 43,000 character tag each: the journal rows alone exceed 4 MB, the head item stays small
+        actor.tell(PersistTaggedAll(99, 43000), probe.ref)
+        val rejected = probe.expectMsgType[PersistRejected](120.seconds)
+        rejected.cause shouldBe a[JournalHeadTransactionTooLargeException]
+      }
+      journalSequenceNrs(pid) shouldBe Seq.empty
+      headItem(pid) shouldBe None
     }
 
     "keep the JournalHead item and its stream unchanged on a soft delete" in {
@@ -417,6 +504,22 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
       journalSequenceNrs(pid) shouldBe Seq.empty
       headItem(pid) shouldBe headBefore
       headStreamRecords(pid, 1).size shouldBe 1
+    }
+
+    "keep writing above the JournalHead item after every event was hard deleted" in {
+      val pid = "head-hard-delete-write-1"
+      persistAllOk(headEnabledHardDeleteSystem, pid, immutable.Seq("e1", "e2", "e3"))
+      withActor(headEnabledHardDeleteSystem, pid) { (actor, probe) =>
+        actor.tell(DeleteTo(3L), probe.ref)
+        probe.expectMsg(60.seconds, Deleted())
+      }
+      journalSequenceNrs(pid) shouldBe Seq.empty
+      headSequenceNr(pid) shouldBe Some(3L)
+
+      // the journal is empty, but the JournalHead item is the lower bound of the highest sequence number
+      persistOk(headEnabledHardDeleteSystem, pid, "e4")
+      journalSequenceNrs(pid) shouldBe Seq(4L)
+      headSequenceNr(pid) shouldBe Some(4L)
     }
 
     "reject an invalid write as a value so that the write queue keeps working" in {
@@ -519,6 +622,7 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
         )
         dryRun.scannedPersistenceIds should be >= 2
         dryRun.updatedJournalHeads shouldBe 1
+        dryRun.raisedPersistenceIds shouldBe Seq(existingPid)
         headSequenceNr(existingPid) shouldBe Some(4L)
 
         // a second run raises the head to the last sequence number of the journal
@@ -530,6 +634,7 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
           execute = true
         )
         executed.updatedJournalHeads shouldBe 1
+        executed.raisedPersistenceIds shouldBe Seq(existingPid)
       } finally client2.close()
 
       headSequenceNr(existingPid) shouldBe Some(5L)
