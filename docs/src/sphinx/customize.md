@@ -115,6 +115,21 @@ j5ik2o.dynamo-db-state {
 }
 ```
 
+## JournalHead
+
+The journal plugin can write the journal rows and the `JournalHead` item of an aggregate in one transaction, so
+that a read model update can consume the changes per aggregate in write order. See [JournalHead](journal-head.md)
+for the table, the migration procedure and the limits.
+
+```
+j5ik2o.dynamo-db-journal {
+  head {
+    enabled = true
+    table-name = "JournalHead"
+  }
+}
+```
+
 ## Index names
 
 ### Journal
