@@ -148,5 +148,9 @@ stops the actor with `onPersistFailure`.
 
 `deleteMessagesTo` deletes journal rows only. It does not write the `JournalHead` item and does not change the
 DynamoDB Stream of the `JournalHead` table, whichever of soft delete and hard delete is configured, because a head
-that moves on a delete would break the ordering guarantee. A new write continues at the last sequence number the
-aggregate had.
+that moves on a delete would break the ordering guarantee.
+
+With soft delete (the default), the deleted rows stay in the journal, so a new write continues at the last sequence
+number the aggregate had. A hard delete that removes every event of an aggregate makes the next write start at
+sequence number `1` again, and the `JournalHead` condition rejects it. Do not remove every event of an aggregate
+that runs with `head.enabled`; keep soft delete on, or keep at least one event.
