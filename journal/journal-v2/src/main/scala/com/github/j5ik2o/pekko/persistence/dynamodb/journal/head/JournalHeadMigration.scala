@@ -23,7 +23,13 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.journal.config.{
 }
 import com.github.j5ik2o.pekko.persistence.dynamodb.utils.V2SyncClientFactory
 import org.apache.pekko.actor.ActorSystem
-import software.amazon.awssdk.services.dynamodb.model.{ AttributeValue, GetItemRequest, PutItemRequest, ScanRequest }
+import software.amazon.awssdk.services.dynamodb.model.{
+  AttributeValue,
+  GetItemRequest,
+  PutItemRequest,
+  ScanRequest,
+  UpdateItemRequest
+}
 import software.amazon.awssdk.services.dynamodb.{ DynamoDbClient => JavaDynamoDbSyncClient }
 
 import scala.collection.mutable
@@ -36,33 +42,50 @@ import scala.jdk.CollectionConverters._
   * the read model is assumed to be up to date at the moment head mode is enabled, and every later write carries its own
   * events. The journal table remains the source for rebuilding a read model from scratch.
   *
-  * The writes are conditional (`attribute_not_exists`), so the tool can be run more than once: the JournalHead items
-  * that already exist are left untouched.
+  * An existing JournalHead item is raised to the last sequence number the journal holds, but only forwards: a write
+  * that happens after the migration (for example from a node that still runs with `head.enabled = false`) leaves the
+  * head behind the journal, and running the tool again after every node runs with head mode enabled raises it again.
+  * The event list of such an item is cleared, because the head no longer describes a single write.
+  *
+  * The writes are conditional (`attribute_not_exists` for the creation and `sequence-nr < :latest` for the raise), so
+  * the tool can be run as often as needed. Nothing is written unless `execute` is true.
   */
 object JournalHeadMigration {
 
-  final case class Result(scannedPersistenceIds: Int, createdJournalHeads: Int, existingJournalHeads: Int)
+  final case class Result(
+      scannedPersistenceIds: Int,
+      createdJournalHeads: Int,
+      updatedJournalHeads: Int,
+      existingJournalHeads: Int
+  )
 
   def run(
       syncClient: JavaDynamoDbSyncClient,
       journalTableName: String,
       journalColumnsDefConfig: JournalColumnsDefConfig,
       headConfig: JournalHeadConfig,
-      dryRun: Boolean
+      execute: Boolean
   ): Result = {
     val highestSequenceNrs = scanHighestSequenceNrs(syncClient, journalTableName, journalColumnsDefConfig)
     var created            = 0
+    var updated            = 0
     var existing           = 0
     highestSequenceNrs.foreach { case (persistenceId, lastSequenceNr) =>
-      if (dryRun) {
-        if (headExists(syncClient, headConfig, persistenceId)) existing += 1 else created += 1
+      if (!execute) {
+        readHeadSequenceNr(syncClient, headConfig, persistenceId) match {
+          case None                                      => created += 1
+          case Some(current) if current < lastSequenceNr => updated += 1
+          case Some(_)                                   => existing += 1
+        }
       } else if (putJournalHeadIfAbsent(syncClient, headConfig, persistenceId, lastSequenceNr)) {
         created += 1
+      } else if (raiseJournalHeadIfBehind(syncClient, headConfig, persistenceId, lastSequenceNr)) {
+        updated += 1
       } else {
         existing += 1
       }
     }
-    Result(highestSequenceNrs.size, created, existing)
+    Result(highestSequenceNrs.size, created, updated, existing)
   }
 
   private def scanHighestSequenceNrs(
@@ -98,22 +121,63 @@ object JournalHeadMigration {
     result.toMap
   }
 
-  private def headExists(
+  private def readHeadSequenceNr(
       syncClient: JavaDynamoDbSyncClient,
       headConfig: JournalHeadConfig,
       persistenceId: String
-  ): Boolean = {
+  ): Option[Long] = {
+    val headColumnsDefConfig = headConfig.columnsDefConfig
     val request = GetItemRequest
       .builder()
       .tableName(headConfig.tableName)
       .key(
-        Map(
-          headConfig.columnsDefConfig.persistenceIdColumnName -> AttributeValue.builder().s(persistenceId).build()
-        ).asJava
+        Map(headColumnsDefConfig.persistenceIdColumnName -> AttributeValue.builder().s(persistenceId).build()).asJava
       )
       .consistentRead(true)
       .build()
-    Option(syncClient.getItem(request).item()).exists(!_.isEmpty)
+    Option(syncClient.getItem(request).item())
+      .flatMap(item => Option(item.get(headColumnsDefConfig.sequenceNrColumnName)))
+      .map(_.n().toLong)
+  }
+
+  /** Raises an existing JournalHead item to the last sequence number of the journal, if the head is behind. The event
+    * list is cleared: after the raise the head no longer describes a single write, and the events up to the raise are
+    * in the journal for a rebuild.
+    */
+  private def raiseJournalHeadIfBehind(
+      syncClient: JavaDynamoDbSyncClient,
+      headConfig: JournalHeadConfig,
+      persistenceId: String,
+      lastSequenceNr: Long
+  ): Boolean = {
+    val headColumnsDefConfig = headConfig.columnsDefConfig
+    val request = UpdateItemRequest
+      .builder()
+      .tableName(headConfig.tableName)
+      .key(
+        Map(headColumnsDefConfig.persistenceIdColumnName -> AttributeValue.builder().s(persistenceId).build()).asJava
+      )
+      .updateExpression("SET #sequenceNr = :latest, #events = :emptyEvents")
+      .conditionExpression("#sequenceNr < :latest")
+      .expressionAttributeNames(
+        Map(
+          "#sequenceNr" -> headColumnsDefConfig.sequenceNrColumnName,
+          "#events"     -> headColumnsDefConfig.eventsColumnName
+        ).asJava
+      )
+      .expressionAttributeValues(
+        Map(
+          ":latest"      -> AttributeValue.builder().n(lastSequenceNr.toString).build(),
+          ":emptyEvents" -> AttributeValue.builder().l(List.empty[AttributeValue].asJava).build()
+        ).asJava
+      )
+      .build()
+    try {
+      syncClient.updateItem(request)
+      true
+    } catch {
+      case _: software.amazon.awssdk.services.dynamodb.model.ConditionalCheckFailedException => false
+    }
   }
 
   private def putJournalHeadIfAbsent(
@@ -145,14 +209,15 @@ object JournalHeadMigration {
   }
 
   def main(args: Array[String]): Unit = {
-    val dryRun = args.contains("--dry-run")
-    val system = ActorSystem("journal-head-migration")
+    // Nothing is written unless --execute is given.
+    val execute = args.contains("--execute")
+    val system  = ActorSystem("journal-head-migration")
     try {
       val pluginConfig =
         JournalPluginConfig.fromConfig(system.settings.config.getConfig("j5ik2o.dynamo-db-journal"))
       require(
         pluginConfig.clientConfig.clientVersion == ClientVersion.V2,
-        "the JournalHead migration tool requires client-version = \"v2\""
+        "the JournalHead migration tool requires client-version v2"
       )
       val pluginContext = com.github.j5ik2o.pekko.persistence.dynamodb.journal.JournalPluginContext(
         system,
@@ -168,12 +233,13 @@ object JournalHeadMigration {
           pluginConfig.tableName,
           pluginConfig.columnsDefConfig,
           pluginConfig.headConfig,
-          dryRun
+          execute
         )
-        val prefix = if (dryRun) "[dry-run] " else ""
+        val prefix = if (execute) "" else "[dry-run] "
         println(
           s"${prefix}JournalHead migration finished: scanned ${result.scannedPersistenceIds} persistence ids," +
           s" created ${result.createdJournalHeads} JournalHead items," +
+          s" raised ${result.updatedJournalHeads} JournalHead items," +
           s" skipped ${result.existingJournalHeads} existing JournalHead items"
         )
       } finally {
