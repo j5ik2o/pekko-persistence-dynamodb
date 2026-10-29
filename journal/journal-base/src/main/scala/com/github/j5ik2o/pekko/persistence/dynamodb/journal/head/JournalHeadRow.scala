@@ -15,15 +15,8 @@
  */
 package com.github.j5ik2o.pekko.persistence.dynamodb.journal.head
 
-import com.github.j5ik2o.pekko.persistence.dynamodb.journal.config.{
-  JournalColumnsDefConfig,
-  JournalHeadConfig
-}
-import com.github.j5ik2o.pekko.persistence.dynamodb.journal.{
-  JournalRow,
-  PartitionKeyResolver,
-  SortKeyResolver
-}
+import com.github.j5ik2o.pekko.persistence.dynamodb.journal.config.{ JournalColumnsDefConfig, JournalHeadConfig }
+import com.github.j5ik2o.pekko.persistence.dynamodb.journal.{ JournalRow, PartitionKeyResolver, SortKeyResolver }
 import com.github.j5ik2o.pekko.persistence.dynamodb.model.{ PersistenceId, SequenceNumber }
 
 /** One event of the write that produced a JournalHead item.

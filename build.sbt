@@ -198,7 +198,7 @@ lazy val `journal-v2` = (project in file("journal/journal-v2"))
     base % "test->test",
     `base-v2`,
     `snapshot-base` % "test->compile",
-    `snapshot-v2` % "test->compile"
+    `snapshot-v2`   % "test->compile"
   )
 
 lazy val `snapshot-base` = (project in file("snapshot/snapshot-base"))
