@@ -64,6 +64,7 @@ object JournalPluginConfig extends LoggingSupport {
   val softDeleteKey                            = "soft-delete"
   val dynamoCbClientKey                        = "dynamo-db-client"
   val journalRowDriverWrapperClassNameKey      = "journal-row-driver-wrapper-class-name"
+  val headKey                                  = JournalHeadConfig.headKey
 
   def fromConfig(config: Config): JournalPluginConfig = {
     logger.debug("config = {}", config)
@@ -73,6 +74,20 @@ object JournalPluginConfig extends LoggingSupport {
         config.getAs[Config](dynamoCbClientKey).getOrElse(ConfigFactory.empty()),
         legacyConfigFormat
       )
+    val tableName  = config.as[String](tableNameKey)
+    val headConfig = JournalHeadConfig.fromConfig(config.getAs[Config](headKey).getOrElse(ConfigFactory.empty()))
+    if (headConfig.enabled) {
+      // TransactWriteItems is only available in the non-DAX AWS SDK v2 client. DAX does not support
+      // transactional writes, and the v1 client is not supported by the JournalHead write path.
+      require(
+        clientConfig.clientVersion == ClientVersion.V2,
+        s"head.enabled requires client-version = v2 without DAX, but client-version is ${clientConfig.clientVersion}"
+      )
+      require(
+        headConfig.tableName != tableName,
+        s"the JournalHead table name must differ from the journal table name, but both are $tableName"
+      )
+    }
     logger.debug("legacy-config-format = {}", legacyConfigFormat)
     val result = JournalPluginConfig(
       legacyConfigFormat,
@@ -175,7 +190,8 @@ object JournalPluginConfig extends LoggingSupport {
             clientConfig.clientVersion == ClientVersion.V2
           )
       },
-      tableName = config.as[String](tableNameKey),
+      tableName = tableName,
+      headConfig = headConfig,
       columnsDefConfig = JournalColumnsDefConfig.fromConfig(
         config.getAs[Config](columnsDefKey).getOrElse(ConfigFactory.empty())
       ),
@@ -286,6 +302,7 @@ final case class JournalPluginConfig(
     v2JournalRowWriteDriverFactoryClassName: String,
     v2DaxJournalRowWriteDriverFactoryClassName: String,
     tableName: String,
+    headConfig: JournalHeadConfig,
     columnsDefConfig: JournalColumnsDefConfig,
     getJournalRowsIndexName: String,
     tagSeparator: String,

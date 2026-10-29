@@ -21,6 +21,7 @@ import org.apache.pekko.stream._
 import org.apache.pekko.stream.scaladsl.{ Flow, Keep, Sink, Source, SourceQueueWithComplete }
 import org.apache.pekko.{ Done, NotUsed }
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal._
+import com.github.j5ik2o.pekko.persistence.dynamodb.journal.head.JournalHeadWriteRequest
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.serialization.FlowPersistentReprSerializer
 import com.github.j5ik2o.pekko.persistence.dynamodb.metrics.MetricsReporter
 import com.github.j5ik2o.pekko.persistence.dynamodb.model.{ PersistenceId, SequenceNumber }
@@ -59,7 +60,14 @@ final class WriteJournalDaoImpl(
 
   private def internalPutStream(promise: Promise[Long], rows: Seq[JournalRow]): Future[Done] = {
     val s =
-      if (rows.size == 1)
+      if (pluginConfig.headConfig.enabled)
+        JournalHeadWriteRequest
+          .of(rows, pluginConfig.headConfig, pluginConfig.columnsDefConfig, partitionKeyResolver, sortKeyResolver)
+          .fold(
+            ex => Source.failed[Long](ex),
+            request => Source.single(request).via(journalRowDriver.putJournalRowsWithHeadFlow)
+          )
+      else if (rows.size == 1)
         Source
           .single(rows.head).batch(pluginConfig.clientConfig.batchWriteItemLimit, Vector(_))(_ :+ _).flatMapConcat {
             request =>

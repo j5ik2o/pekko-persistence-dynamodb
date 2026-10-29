@@ -80,6 +80,27 @@ final class StreamWriteClient(
     flowWithBackoffSettings(writeBackoffConfig, flow)
   }
 
+  /** TransactWriteItems is deliberately not wrapped in the write backoff: RestartFlow would drop the element that
+    * failed, and a rejected transaction (a failed condition) must fail the write rather than be skipped.
+    */
+  def transactWriteItemsFlow: Flow[TransactWriteItemsRequest, TransactWriteItemsResponse, NotUsed] = {
+    ((asyncClient, syncClient) match {
+      case (Some(c), None) =>
+        JavaFlow
+          .create[TransactWriteItemsRequest]().mapAsync(
+            1,
+            new function.Function[TransactWriteItemsRequest, CompletableFuture[TransactWriteItemsResponse]] {
+              override def apply(request: TransactWriteItemsRequest): CompletableFuture[TransactWriteItemsResponse] =
+                c.transactWriteItems(request)
+            }
+          ).asScala
+      case (None, Some(c)) =>
+        Flow[TransactWriteItemsRequest].map { request => c.transactWriteItems(request) }.withV2Dispatcher(pluginConfig)
+      case _ =>
+        throw new IllegalStateException("invalid state")
+    }).log("transactWriteItemsFlow")
+  }
+
   def recursiveBatchWriteItemFlow: Flow[BatchWriteItemRequest, BatchWriteItemResponse, NotUsed] = {
     def loop(
         acc: Source[BatchWriteItemResponse, NotUsed]

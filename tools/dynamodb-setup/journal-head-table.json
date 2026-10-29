@@ -1,0 +1,23 @@
+{
+  "TableName": "JournalHead",
+  "AttributeDefinitions": [
+    {
+      "AttributeName": "persistence-id",
+      "AttributeType": "S"
+    }
+  ],
+  "KeySchema": [
+    {
+      "KeyType": "HASH",
+      "AttributeName": "persistence-id"
+    }
+  ],
+  "ProvisionedThroughput": {
+    "WriteCapacityUnits": 10,
+    "ReadCapacityUnits": 10
+  },
+  "StreamSpecification": {
+    "StreamEnabled": true,
+    "StreamViewType": "NEW_IMAGE"
+  }
+}
