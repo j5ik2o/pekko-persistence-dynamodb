@@ -27,6 +27,7 @@ import org.apache.pekko.stream.scaladsl.Sink
 import org.apache.pekko.stream.{ Materializer, SystemMaterializer }
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.config.JournalPluginConfig
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.dao._
+import com.github.j5ik2o.pekko.persistence.dynamodb.journal.head.JournalHeadWriteRequest
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.serialization.{
   ByteArrayJournalSerializer,
   FlowPersistentReprSerializer
@@ -105,6 +106,13 @@ final class DynamoDBJournal(config: Config) extends AsyncWriteJournal with Actor
     implicit val ec: ExecutionContext = pluginExecutor
 
     def execute(implicit ec: ExecutionContext): Future[Vector[Try[Unit]]] = {
+      if (journalPluginConfig.headConfig.enabled) executeSequentially(atomicWrites)
+      else executeInParallel(atomicWrites)
+    }
+
+    def executeInParallel(atomicWrites: immutable.Seq[AtomicWrite])(implicit
+        ec: ExecutionContext
+    ): Future[Vector[Try[Unit]]] = {
       val serializedFutures = serializer.serialize(atomicWrites)
       val rowsToWriteFutures = serializedFutures.map { serializeFuture =>
         serializeFuture.recoverWith { case _ =>
@@ -143,6 +151,44 @@ final class DynamoDBJournal(config: Config) extends AsyncWriteJournal with Actor
             }
           }
         }
+    }
+
+    /** Writes the AtomicWrites of one message in order, one after the other.
+      *
+      * The JournalHead condition expects the head to hold exactly the sequence number before the write, so two writes
+      * of the same persistence id must reach DynamoDB in the order the actor produced them. A rejected write (the
+      * limits of the JournalHead path) is returned as a Failure, which the actor handles with onPersistRejected,
+      * instead of failing the whole write.
+      */
+    def executeSequentially(atomicWrites: immutable.Seq[AtomicWrite])(implicit
+        ec: ExecutionContext
+    ): Future[Vector[Try[Unit]]] = {
+      val serializedFutures = serializer.serialize(atomicWrites)
+      serializedFutures.foldLeft(Future.successful(Vector.empty[Try[Unit]])) { (resultsFuture, rowsFuture) =>
+        resultsFuture.flatMap { results =>
+          rowsFuture
+            .transformWith {
+              case Success(rows) =>
+                JournalHeadWriteRequest
+                  .of(
+                    rows,
+                    journalPluginConfig.headConfig,
+                    journalPluginConfig.columnsDefConfig,
+                    partitionKeyResolver,
+                    sortKeyResolver
+                  )
+                  .fold(
+                    // a write that the JournalHead path cannot carry is rejected, not failed
+                    rejected => Future.successful(results :+ Failure(rejected)),
+                    _ =>
+                      journalDao
+                        .putMessages(rows).runWith(Sink.head).map(_ => results :+ Success(()))
+                  )
+              case Failure(ex) =>
+                Future.successful(results :+ Failure(ex))
+            }
+        }
+      }
     }
 
     val future = traceReporter.fold(execute)(_.traceJournalAsyncWriteMessages(newContext)(execute))

@@ -28,6 +28,15 @@ sealed abstract class JournalHeadException(message: String, cause: Throwable) ex
 /** The write was rejected by the plugin before anything was sent to DynamoDB. */
 sealed abstract class JournalHeadWriteRejectedException(message: String) extends JournalHeadException(message, null)
 
+/** The rows of a single write do not form one transaction: they are empty, belong to more than one persistence id, or
+  * their sequence numbers are not contiguous.
+  *
+  * This is a validation failure, not a DynamoDB failure. It is returned as a value so that it never aborts the write
+  * queue of the journal plugin.
+  */
+final class JournalHeadInvalidWriteException(val persistenceId: String, val detail: String)
+    extends JournalHeadException(s"persistenceId=[$persistenceId]: $detail", null)
+
 /** The write contains more events than a single TransactWriteItems request can carry.
   *
   * The transaction contains one item per journal row plus one JournalHead item, and DynamoDB accepts at most 100 items

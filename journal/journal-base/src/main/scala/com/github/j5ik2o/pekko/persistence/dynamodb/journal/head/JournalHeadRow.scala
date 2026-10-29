@@ -50,18 +50,33 @@ object JournalHeadWriteRequest {
       partitionKeyResolver: PartitionKeyResolver,
       sortKeyResolver: SortKeyResolver
   ): Either[JournalHeadException, JournalHeadWriteRequest] = {
-    require(rows.nonEmpty, "rows must not be empty")
+    if (rows.isEmpty) {
+      return Left(
+        new JournalHeadInvalidWriteException(
+          "",
+          "a single transaction must contain at least one event"
+        )
+      )
+    }
     val persistenceIds = rows.map(_.persistenceId).distinct
-    require(
-      persistenceIds.size == 1,
-      s"a single transaction must contain the rows of exactly one persistence id, but got [${persistenceIds.map(_.asString).mkString(", ")}]"
-    )
+    if (persistenceIds.size != 1) {
+      return Left(
+        new JournalHeadInvalidWriteException(
+          persistenceIds.map(_.asString).mkString(", "),
+          s"a single transaction must contain the rows of exactly one persistence id, but got [${persistenceIds.map(_.asString).mkString(", ")}]"
+        )
+      )
+    }
     val sortedRows = rows.sortBy(_.sequenceNumber.value)
     val firstSeqNr = sortedRows.head.sequenceNumber.value
-    require(
-      sortedRows.map(_.sequenceNumber.value) == (firstSeqNr until firstSeqNr + sortedRows.size).toList,
-      s"the sequence numbers of a single write must be contiguous, but got [${sortedRows.map(_.sequenceNumber.value).mkString(", ")}]"
-    )
+    if (sortedRows.map(_.sequenceNumber.value) != (firstSeqNr until firstSeqNr + sortedRows.size).toList) {
+      return Left(
+        new JournalHeadInvalidWriteException(
+          sortedRows.head.persistenceId.asString,
+          s"the sequence numbers of a single write must be contiguous, but got [${sortedRows.map(_.sequenceNumber.value).mkString(", ")}]"
+        )
+      )
+    }
     val persistenceId = sortedRows.head.persistenceId
 
     if (sortedRows.size > JournalHeadLimits.MaxEventsPerTransaction) {
