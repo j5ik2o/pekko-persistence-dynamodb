@@ -29,7 +29,8 @@ object ConfigHelper {
       clientType: String,
       requestHandlerClassNames: Seq[String] = Seq.empty,
       journalRowDriverWrapperClassName: Option[String] = None,
-      softDelete: Boolean = true
+      softDelete: Boolean = true,
+      headEnabled: Boolean = false
   ): Config = {
     val configString = s"""
        |pekko.persistence.journal.plugin = "j5ik2o.dynamo-db-journal"
@@ -73,6 +74,9 @@ object ConfigHelper {
                          } else ""}
        |  columns-def {
        |    sort-key-column-name = ${if (legacyJournalMode) "sequence-nr" else "skey"}
+       |  }
+       |  head {
+       |    enabled = $headEnabled
        |  }
        |}
        |

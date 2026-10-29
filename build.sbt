@@ -193,7 +193,13 @@ lazy val `journal-v2` = (project in file("journal/journal-v2"))
       "ch.qos.logback"                        % "logback-classic" % logbackVersion % Test,
       "org.slf4j"                             % "jul-to-slf4j"    % slf4jVersion   % Test
     )
-  ).dependsOn(`journal-base`, base % "test->test", `base-v2`, `snapshot-base` % "test->compile")
+  ).dependsOn(
+    `journal-base`,
+    base % "test->test",
+    `base-v2`,
+    `snapshot-base` % "test->compile",
+    `snapshot-v2` % "test->compile"
+  )
 
 lazy val `snapshot-base` = (project in file("snapshot/snapshot-base"))
   .settings(

@@ -75,9 +75,10 @@ trait DockerControllerHelperUtil extends DockerControllerHelper {
       ).build()
   }
 
-  val journalTableName  = "Journal"
-  val snapshotTableName = "Snapshot"
-  val stateTableName    = "State"
+  val journalTableName     = "Journal"
+  val journalHeadTableName = "JournalHead"
+  val snapshotTableName    = "Snapshot"
+  val stateTableName       = "State"
 
   protected val waitIntervalForDynamoDBLocal: FiniteDuration = 500.milliseconds
 
@@ -97,8 +98,9 @@ trait DockerControllerHelperUtil extends DockerControllerHelper {
     var isWaken: Boolean = false
     var counter          = 0
     while (counter < MaxCount && !isWaken) {
+      counter += 1
       try {
-        val listTablesResult = dynamoDBClient.listTables(2)
+        val listTablesResult = dynamoDBClient.listTables(100)
         if (tableNames.forall(s => listTablesResult.getTableNames.asScala.contains(s))) {
           isWaken = true
         } else {
@@ -106,15 +108,16 @@ trait DockerControllerHelperUtil extends DockerControllerHelper {
         }
       } catch {
         case _: ResourceNotFoundException =>
-          counter += 1
           Thread.sleep(waitIntervalForDynamoDBLocal.toMillis)
       }
     }
+    require(isWaken, s"the tables [${tableNames.mkString(", ")}] did not become available")
   }
 
   def deleteTable(): Unit = synchronized {
     Thread.sleep(500)
     deleteJournalTable()
+    deleteJournalHeadTable()
     deleteSnapshotTable()
     deleteStateTable()
     Thread.sleep(500)
@@ -129,41 +132,50 @@ trait DockerControllerHelperUtil extends DockerControllerHelper {
       createLegacyJournalTable()
     else
       createJournalTable()
+    createJournalHeadTable()
     if (legacySnapshotTable)
       createLegacySnapshotTable()
     else
       createSnapshotTable()
     createStateTable()
-    waitDynamoDBLocal(Seq(journalTableName, snapshotTableName))
+    waitDynamoDBLocal(Seq(journalTableName, journalHeadTableName, snapshotTableName))
   }
 
   private def deleteJournalTable(): Unit = {
-    val listTablesResult = dynamoDBClient.listTables(2)
-    if (listTablesResult.getTableNames.asScala.exists(_.contains(journalTableName)))
+    val listTablesResult = dynamoDBClient.listTables(100)
+    if (listTablesResult.getTableNames.asScala.exists(_ == journalTableName))
       dynamoDBClient.deleteTable(journalTableName)
-    val result = dynamoDBClient.listTables(2)
-    require(!result.getTableNames.asScala.exists(_.contains(journalTableName)))
+    val result = dynamoDBClient.listTables(100)
+    require(!result.getTableNames.asScala.exists(_ == journalTableName))
+  }
+
+  private def deleteJournalHeadTable(): Unit = {
+    val listTablesResult = dynamoDBClient.listTables(100)
+    if (listTablesResult.getTableNames.asScala.exists(_ == journalHeadTableName))
+      dynamoDBClient.deleteTable(journalHeadTableName)
+    val result = dynamoDBClient.listTables(100)
+    require(!result.getTableNames.asScala.exists(_ == journalHeadTableName))
   }
 
   private def deleteSnapshotTable(): Unit = {
-    val listTablesResult = dynamoDBClient.listTables(2)
-    if (listTablesResult.getTableNames.asScala.exists(_.contains(snapshotTableName)))
+    val listTablesResult = dynamoDBClient.listTables(100)
+    if (listTablesResult.getTableNames.asScala.exists(_ == snapshotTableName))
       dynamoDBClient.deleteTable(snapshotTableName)
-    val result = dynamoDBClient.listTables(2)
-    require(!result.getTableNames.asScala.exists(_.contains(snapshotTableName)))
+    val result = dynamoDBClient.listTables(100)
+    require(!result.getTableNames.asScala.exists(_ == snapshotTableName))
   }
 
   private def deleteStateTable(): Unit = {
-    val listTablesResult = dynamoDBClient.listTables(2)
-    if (listTablesResult.getTableNames.asScala.exists(_.contains(stateTableName)))
+    val listTablesResult = dynamoDBClient.listTables(100)
+    if (listTablesResult.getTableNames.asScala.exists(_ == stateTableName))
       dynamoDBClient.deleteTable(stateTableName)
-    val result = dynamoDBClient.listTables(2)
-    require(!result.getTableNames.asScala.exists(_.contains(stateTableName)))
+    val result = dynamoDBClient.listTables(100)
+    require(!result.getTableNames.asScala.exists(_ == stateTableName))
   }
 
   def createLegacySnapshotTable(): Unit = {
-    val listTablesResult = dynamoDBClient.listTables(2)
-    if (!listTablesResult.getTableNames.asScala.exists(_.contains(snapshotTableName))) {
+    val listTablesResult = dynamoDBClient.listTables(100)
+    if (!listTablesResult.getTableNames.asScala.exists(_ == snapshotTableName)) {
       val createRequest = new CreateTableRequest()
         .withTableName(snapshotTableName).withAttributeDefinitions(
           Seq(
@@ -184,8 +196,8 @@ trait DockerControllerHelperUtil extends DockerControllerHelper {
   }
 
   def createSnapshotTable(): Unit = {
-    val listTablesResult = dynamoDBClient.listTables(2)
-    if (!listTablesResult.getTableNames.asScala.exists(_.contains(snapshotTableName))) {
+    val listTablesResult = dynamoDBClient.listTables(100)
+    if (!listTablesResult.getTableNames.asScala.exists(_ == snapshotTableName)) {
       val createRequest = new CreateTableRequest()
         .withTableName(snapshotTableName).withAttributeDefinitions(
           Seq(
@@ -223,8 +235,8 @@ trait DockerControllerHelperUtil extends DockerControllerHelper {
   }
 
   private def createLegacyJournalTable(): Unit = {
-    val listTablesResult = dynamoDBClient.listTables(2)
-    if (!listTablesResult.getTableNames.asScala.exists(_.contains(journalTableName))) {
+    val listTablesResult = dynamoDBClient.listTables(100)
+    if (!listTablesResult.getTableNames.asScala.exists(_ == journalTableName)) {
       val createRequest = new CreateTableRequest()
         .withTableName(journalTableName)
         .withAttributeDefinitions(
@@ -265,8 +277,8 @@ trait DockerControllerHelperUtil extends DockerControllerHelper {
   val GetJournalRowsIndexName = "GetJournalRowsIndex"
 
   protected def createJournalTable(): Unit = {
-    val listTablesResult = dynamoDBClient.listTables(2)
-    if (!listTablesResult.getTableNames.asScala.exists(_.contains(journalTableName))) {
+    val listTablesResult = dynamoDBClient.listTables(100)
+    if (!listTablesResult.getTableNames.asScala.exists(_ == journalTableName)) {
       val createRequest = new CreateTableRequest()
         .withTableName(journalTableName)
         .withAttributeDefinitions(
@@ -314,9 +326,32 @@ trait DockerControllerHelperUtil extends DockerControllerHelper {
     }
   }
 
+  def createJournalHeadTable(): Unit = {
+    val listTablesResult = dynamoDBClient.listTables(100)
+    if (!listTablesResult.getTableNames.asScala.exists(_ == journalHeadTableName)) {
+      val createRequest = new CreateTableRequest()
+        .withTableName(journalHeadTableName)
+        .withAttributeDefinitions(
+          Seq(
+            new AttributeDefinition().withAttributeName("persistence-id").withAttributeType(ScalarAttributeType.S)
+          ).asJava
+        ).withKeySchema(
+          Seq(
+            new KeySchemaElement().withAttributeName("persistence-id").withKeyType(KeyType.HASH)
+          ).asJava
+        ).withProvisionedThroughput(
+          new ProvisionedThroughput().withReadCapacityUnits(10L).withWriteCapacityUnits(10L)
+        ).withStreamSpecification(
+          new StreamSpecification().withStreamEnabled(true).withStreamViewType(StreamViewType.NEW_IMAGE)
+        )
+      val createResponse = dynamoDBClient.createTable(createRequest)
+      require(createResponse.getSdkHttpMetadata.getHttpStatusCode == 200)
+    }
+  }
+
   def createStateTable(): Unit = {
-    val listTablesResult = dynamoDBClient.listTables(2)
-    if (!listTablesResult.getTableNames.asScala.exists(_.contains(stateTableName))) {
+    val listTablesResult = dynamoDBClient.listTables(100)
+    if (!listTablesResult.getTableNames.asScala.exists(_ == stateTableName)) {
       val createRequest = new CreateTableRequest()
         .withTableName(stateTableName).withAttributeDefinitions(
           Seq(
