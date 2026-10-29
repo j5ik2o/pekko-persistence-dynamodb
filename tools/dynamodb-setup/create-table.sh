@@ -27,6 +27,9 @@ aws dynamodb create-table \
   --cli-input-json file://./journal-table.json
 
 aws dynamodb create-table \
+  --cli-input-json file://./journal-head-table.json
+
+aws dynamodb create-table \
   --cli-input-json file://./snapshot-table.json
 
 aws dynamodb create-table \
@@ -40,6 +43,10 @@ echo "ENDPOINT = $DYNAMODB_ENDPOINT"
 aws dynamodb create-table \
   --endpoint-url "http://$DYNAMODB_ENDPOINT" \
   --cli-input-json file://./journal-table.json
+
+aws dynamodb create-table \
+  --endpoint-url "http://$DYNAMODB_ENDPOINT" \
+  --cli-input-json file://./journal-head-table.json
 
 aws dynamodb create-table \
   --endpoint-url "http://$DYNAMODB_ENDPOINT" \

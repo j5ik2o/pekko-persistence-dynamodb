@@ -21,6 +21,7 @@ import org.apache.pekko.stream._
 import org.apache.pekko.stream.scaladsl.{ Flow, Keep, Sink, Source, SourceQueueWithComplete }
 import org.apache.pekko.{ Done, NotUsed }
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal._
+import com.github.j5ik2o.pekko.persistence.dynamodb.journal.head.JournalHeadWriteRequest
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.serialization.FlowPersistentReprSerializer
 import com.github.j5ik2o.pekko.persistence.dynamodb.metrics.MetricsReporter
 import com.github.j5ik2o.pekko.persistence.dynamodb.model.{ PersistenceId, SequenceNumber }
@@ -57,9 +58,21 @@ final class WriteJournalDaoImpl(
 
   private val queueOverflowStrategy = pluginConfig.queueOverflowStrategy
 
-  private def internalPutStream(promise: Promise[Long], rows: Seq[JournalRow]): Future[Done] = {
+  /** A put request of the journal rows. `withHead` is false when the rows are rewritten by a soft delete. */
+  private final case class PutJournalRowsRequest(promise: Promise[Long], rows: Seq[JournalRow], withHead: Boolean)
+
+  private def internalPutStream(request: PutJournalRowsRequest): Future[Done] = {
+    val promise = request.promise
+    val rows    = request.rows
     val s =
-      if (rows.size == 1)
+      if (request.withHead)
+        JournalHeadWriteRequest
+          .of(rows, pluginConfig.headConfig, pluginConfig.columnsDefConfig, partitionKeyResolver, sortKeyResolver)
+          .fold(
+            ex => Source.failed[Long](ex),
+            journalHeadRequest => Source.single(journalHeadRequest).via(journalRowDriver.putJournalRowsWithHeadFlow)
+          )
+      else if (rows.size == 1)
         Source
           .single(rows.head).batch(pluginConfig.clientConfig.batchWriteItemLimit, Vector(_))(_ :+ _).flatMapConcat {
             request =>
@@ -84,12 +97,12 @@ final class WriteJournalDaoImpl(
       .runWith(Sink.ignore)
   }
 
-  private def putQueue: (SourceQueueWithComplete[(Promise[Long], Seq[JournalRow])], UniqueKillSwitch) = {
+  private def putQueue: (SourceQueueWithComplete[PutJournalRowsRequest], UniqueKillSwitch) = {
     val result = Source
-      .queue[(Promise[Long], Seq[JournalRow])](queueBufferSize, queueOverflowStrategy)
+      .queue[PutJournalRowsRequest](queueBufferSize, queueOverflowStrategy)
       .viaMat(KillSwitches.single)(Keep.both)
-      .mapAsync(writeParallelism) { case (promise, rows) =>
-        internalPutStream(promise, rows)
+      .mapAsync(writeParallelism) { request =>
+        internalPutStream(request)
       }
       .toMat(Sink.ignore)(Keep.both)
       .withAttributes(logLevels)
@@ -97,13 +110,13 @@ final class WriteJournalDaoImpl(
     (result._1._1, result._1._2)
   }
 
-  private val putQueues: Seq[(SourceQueueWithComplete[(Promise[Long], Seq[JournalRow])], UniqueKillSwitch)] =
+  private val putQueues: Seq[(SourceQueueWithComplete[PutJournalRowsRequest], UniqueKillSwitch)] =
     for (_ <- 1 to queueParallelism)
       yield putQueue
 
   private def queueIdFrom(persistenceId: PersistenceId): Int = Math.abs(persistenceId.asString.##) % queueParallelism
 
-  private def selectPutQueue(persistenceId: PersistenceId): SourceQueueWithComplete[(Promise[Long], Seq[JournalRow])] =
+  private def selectPutQueue(persistenceId: PersistenceId): SourceQueueWithComplete[PutJournalRowsRequest] =
     putQueues(queueIdFrom(persistenceId))._1
 
   private def internalDeleteStream(promise: Promise[Long], rows: Seq[PersistenceIdWithSeqNr]) = {
@@ -169,22 +182,27 @@ final class WriteJournalDaoImpl(
       .getJournalRows(persistenceId, toSequenceNr, deleted = false)
       .flatMapConcat { journalRows =>
         if (pluginConfig.softDeleted) {
-          putMessages(journalRows.map(_.withDeleted))
+          // A soft delete rewrites existing journal rows. It must not go through the JournalHead path: the journal
+          // condition (the row must not exist yet) would fail, and the head must not move on a delete.
+          putJournalRows(journalRows.map(_.withDeleted), withHead = false)
         } else {
           deleteBy(persistenceId, journalRows.map(_.sequenceNumber))
         }
       }.withAttributes(logLevels)
   }
 
-  override def putMessages(messages: Seq[JournalRow]): Source[Long, NotUsed] = {
+  override def putMessages(messages: Seq[JournalRow]): Source[Long, NotUsed] =
+    putJournalRows(messages, withHead = pluginConfig.headConfig.enabled)
+
+  private def putJournalRows(messages: Seq[JournalRow], withHead: Boolean): Source[Long, NotUsed] = {
     if (messages.isEmpty)
       Source.single(0L)
     else {
       if (pluginConfig.queueEnable)
-        Source.single(messages).via(requestPutJournalRows)
+        Source.single((messages, withHead)).via(requestPutJournalRows)
       else
         Source
-          .single(messages).via(requestPutJournalRowsPassThrough)
+          .single((messages, withHead)).via(requestPutJournalRowsPassThrough)
     }
   }
 
@@ -195,33 +213,34 @@ final class WriteJournalDaoImpl(
     journalRowDriver.highestSequenceNr(persistenceId, Some(fromSequenceNr))
   }
 
-  private def requestPutJournalRowsPassThrough: Flow[Seq[JournalRow], Long, NotUsed] = {
-    Flow[Seq[JournalRow]]
-      .mapAsync(writeParallelism) { messages =>
+  private def requestPutJournalRowsPassThrough: Flow[(Seq[JournalRow], Boolean), Long, NotUsed] = {
+    Flow[(Seq[JournalRow], Boolean)]
+      .mapAsync(writeParallelism) { case (messages, withHead) =>
         val promise = Promise[Long]()
-        internalPutStream(promise, messages).flatMap(_ => promise.future)
+        internalPutStream(PutJournalRowsRequest(promise, messages, withHead)).flatMap(_ => promise.future)
       }
   }
 
-  private def requestPutJournalRows: Flow[Seq[JournalRow], Long, NotUsed] =
-    Flow[Seq[JournalRow]]
-      .mapAsync(1) { messages =>
+  private def requestPutJournalRows: Flow[(Seq[JournalRow], Boolean), Long, NotUsed] =
+    Flow[(Seq[JournalRow], Boolean)]
+      .mapAsync(1) { case (messages, withHead) =>
         val promise = Promise[Long]()
-        selectPutQueue(messages.head.persistenceId).offer(promise -> messages).flatMap {
-          case QueueOfferResult.Enqueued =>
-            val future = promise.future
-            future
-          case QueueOfferResult.Failure(t) =>
-            Future.failed(new Exception("Failed to write journal row batch", t))
-          case QueueOfferResult.Dropped =>
-            Future.failed(
-              new Exception(
-                s"Failed to enqueue journal row batch write, the queue buffer was full ($queueBufferSize elements) please check the jdbc-journal.bufferSize setting"
+        selectPutQueue(messages.head.persistenceId)
+          .offer(PutJournalRowsRequest(promise, messages, withHead)).flatMap {
+            case QueueOfferResult.Enqueued =>
+              val future = promise.future
+              future
+            case QueueOfferResult.Failure(t) =>
+              Future.failed(new Exception("Failed to write journal row batch", t))
+            case QueueOfferResult.Dropped =>
+              Future.failed(
+                new Exception(
+                  s"Failed to enqueue journal row batch write, the queue buffer was full ($queueBufferSize elements) please check the jdbc-journal.bufferSize setting"
+                )
               )
-            )
-          case QueueOfferResult.QueueClosed =>
-            Future.failed(new Exception("Failed to enqueue journal row batch write, the queue was closed"))
-        }
+            case QueueOfferResult.QueueClosed =>
+              Future.failed(new Exception("Failed to enqueue journal row batch write, the queue was closed"))
+          }
       }.withAttributes(logLevels)
 
   private def deleteBy(persistenceId: PersistenceId, sequenceNrs: Seq[SequenceNumber]): Source[Long, NotUsed] = {

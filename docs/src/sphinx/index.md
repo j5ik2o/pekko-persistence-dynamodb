@@ -26,4 +26,5 @@ overview.md
 getting-started.md
 table-format.md
 customize.md
+journal-head.md
 ```

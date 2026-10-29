@@ -17,10 +17,12 @@ package com.github.j5ik2o.pekko.persistence.dynamodb.journal.dao.v2
 
 import org.apache.pekko.NotUsed
 import org.apache.pekko.actor.ActorSystem
-import org.apache.pekko.stream.scaladsl.{ Flow, Source }
-import com.github.j5ik2o.pekko.persistence.dynamodb.client.v2.StreamWriteClient
+import org.apache.pekko.stream.{ Materializer, SystemMaterializer }
+import org.apache.pekko.stream.scaladsl.{ Flow, Sink, Source }
+import com.github.j5ik2o.pekko.persistence.dynamodb.client.v2.{ StreamReadClient, StreamWriteClient }
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal._
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.dao.{ JournalRowWriteDriver, PersistenceIdWithSeqNr }
+import com.github.j5ik2o.pekko.persistence.dynamodb.journal.head._
 import com.github.j5ik2o.pekko.persistence.dynamodb.model.{ PersistenceId, SequenceNumber }
 import org.slf4j.LoggerFactory
 import software.amazon.awssdk.core.SdkBytes
@@ -32,7 +34,9 @@ import software.amazon.awssdk.services.dynamodb.{
 
 import java.io.IOException
 import scala.compat.java8.OptionConverters._
+import scala.concurrent.Future
 import scala.jdk.CollectionConverters._
+import scala.util.{ Failure, Success }
 
 final class V2JournalRowWriteDriver(
     val pluginContext: JournalPluginContext,
@@ -40,6 +44,8 @@ final class V2JournalRowWriteDriver(
     val syncClient: Option[JavaDynamoDbSyncClient]
 ) extends JournalRowWriteDriver {
   override def system: ActorSystem = pluginContext.system
+
+  private implicit val mat: Materializer = SystemMaterializer(system).materializer
 
   import pluginContext._
   (asyncClient, syncClient) match {
@@ -52,6 +58,9 @@ final class V2JournalRowWriteDriver(
 
   private val streamClient =
     new StreamWriteClient(pluginContext, asyncClient, syncClient, pluginConfig.writeBackoffConfig)
+
+  private val streamReadClient =
+    new StreamReadClient(pluginContext, asyncClient, syncClient, pluginConfig.readBackoffConfig)
 
   private val readDriver: V2JournalRowReadDriver = new V2JournalRowReadDriver(
     pluginContext,
@@ -170,39 +179,223 @@ final class V2JournalRowWriteDriver(
       }
   }.withAttributes(logLevels)
 
+  override def putJournalRowsWithHeadFlow: Flow[JournalHeadWriteRequest, Long, NotUsed] =
+    Flow[JournalHeadWriteRequest]
+      .flatMapConcat { request =>
+        Source
+          .single(createTransactWriteItemsRequest(request))
+          .via(streamClient.transactWriteItemsFlow)
+          .flatMapConcat { response =>
+            if (response.sdkHttpResponse().isSuccessful) {
+              Source.single(request.rows.size.toLong)
+            } else {
+              val statusCode = response.sdkHttpResponse().statusCode()
+              val statusText = response.sdkHttpResponse().statusText()
+              Source.failed(new IOException(s"statusCode: $statusCode" + statusText.asScala.fold("")(s => s", $s")))
+            }
+          }.recoverWithRetries(
+            1,
+            {
+              case ex if findTransactionCanceledException(ex).isDefined =>
+                val canceled = findTransactionCanceledException(ex).get
+                Source.future(classifyTransactionCancellation(request, canceled)).flatMapConcat {
+                  case Some(journalHeadException) => Source.failed(journalHeadException)
+                  case None                       => Source.failed(ex)
+                }
+            }
+          )
+      }.withAttributes(logLevels)
+
+  /** The async client fails the future with the SDK exception, sometimes wrapped in another exception. */
+  @scala.annotation.tailrec
+  private def findTransactionCanceledException(ex: Throwable): Option[TransactionCanceledException] =
+    ex match {
+      case e: TransactionCanceledException              => Some(e)
+      case e if e.getCause != null && (e.getCause ne e) => findTransactionCanceledException(e.getCause)
+      case _                                            => None
+    }
+
+  private def createTransactWriteItemsRequest(request: JournalHeadWriteRequest): TransactWriteItemsRequest = {
+    val journalColumnsDefConfig = pluginConfig.columnsDefConfig
+    val headConfig              = pluginConfig.headConfig
+    val headColumnsDefConfig    = headConfig.columnsDefConfig
+
+    val journalWrites = request.rows.map { row =>
+      val pkey = partitionKeyResolver.resolve(row.persistenceId, row.sequenceNumber).asString
+      val skey = sortKeyResolver.resolve(row.persistenceId, row.sequenceNumber).asString
+      TransactWriteItem
+        .builder().put(
+          Put
+            .builder()
+            .tableName(pluginConfig.tableName)
+            .item(journalItemAttributes(row, pkey, skey).asJava)
+            // A journal row is written only if the key (persistenceId, seqNr) does not exist yet.
+            .conditionExpression("attribute_not_exists(#pkey) AND attribute_not_exists(#skey)")
+            .expressionAttributeNames(
+              Map(
+                "#pkey" -> journalColumnsDefConfig.partitionKeyColumnName,
+                "#skey" -> journalColumnsDefConfig.sortKeyColumnName
+              ).asJava
+            )
+            .build()
+        ).build()
+    }
+
+    val head = request.head
+    val headItem = Map(
+      headColumnsDefConfig.persistenceIdColumnName -> AttributeValue.builder().s(head.persistenceId.asString).build(),
+      headColumnsDefConfig.sequenceNrColumnName    -> AttributeValue.builder().n(head.sequenceNumber.asString).build(),
+      headColumnsDefConfig.eventsColumnName -> AttributeValue
+        .builder()
+        .l(
+          head.events.map { event =>
+            AttributeValue
+              .builder()
+              .m(
+                Map(
+                  headColumnsDefConfig.eventSequenceNrColumnName -> AttributeValue
+                    .builder()
+                    .n(event.sequenceNumber.asString).build(),
+                  headColumnsDefConfig.eventMessageColumnName -> AttributeValue
+                    .builder()
+                    .b(SdkBytes.fromByteArray(event.message)).build()
+                ).asJava
+              ).build()
+          }.asJava
+        ).build()
+    )
+    val firstSequenceNr = request.rows.head.sequenceNumber.value
+    val headWrite = TransactWriteItem
+      .builder().put(
+        Put
+          .builder()
+          .tableName(headConfig.tableName)
+          .item(headItem.asJava)
+          // The head is written only if it is behind the first sequence number of this write, or if it
+          // does not exist yet and this write starts at sequence number 1. A head that is ahead (a
+          // rewind, or another writer that already wrote these sequence numbers) fails.
+          //
+          // The gap is allowed on purpose: Pekko does not rewind the sequence number of a rejected
+          // write, so the write after a rejection starts above the head by more than one. A gap in the
+          // journal is not checked when an aggregate recovers.
+          //
+          // This is not optimistic locking: it checks that the assumption "there is only one writer per
+          // aggregate" (kept by Cluster Sharding and Split Brain Resolver) still holds. A second writer
+          // that got ahead is rejected by this condition and by the journal condition.
+          .conditionExpression("(attribute_not_exists(#seq) AND :first = :one) OR (#seq < :first)")
+          .expressionAttributeNames(Map("#seq" -> headColumnsDefConfig.sequenceNrColumnName).asJava)
+          .expressionAttributeValues(
+            Map(
+              ":first" -> AttributeValue.builder().n(firstSequenceNr.toString).build(),
+              ":one"   -> AttributeValue.builder().n("1").build()
+            ).asJava
+          )
+          .build()
+      ).build()
+
+    TransactWriteItemsRequest.builder().transactItems((journalWrites :+ headWrite).asJava).build()
+  }
+
+  private def journalItemAttributes(
+      journalRow: JournalRow,
+      pkey: String,
+      skey: String
+  ): Map[String, AttributeValue] = {
+    val columnsDefConfig = pluginConfig.columnsDefConfig
+    Map(
+      columnsDefConfig.partitionKeyColumnName -> AttributeValue.builder().s(pkey).build(),
+      columnsDefConfig.sortKeyColumnName      -> AttributeValue.builder().s(skey).build(),
+      columnsDefConfig.persistenceIdColumnName -> AttributeValue
+        .builder()
+        .s(journalRow.persistenceId.asString).build(),
+      columnsDefConfig.sequenceNrColumnName -> AttributeValue
+        .builder()
+        .n(journalRow.sequenceNumber.asString).build(),
+      columnsDefConfig.orderingColumnName -> AttributeValue.builder().n(journalRow.ordering.toString).build(),
+      columnsDefConfig.deletedColumnName  -> AttributeValue.builder().bool(journalRow.deleted).build(),
+      columnsDefConfig.messageColumnName -> AttributeValue
+        .builder()
+        .b(SdkBytes.fromByteArray(journalRow.message)).build()
+    ) ++ journalRow.tags
+      .map { tag =>
+        Map(columnsDefConfig.tagsColumnName -> AttributeValue.builder().s(tag).build())
+      }.getOrElse(Map.empty)
+  }
+
+  /** Maps a cancelled transaction to the failure reason the actor should see. The JournalHead table is read back so
+    * that "the head has not been migrated yet" can be told apart from "the head did not continue from this write".
+    */
+  private def classifyTransactionCancellation(
+      request: JournalHeadWriteRequest,
+      ex: TransactionCanceledException
+  ): Future[Option[JournalHeadException]] = {
+    implicit val ec: scala.concurrent.ExecutionContext = pluginExecutor
+    val reasons                                        = ex.cancellationReasons.asScala.toIndexedSeq
+    val rowCount                                       = request.rows.size
+    def failedAt(index: Int): Boolean =
+      reasons.lift(index).exists(reason => reason != null && "ConditionalCheckFailed" == reason.code)
+    val failedJournalRowIndexes = request.rows.indices.filter(failedAt).toVector
+    if (failedJournalRowIndexes.nonEmpty) {
+      val sequenceNrs = failedJournalRowIndexes.map(index => request.rows(index).sequenceNumber.value)
+      Future.successful(
+        Some(new DuplicateJournalEventsException(request.head.persistenceId.asString, sequenceNrs))
+      )
+    } else if (failedAt(rowCount)) {
+      val firstSequenceNr = request.rows.head.sequenceNumber.value
+      readHeadSequenceNr(request.head.persistenceId).map {
+        case None =>
+          Some(new JournalHeadMissingException(request.head.persistenceId.asString, firstSequenceNr))
+        case Some(actualSequenceNr) if actualSequenceNr >= firstSequenceNr =>
+          Some(
+            new JournalHeadSequenceMismatchException(
+              request.head.persistenceId.asString,
+              firstSequenceNr - 1,
+              actualSequenceNr
+            )
+          )
+        case Some(_) =>
+          None
+      }
+    } else {
+      Future.successful(None)
+    }
+  }
+
+  override def headSequenceNr(persistenceId: PersistenceId): Source[Option[Long], NotUsed] =
+    Source.future(readHeadSequenceNr(persistenceId))
+
+  private def readHeadSequenceNr(
+      persistenceId: PersistenceId
+  ): Future[Option[Long]] = {
+    implicit val ec: scala.concurrent.ExecutionContext = pluginExecutor
+    val headConfig                                     = pluginConfig.headConfig
+    val headColumns                                    = headConfig.columnsDefConfig
+    val getItemRequest = GetItemRequest
+      .builder()
+      .tableName(headConfig.tableName)
+      .key(
+        Map(headColumns.persistenceIdColumnName -> AttributeValue.builder().s(persistenceId.asString).build()).asJava
+      )
+      .consistentRead(true)
+      .build()
+    Source
+      .single(getItemRequest)
+      .via(streamReadClient.getFlow)
+      .runWith(Sink.head)
+      .map { response =>
+        Option(response.item)
+          .flatMap(item => Option(item.get(headColumns.sequenceNrColumnName)))
+          .map(_.n.toLong)
+      }
+  }
+
   override def singlePutJournalRowFlow: Flow[JournalRow, Long, NotUsed] = Flow[JournalRow].flatMapConcat { journalRow =>
     val pkey = partitionKeyResolver.resolve(journalRow.persistenceId, journalRow.sequenceNumber).asString
     val skey = sortKeyResolver.resolve(journalRow.persistenceId, journalRow.sequenceNumber).asString
     val request = PutItemRequest
       .builder().tableName(pluginConfig.tableName)
-      .item(
-        (Map(
-          pluginConfig.columnsDefConfig.partitionKeyColumnName -> AttributeValue
-            .builder()
-            .s(pkey).build(),
-          pluginConfig.columnsDefConfig.sortKeyColumnName -> AttributeValue
-            .builder()
-            .s(skey).build(),
-          pluginConfig.columnsDefConfig.persistenceIdColumnName -> AttributeValue
-            .builder()
-            .s(journalRow.persistenceId.asString).build(),
-          pluginConfig.columnsDefConfig.sequenceNrColumnName -> AttributeValue
-            .builder()
-            .n(journalRow.sequenceNumber.asString).build(),
-          pluginConfig.columnsDefConfig.orderingColumnName -> AttributeValue
-            .builder()
-            .n(journalRow.ordering.toString).build(),
-          pluginConfig.columnsDefConfig.deletedColumnName -> AttributeValue
-            .builder().bool(journalRow.deleted).build(),
-          pluginConfig.columnsDefConfig.messageColumnName -> AttributeValue
-            .builder().b(SdkBytes.fromByteArray(journalRow.message)).build()
-        ) ++ journalRow.tags
-          .map { tag =>
-            Map(pluginConfig.columnsDefConfig.tagsColumnName -> AttributeValue.builder().s(tag).build())
-          }.getOrElse(
-            Map.empty
-          )).asJava
-      ).build()
+      .item(journalItemAttributes(journalRow, pkey, skey).asJava)
+      .build()
     Source.single(request).via(streamClient.putItemFlow).flatMapConcat { response =>
       if (response.sdkHttpResponse().isSuccessful) {
         Source.single(1L)
