@@ -271,16 +271,22 @@ final class V2JournalRowWriteDriver(
           .builder()
           .tableName(headConfig.tableName)
           .item(headItem.asJava)
-          // The head is written only if it holds exactly the sequence number before this write, or
-          // if it does not exist yet and this write starts at sequence number 1. A gap and a rewind
-          // both fail. This is not optimistic locking: it checks that the assumption "there is only
-          // one writer per aggregate" (kept by Cluster Sharding and Split Brain Resolver) still holds.
-          .conditionExpression("(attribute_not_exists(#seq) AND :first = :one) OR (#seq = :prev)")
+          // The head is written only if it is behind the first sequence number of this write, or if it
+          // does not exist yet and this write starts at sequence number 1. A head that is ahead (a
+          // rewind, or another writer that already wrote these sequence numbers) fails.
+          //
+          // The gap is allowed on purpose: Pekko does not rewind the sequence number of a rejected
+          // write, so the write after a rejection starts above the head by more than one. A gap in the
+          // journal is not checked when an aggregate recovers.
+          //
+          // This is not optimistic locking: it checks that the assumption "there is only one writer per
+          // aggregate" (kept by Cluster Sharding and Split Brain Resolver) still holds. A second writer
+          // that got ahead is rejected by this condition and by the journal condition.
+          .conditionExpression("(attribute_not_exists(#seq) AND :first = :one) OR (#seq < :first)")
           .expressionAttributeNames(Map("#seq" -> headColumnsDefConfig.sequenceNrColumnName).asJava)
           .expressionAttributeValues(
             Map(
               ":first" -> AttributeValue.builder().n(firstSequenceNr.toString).build(),
-              ":prev"  -> AttributeValue.builder().n((firstSequenceNr - 1).toString).build(),
               ":one"   -> AttributeValue.builder().n("1").build()
             ).asJava
           )
@@ -339,7 +345,7 @@ final class V2JournalRowWriteDriver(
       readHeadSequenceNr(request.head.persistenceId).map {
         case None =>
           Some(new JournalHeadMissingException(request.head.persistenceId.asString, firstSequenceNr))
-        case Some(actualSequenceNr) if actualSequenceNr != firstSequenceNr - 1 =>
+        case Some(actualSequenceNr) if actualSequenceNr >= firstSequenceNr =>
           Some(
             new JournalHeadSequenceMismatchException(
               request.head.persistenceId.asString,
@@ -354,6 +360,9 @@ final class V2JournalRowWriteDriver(
       Future.successful(None)
     }
   }
+
+  override def headSequenceNr(persistenceId: PersistenceId): Source[Option[Long], NotUsed] =
+    Source.future(readHeadSequenceNr(persistenceId))
 
   private def readHeadSequenceNr(
       persistenceId: PersistenceId

@@ -78,19 +78,23 @@ final class JournalHeadMissingException(val persistenceId: String, val firstSequ
       null
     )
 
-/** The JournalHead item does not hold the sequence number that precedes this write.
+/** The JournalHead item is ahead of this write.
   *
-  * This catches both a gap (the head is older than this write) and a rewind (the head is newer). It is a safety check
-  * that the assumption "there is only one writer per aggregate" (kept by Cluster Sharding and Split Brain Resolver)
-  * still holds. It is not optimistic locking.
+  * The head must be lower than the first sequence number of the write. A head that is equal or higher means a rewind,
+  * or another writer that already wrote these sequence numbers. A head that is lower than the first sequence number by
+  * more than one is accepted on purpose: Pekko does not rewind the sequence number of a rejected write, so the write
+  * after a rejection starts above the head by more than one.
+  *
+  * This is a safety check that the assumption "there is only one writer per aggregate" (kept by Cluster Sharding and
+  * Split Brain Resolver) still holds. It is not optimistic locking.
   */
 final class JournalHeadSequenceMismatchException(
     val persistenceId: String,
     val expectedPreviousSequenceNr: Long,
     val actualSequenceNr: Long
 ) extends JournalHeadException(
-      s"persistenceId=[$persistenceId]: expected the JournalHead sequence number to be $expectedPreviousSequenceNr," +
-      s" but it was $actualSequenceNr",
+      s"persistenceId=[$persistenceId]: expected the JournalHead sequence number to be lower than the first sequence" +
+      s" number of the write ($expectedPreviousSequenceNr) but it was $actualSequenceNr",
       null
     )
 

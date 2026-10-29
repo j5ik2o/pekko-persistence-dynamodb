@@ -268,10 +268,21 @@ final class DynamoDBJournal(config: Config) extends AsyncWriteJournal with Actor
     val newContext = metricsReporter.fold(context)(_.beforeJournalAsyncReadHighestSequenceNr(context))
 
     def fetchHighestSeqNr(): Future[Long] = {
-      journalDao
+      val journalHighest = journalDao
         .highestSequenceNr(PersistenceId.apply(persistenceId), SequenceNumber(fromSequenceNr)).map(
           _.getOrElse(0L)
-        ).runWith(Sink.head)
+        )
+      if (journalPluginConfig.headConfig.enabled) {
+        // The JournalHead item knows the last sequence number even when every event of the aggregate has been hard
+        // deleted from the journal; without this lower bound the next write would start at 1 and the head condition
+        // would reject it.
+        journalHighest
+          .zip(journalRowWriteDriver.headSequenceNr(PersistenceId.apply(persistenceId)))
+          .map { case (journalSeqNr, headSeqNr) => Math.max(journalSeqNr, headSeqNr.getOrElse(0L)) }
+          .runWith(Sink.head)
+      } else {
+        journalHighest.runWith(Sink.head)
+      }
     }
 
     def future = writeInProgress.get(persistenceId) match {

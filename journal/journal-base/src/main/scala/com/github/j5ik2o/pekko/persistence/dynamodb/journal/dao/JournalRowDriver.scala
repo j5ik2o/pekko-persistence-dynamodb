@@ -81,6 +81,13 @@ trait JournalRowWriteDriver extends JournalRowReadDriver {
 
   def updateMessage(journalRow: JournalRow): Source[Unit, NotUsed]
 
+  /** The last sequence number of the JournalHead item, when `head.enabled` is true and the driver supports it.
+    *
+    * It is used as a lower bound of the highest sequence number of an aggregate: when every event of an aggregate was
+    * hard deleted from the journal, the journal no longer knows the highest sequence number, but the head still does.
+    */
+  def headSequenceNr(persistenceId: PersistenceId): Source[Option[Long], NotUsed] = Source.single(None)
+
   def singleDeleteJournalRowFlow: Flow[PersistenceIdWithSeqNr, Long, NotUsed]
   def multiDeleteJournalRowsFlow: Flow[Seq[PersistenceIdWithSeqNr], Long, NotUsed]
 
