@@ -51,8 +51,9 @@ Each element of `events` is a map of `sequence-nr` (`N`) and `message` (`B`), th
 in the journal.
 
 ```{important}
-Enable DynamoDB Streams on the `JournalHead` table, and do not rely on a stream of the journal table. The journal
-table is used for rebuilding and replaying an aggregate, not for ordering the read model updates.
+Enable DynamoDB Streams on the `JournalHead` table only. When `head.enabled` is true, disable DynamoDB Streams on
+the journal table: the journal table is used for rebuilding and replaying an aggregate, not for ordering the read
+model updates. `tools/dynamodb-setup/journal-table-for-head.json` is the journal table definition without a stream.
 ```
 
 ## Configuration
@@ -84,18 +85,33 @@ with any other client configuration.
 
 ## Enabling it on an existing system
 
+Run the steps in this order. Do not write to the aggregates between the first migration run and the moment every
+node runs with `head.enabled = true`.
+
 1. Create the `JournalHead` table with DynamoDB Streams enabled.
-2. Make sure the application is still running with `head.enabled = false`.
-3. Run the migration tool. It scans the journal table and creates a `JournalHead` item for every persistence id it
-   finds. The item holds the current last sequence number and an empty event list.
+2. Stop the writes of the application (stop every node).
+3. Run the migration tool without arguments. It scans the journal table, does not write anything, and reports how
+   many `JournalHead` items it would create, raise or leave as they are.
 
    ```shell
    $ sbt -batch "journal-v2/runMain com.github.j5ik2o.pekko.persistence.dynamodb.journal.head.JournalHeadMigration"
    ```
 
-   Add `--dry-run` to see how many items would be created without writing. The writes are conditional, so the tool
-   can be run more than once; existing items are left untouched.
-4. Set `head.enabled = true` and restart the application.
+4. Run the tool with `--execute`. It creates a `JournalHead` item for every persistence id it finds; the item holds
+   the last sequence number of the journal and an empty event list.
+
+   ```shell
+   $ sbt -batch "journal-v2/runMain com.github.j5ik2o.pekko.persistence.dynamodb.journal.head.JournalHeadMigration --execute"
+   ```
+
+5. Set `head.enabled = true` on every node and start the application.
+6. Run the tool again with `--execute`. If a write happened after step 4 (for example while the nodes were being
+   replaced), the `JournalHead` item can be behind the journal. The tool raises it to the last sequence number of the
+   journal, but never lowers it, and clears the event list, because the head no longer describes a single write. The
+   events up to that point remain in the journal for a rebuild.
+
+The writes of the tool are conditional, so it can be run as often as needed. A run without `--execute` is a dry-run
+and never writes.
 
 If an aggregate is written without its `JournalHead` item, the write fails with
 `JournalHeadMissingException`. That failure means the migration has not covered the aggregate yet. A new aggregate
@@ -112,6 +128,10 @@ A single write is rejected, before anything is sent to DynamoDB, when:
 
 A rejected write is neither split into several transactions nor written without a transaction.
 
+The rejection is returned as a failed write of that batch, so the actor handles it with `onPersistRejected` and stays
+alive. A write that reaches DynamoDB but fails there (a failed condition or a service error) is a journal failure and
+stops the actor with `onPersistFailure`.
+
 ## Failures
 
 | Failure                                      | Meaning                                                          |
@@ -122,9 +142,11 @@ A rejected write is neither split into several transactions nor written without 
 | `JournalHeadTooManyEventsException`          | more than 99 events in one write                                 |
 | `JournalHeadItemTooLargeException`           | the `JournalHead` item would exceed 400 KB                       |
 | `JournalHeadTransactionTooLargeException`    | the transaction would exceed 4 MB                                |
+| `JournalHeadInvalidWriteException`           | the rows of one write are empty, span several persistence ids, or are not contiguous |
 
 ## Deleting events
 
-`deleteMessagesTo` deletes journal rows only. It does not rewind or delete the `JournalHead` item, because a head
-that moves backwards would break the ordering guarantee. A new write continues at the last sequence number the
+`deleteMessagesTo` deletes journal rows only. It does not write the `JournalHead` item and does not change the
+DynamoDB Stream of the `JournalHead` table, whichever of soft delete and hard delete is configured, because a head
+that moves on a delete would break the ordering guarantee. A new write continues at the last sequence number the
 aggregate had.
