@@ -38,8 +38,9 @@ aggregate" — kept by Cluster Sharding and Split Brain Resolver — still holds
 the first sequence number of this write (a rewind, or another writer that already wrote these sequence numbers) fails
 the transaction, and nothing is written.
 
-The assumption that there is one writer per persistence id is kept by Cluster Sharding; the plugin only detects that
-it no longer holds and does not prevent a second writer.
+The assumption that there is one writer per persistence id is kept by Cluster Sharding; the plugin detects some cases
+where it no longer holds (for example, a delayed writer that tries to write a sequence number another writer has
+already written) and does not prevent a second writer.
 
 The journal rows have their own condition: a row is written only if the key `(persistenceId, seqNr)` does not exist
 yet. A duplicate write fails.
@@ -157,7 +158,7 @@ at most 400 KB for the `JournalHead` item) after the restart.
 
 | Failure                                      | Meaning                                                          |
 |:---------------------------------------------|:-----------------------------------------------------------------|
-| `JournalHeadMissingException`                | the aggregate has events but no `JournalHead` item — run the migration |
+| `JournalHeadMissingException`                | the aggregate has events but no `JournalHead` item — run the migration; or this is the write after the rejected first write of a new aggregate — restart the actor |
 | `JournalHeadSequenceMismatchException`       | the head is equal to or higher than the first sequence number of this write (a rewind, or another writer) |
 | `DuplicateJournalEventsException`            | the journal already contains some of the written events          |
 | `JournalHeadTooManyEventsException`          | more than 99 events in one write                                 |
