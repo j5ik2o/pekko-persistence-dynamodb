@@ -56,7 +56,8 @@ object JournalHeadMigration {
       scannedPersistenceIds: Int,
       createdJournalHeads: Int,
       updatedJournalHeads: Int,
-      existingJournalHeads: Int
+      existingJournalHeads: Int,
+      raisedPersistenceIds: Seq[String]
   )
 
   def run(
@@ -70,22 +71,26 @@ object JournalHeadMigration {
     var created            = 0
     var updated            = 0
     var existing           = 0
+    val raised             = Vector.newBuilder[String]
     highestSequenceNrs.foreach { case (persistenceId, lastSequenceNr) =>
       if (!execute) {
         readHeadSequenceNr(syncClient, headConfig, persistenceId) match {
-          case None                                      => created += 1
-          case Some(current) if current < lastSequenceNr => updated += 1
-          case Some(_)                                   => existing += 1
+          case None => created += 1
+          case Some(current) if current < lastSequenceNr =>
+            updated += 1
+            raised += persistenceId
+          case Some(_) => existing += 1
         }
       } else if (putJournalHeadIfAbsent(syncClient, headConfig, persistenceId, lastSequenceNr)) {
         created += 1
       } else if (raiseJournalHeadIfBehind(syncClient, headConfig, persistenceId, lastSequenceNr)) {
         updated += 1
+        raised += persistenceId
       } else {
         existing += 1
       }
     }
-    Result(highestSequenceNrs.size, created, updated, existing)
+    Result(highestSequenceNrs.size, created, updated, existing, raised.result().sorted)
   }
 
   private def scanHighestSequenceNrs(
@@ -100,6 +105,7 @@ object JournalHeadMigration {
       val requestBuilder = ScanRequest
         .builder()
         .tableName(journalTableName)
+        .consistentRead(true)
         .projectionExpression("#persistenceId, #sequenceNr")
         .expressionAttributeNames(
           Map(
@@ -242,6 +248,12 @@ object JournalHeadMigration {
           s" raised ${result.updatedJournalHeads} JournalHead items," +
           s" skipped ${result.existingJournalHeads} existing JournalHead items"
         )
+        if (result.raisedPersistenceIds.nonEmpty) {
+          println(
+            s"${prefix}raised JournalHead items (rebuild the read model of these aggregates from the journal):" +
+            result.raisedPersistenceIds.map(persistenceId => s"\n  - $persistenceId").mkString
+          )
+        }
       } finally {
         client.close()
       }
