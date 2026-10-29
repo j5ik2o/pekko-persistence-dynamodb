@@ -38,6 +38,9 @@ aggregate" — kept by Cluster Sharding and Split Brain Resolver — still holds
 the first sequence number of this write (a rewind, or another writer that already wrote these sequence numbers) fails
 the transaction, and nothing is written.
 
+The assumption that there is one writer per persistence id is kept by Cluster Sharding; the plugin only detects that
+it no longer holds and does not prevent a second writer.
+
 The journal rows have their own condition: a row is written only if the key `(persistenceId, seqNr)` does not exist
 yet. A duplicate write fails.
 
@@ -142,6 +145,13 @@ stops the actor with `onPersistFailure`.
 Pekko does not take the sequence numbers of a rejected write back: the next write of the same actor starts above the
 rejected sequence numbers, and the journal keeps a gap. The `JournalHead` condition accepts a gap, so the actor keeps
 working. The `JournalHead` item moves to the next written sequence number.
+
+A new aggregate that has no `JournalHead` item yet is the exception. If its first write (starting at sequence number
+`1`) is rejected by these limits, the actor keeps the advanced sequence numbers, and the next write of that actor
+starts above `1`. The condition accepts a missing item only for a write that starts at `1`, so that next write fails
+and stops the actor with `onPersistFailure`. Restart the actor: recovery finds no event and no `JournalHead` item, so
+the aggregate starts again at sequence number `1` and the write is accepted. Write a smaller batch (at most 99 events,
+at most 400 KB for the `JournalHead` item) after the restart.
 
 ## Failures
 
