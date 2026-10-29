@@ -62,9 +62,14 @@ object JournalHeadSpec {
 
   final case class Persist(payload: String)
   final case class PersistAllPayloads(payloads: immutable.Seq[String])
+  final case class PersistTwice(first: String, second: String)
+  final case class DeleteTo(sequenceNr: Long)
   final case class Persisted(payload: String)
   final case class PersistedAll(size: Int)
+  final case class PersistedSecond(payload: String)
+  final case class Deleted()
   final case class PersistFailed(cause: Throwable)
+  final case class PersistRejected(cause: Throwable)
 
   class TestPersistentActor(val persistenceId: String, failureProbe: ActorRef) extends PersistentActor {
 
@@ -81,12 +86,28 @@ object JournalHeadSpec {
           remaining -= 1
           if (remaining == 0) sender() ! PersistedAll(payloads.size)
         }
+      case PersistTwice(first, second) =>
+        // two persist calls in one command handler create two writes in one asyncWriteMessages call
+        persist(first) { _ => () }
+        persist(second) { p => sender() ! PersistedSecond(p) }
+      case DeleteTo(sequenceNr) =>
+        deleteMessages(sequenceNr)
+      case org.apache.pekko.persistence.DeleteMessagesSuccess(_) =>
+        failureProbe ! Deleted()
+      case org.apache.pekko.persistence.DeleteMessagesFailure(cause, _) =>
+        failureProbe ! PersistFailed(cause)
     }
 
     override protected def onPersistFailure(cause: Throwable, event: Any, seqNr: Long): Unit = {
       failureProbe ! PersistFailed(cause)
       super.onPersistFailure(cause, event, seqNr)
     }
+
+    override protected def onPersistRejected(cause: Throwable, event: Any, seqNr: Long): Unit = {
+      failureProbe ! PersistRejected(cause)
+      super.onPersistRejected(cause, event, seqNr)
+    }
+
   }
 }
 
@@ -125,10 +146,11 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
     )
   )
 
-  private var headDisabledSystem: ActorSystem = _
-  private var headEnabledSystem: ActorSystem  = _
+  private var headDisabledSystem: ActorSystem          = _
+  private var headEnabledSystem: ActorSystem           = _
+  private var headEnabledHardDeleteSystem: ActorSystem = _
 
-  private def config(headEnabled: Boolean) = {
+  private def config(headEnabled: Boolean, softDelete: Boolean = true) = {
     ConfigHelper.config(
       Some("journal-reference"),
       legacyConfigFormat = false,
@@ -137,6 +159,7 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
       dynamoDBPort = dynamoDBPort,
       clientVersion = ClientVersion.V2.toString,
       clientType = ClientType.Sync.toString,
+      softDelete = softDelete,
       headEnabled = headEnabled
     )
   }
@@ -146,17 +169,17 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
     createTable()
     headDisabledSystem = ActorSystem("journal-head-disabled", config(headEnabled = false))
     headEnabledSystem = ActorSystem("journal-head-enabled", config(headEnabled = true))
+    headEnabledHardDeleteSystem =
+      ActorSystem("journal-head-enabled-hard-delete", config(headEnabled = true, softDelete = false))
   }
 
   override def beforeStopContainers(): Unit = {
-    if (headDisabledSystem != null) {
-      Await.result(headDisabledSystem.terminate(), 60.seconds)
-      headDisabledSystem = null
+    Seq(headDisabledSystem, headEnabledSystem, headEnabledHardDeleteSystem).foreach { system =>
+      if (system != null) Await.result(system.terminate(), 60.seconds)
     }
-    if (headEnabledSystem != null) {
-      Await.result(headEnabledSystem.terminate(), 60.seconds)
-      headEnabledSystem = null
-    }
+    headDisabledSystem = null
+    headEnabledSystem = null
+    headEnabledHardDeleteSystem = null
     deleteTable()
     super.beforeStopContainers()
   }
@@ -169,30 +192,48 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
       s"actor-${persistenceId.hashCode}-${System.nanoTime()}"
     )
 
-  private def persistOk(system: ActorSystem, persistenceId: String, payload: String): Persisted = {
+  private def withActor[T](system: ActorSystem, persistenceId: String)(
+      action: (ActorRef, TestProbe) => T
+  ): T = {
     val probe = newTestProbe(system)
     val actor = newActor(system, persistenceId, probe.ref)
-    actor.tell(Persist(payload), probe.ref)
-    probe.expectMsg(60.seconds, Persisted(payload))
+    try action(actor, probe)
+    finally system.stop(actor)
   }
+
+  private def persistOk(system: ActorSystem, persistenceId: String, payload: String): Persisted =
+    withActor(system, persistenceId) { (actor, probe) =>
+      actor.tell(Persist(payload), probe.ref)
+      probe.expectMsg(60.seconds, Persisted(payload))
+    }
 
   private def persistAllOk(
       system: ActorSystem,
       persistenceId: String,
       payloads: immutable.Seq[String]
-  ): PersistedAll = {
-    val probe = newTestProbe(system)
-    val actor = newActor(system, persistenceId, probe.ref)
-    actor.tell(PersistAllPayloads(payloads), probe.ref)
-    probe.expectMsgType[PersistedAll](60.seconds)
-  }
+  ): PersistedAll =
+    withActor(system, persistenceId) { (actor, probe) =>
+      actor.tell(PersistAllPayloads(payloads), probe.ref)
+      probe.expectMsgType[PersistedAll](60.seconds)
+    }
 
-  private def persistFails(system: ActorSystem, persistenceId: String, payloads: immutable.Seq[String]): Throwable = {
-    val probe = newTestProbe(system)
-    val actor = newActor(system, persistenceId, probe.ref)
-    actor.tell(PersistAllPayloads(payloads), probe.ref)
-    probe.expectMsgType[PersistFailed](60.seconds).cause
-  }
+  /** A write that DynamoDB refuses (a failed condition or a service error) stops the actor. */
+  private def persistFails(system: ActorSystem, persistenceId: String, payloads: immutable.Seq[String]): Throwable =
+    withActor(system, persistenceId) { (actor, probe) =>
+      actor.tell(PersistAllPayloads(payloads), probe.ref)
+      probe.expectMsgType[PersistFailed](60.seconds).cause
+    }
+
+  /** A write that the JournalHead path rejects before DynamoDB is the responsibility of onPersistRejected. */
+  private def persistRejected(
+      system: ActorSystem,
+      persistenceId: String,
+      payloads: immutable.Seq[String]
+  ): Throwable =
+    withActor(system, persistenceId) { (actor, probe) =>
+      actor.tell(PersistAllPayloads(payloads), probe.ref)
+      probe.expectMsgType[PersistRejected](60.seconds).cause
+    }
 
   private def headItem(persistenceId: String): Option[Map[String, AttributeValue]] = {
     val getItemRequest = new com.amazonaws.services.dynamodbv2.model.GetItemRequest()
@@ -333,6 +374,68 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
       headSequenceNr(pid) shouldBe Some(2L)
     }
 
+    "keep the order of two persist calls in one command handler" in {
+      val pid = "head-two-persists-1"
+      withActor(headEnabledSystem, pid) { (actor, probe) =>
+        actor.tell(PersistTwice("e1", "e2"), probe.ref)
+        probe.expectMsg(60.seconds, PersistedSecond("e2"))
+      }
+
+      // both writes of one asyncWriteMessages call reach DynamoDB in the order the actor produced them
+      journalSequenceNrs(pid) shouldBe Seq(1L, 2L)
+      headSequenceNr(pid) shouldBe Some(2L)
+      headItem(pid).get("events").getL.asScala.map(_.getM.get("sequence-nr").getN.toLong) shouldBe Seq(2L)
+    }
+
+    "keep the JournalHead item and its stream unchanged on a soft delete" in {
+      val pid = "head-soft-delete-1"
+      persistAllOk(headEnabledSystem, pid, immutable.Seq("e1", "e2", "e3"))
+      val headBefore = headItem(pid)
+      headStreamRecords(pid, 1).size shouldBe 1
+
+      withActor(headEnabledSystem, pid) { (actor, probe) =>
+        actor.tell(DeleteTo(3L), probe.ref)
+        probe.expectMsg(60.seconds, Deleted())
+      }
+
+      journalRows(pid).map(_("deleted").getBOOL.booleanValue()) shouldBe Seq(true, true, true)
+      headItem(pid) shouldBe headBefore
+      headStreamRecords(pid, 1).size shouldBe 1
+    }
+
+    "keep the JournalHead item and its stream unchanged on a hard delete" in {
+      val pid = "head-hard-delete-1"
+      persistAllOk(headEnabledHardDeleteSystem, pid, immutable.Seq("e1", "e2", "e3"))
+      val headBefore = headItem(pid)
+      headStreamRecords(pid, 1).size shouldBe 1
+
+      withActor(headEnabledHardDeleteSystem, pid) { (actor, probe) =>
+        actor.tell(DeleteTo(3L), probe.ref)
+        probe.expectMsg(60.seconds, Deleted())
+      }
+
+      journalSequenceNrs(pid) shouldBe Seq.empty
+      headItem(pid) shouldBe headBefore
+      headStreamRecords(pid, 1).size shouldBe 1
+    }
+
+    "reject an invalid write as a value so that the write queue keeps working" in {
+      val pid = "head-invalid-write-1"
+      val dao = newWriteJournalDao(headEnabledSystem)
+      try {
+        implicit val mat: Materializer = SystemMaterializer(headEnabledSystem).materializer
+        val exception = failedWith(
+          dao,
+          Seq(journalRow(headEnabledSystem, pid, 1L, "e1"), journalRow(headEnabledSystem, pid, 3L, "e3"))
+        )
+        exception shouldBe a[JournalHeadInvalidWriteException]
+
+        // the queue of the same dao still writes: the exception did not abort the stream
+        Await.result(dao.putMessages(Seq(journalRow(headEnabledSystem, pid, 1L, "e1"))).runWith(Sink.head), 60.seconds)
+        headSequenceNr(pid) shouldBe Some(1L)
+      } finally dao.dispose()
+    }
+
     "accept 99 events in one persistAll and reject 100 events" in {
       val acceptedPid = "head-99-events-1"
       persistAllOk(headEnabledSystem, acceptedPid, (1 to 99).map(i => s"e$i").toVector) shouldBe PersistedAll(99)
@@ -340,7 +443,7 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
       headSequenceNr(acceptedPid) shouldBe Some(99L)
 
       val rejectedPid = "head-100-events-1"
-      val failure     = persistFails(headEnabledSystem, rejectedPid, (1 to 100).map(i => s"e$i").toVector)
+      val failure     = persistRejected(headEnabledSystem, rejectedPid, (1 to 100).map(i => s"e$i").toVector)
       failure shouldBe a[JournalHeadTooManyEventsException]
       failure.asInstanceOf[JournalHeadTooManyEventsException].eventCount shouldBe 100
       journalSequenceNrs(rejectedPid) shouldBe Seq.empty
@@ -354,7 +457,7 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
       headSequenceNr(acceptedPid) shouldBe Some(1L)
 
       val rejectedPid = "head-size-over-1"
-      val failure     = persistFails(headEnabledSystem, rejectedPid, immutable.Seq("x" * 410000))
+      val failure     = persistRejected(headEnabledSystem, rejectedPid, immutable.Seq("x" * 410000))
       failure shouldBe a[JournalHeadItemTooLargeException]
       journalSequenceNrs(rejectedPid) shouldBe Seq.empty
       headItem(rejectedPid) shouldBe None
@@ -376,7 +479,7 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
       persistOk(headEnabledSystem, newPid, "e1")
       headSequenceNr(newPid) shouldBe Some(1L)
 
-      // run the migration tool
+      // run the migration tool for real
       val client = newV2Client()
       try {
         val result = JournalHeadMigration.run(
@@ -384,7 +487,7 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
           journalTableName,
           journalColumnsDefConfig,
           headConfig,
-          dryRun = false
+          execute = true
         )
         result.createdJournalHeads should be >= 1
         result.existingJournalHeads should be >= 1 // the new aggregate already has a head
@@ -398,6 +501,44 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
       journalSequenceNrs(existingPid) shouldBe Seq(1L, 2L, 3L, 4L)
       headSequenceNr(existingPid) shouldBe Some(4L)
       headItem(existingPid).get("events").getL.asScala.map(_.getM.get("sequence-nr").getN.toLong) shouldBe Seq(4L)
+
+      // a write that happens while a node still runs with head mode off leaves the head behind
+      persistOk(headDisabledSystem, existingPid, "e5")
+      journalSequenceNrs(existingPid) shouldBe Seq(1L, 2L, 3L, 4L, 5L)
+      headSequenceNr(existingPid) shouldBe Some(4L)
+
+      // the tool reports the raise in dry-run mode and does not write
+      val client2 = newV2Client()
+      try {
+        val dryRun = JournalHeadMigration.run(
+          client2,
+          journalTableName,
+          journalColumnsDefConfig,
+          headConfig,
+          execute = false
+        )
+        dryRun.scannedPersistenceIds should be >= 2
+        dryRun.updatedJournalHeads shouldBe 1
+        headSequenceNr(existingPid) shouldBe Some(4L)
+
+        // a second run raises the head to the last sequence number of the journal
+        val executed = JournalHeadMigration.run(
+          client2,
+          journalTableName,
+          journalColumnsDefConfig,
+          headConfig,
+          execute = true
+        )
+        executed.updatedJournalHeads shouldBe 1
+      } finally client2.close()
+
+      headSequenceNr(existingPid) shouldBe Some(5L)
+      headItem(existingPid).get("events").getL.isEmpty shouldBe true
+
+      // and the aggregate continues at sequence number 6
+      persistOk(headEnabledSystem, existingPid, "e6")
+      journalSequenceNrs(existingPid) shouldBe Seq(1L, 2L, 3L, 4L, 5L, 6L)
+      headSequenceNr(existingPid) shouldBe Some(6L)
     }
 
     "deliver the JournalHead stream records in sequence number order" in {
@@ -406,38 +547,44 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
       persistOk(headEnabledSystem, pid, "e2")
       persistAllOk(headEnabledSystem, pid, immutable.Seq("e3", "e4"))
 
-      val v2Client      = newV2Client()
-      val streamsClient = newV2StreamsClient()
-      try {
-        val streamArn = v2Client
-          .describeTable(DescribeTableRequest.builder().tableName(journalHeadTableName).build())
-          .table()
-          .latestStreamArn()
+      val records = headStreamRecords(pid, 3)
 
-        val shardIds = waitForStreamShards(streamsClient, streamArn)
-        val records  = readStreamRecords(streamsClient, streamArn, shardIds, pid)
+      val headSequenceNrs = records
+        .filter(r => r.dynamodb().newImage().get("persistence-id").s() == pid)
+        .map(r => r.dynamodb().newImage().get("sequence-nr").n().toLong)
+      // three writes: seq 1, seq 2, and the write of seq 3 and 4 (the head jumps to 4)
+      headSequenceNrs shouldBe Seq(1L, 2L, 4L)
 
-        val headSequenceNrs = records
-          .filter(r => r.dynamodb().newImage().get("persistence-id").s() == pid)
-          .map(r => r.dynamodb().newImage().get("sequence-nr").n().toLong)
-        // three writes: seq 1, seq 2, and the write of seq 3 and 4 (the head jumps to 4)
-        headSequenceNrs shouldBe Seq(1L, 2L, 4L)
+      val streamEvents = records
+        .filter(r => r.dynamodb().newImage().get("persistence-id").s() == pid)
+        .flatMap(_.dynamodb().newImage().get("events").l().asScala)
+        .map(e => (e.m().get("sequence-nr").n().toLong, e.m().get("message").b().asByteArray.toSeq))
+      streamEvents.map(_._1) shouldBe Seq(1L, 2L, 3L, 4L)
 
-        val streamEvents = records
-          .filter(r => r.dynamodb().newImage().get("persistence-id").s() == pid)
-          .flatMap(_.dynamodb().newImage().get("events").l().asScala)
-          .map(e => (e.m().get("sequence-nr").n().toLong, e.m().get("message").b().asByteArray.toSeq))
-        streamEvents.map(_._1) shouldBe Seq(1L, 2L, 3L, 4L)
-
-        val journalMessages = journalRows(pid)
-          .map(row => (row("sequence-nr").getN.toLong, row("message").getB.array().toSeq))
-        streamEvents shouldBe journalMessages
-      } finally {
-        v2Client.close()
-        streamsClient.close()
-      }
+      val journalMessages = journalRows(pid)
+        .map(row => (row("sequence-nr").getN.toLong, row("message").getB.array().toSeq))
+      streamEvents shouldBe journalMessages
     }
 
+  }
+
+  private def headStreamRecords(
+      persistenceId: String,
+      expectedRecords: Int
+  ): Seq[software.amazon.awssdk.services.dynamodb.model.Record] = {
+    val v2Client      = newV2Client()
+    val streamsClient = newV2StreamsClient()
+    try {
+      val streamArn = v2Client
+        .describeTable(DescribeTableRequest.builder().tableName(journalHeadTableName).build())
+        .table()
+        .latestStreamArn()
+      val shardIds = waitForStreamShards(streamsClient, streamArn)
+      readStreamRecords(streamsClient, streamArn, shardIds, persistenceId, expectedRecords)
+    } finally {
+      v2Client.close()
+      streamsClient.close()
+    }
   }
 
   private def waitForStreamShards(
@@ -471,7 +618,8 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
       streamsClient: DynamoDbStreamsClient,
       streamArn: String,
       shardIds: Seq[String],
-      persistenceId: String
+      persistenceId: String,
+      expectedRecords: Int
   ): Seq[software.amazon.awssdk.services.dynamodb.model.Record] = {
     val deadline  = System.nanoTime() + 60.seconds.toNanos
     var collected = Vector.empty[software.amazon.awssdk.services.dynamodb.model.Record]
@@ -494,13 +642,13 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
           .flatMap(image => Option(image.get("persistence-id")))
           .exists(_.s() == persistenceId)
       )
-    while (iterators.nonEmpty && recordsOfPersistenceId.size < 3 && System.nanoTime() < deadline) {
+    while (iterators.nonEmpty && recordsOfPersistenceId.size < expectedRecords && System.nanoTime() < deadline) {
       iterators = iterators.flatMap { iterator =>
         val response = streamsClient.getRecords(GetRecordsRequest.builder().shardIterator(iterator).build())
         collected ++= response.records().asScala
         Option(response.nextShardIterator())
       }
-      if (recordsOfPersistenceId.size < 3) Thread.sleep(200)
+      if (recordsOfPersistenceId.size < expectedRecords) Thread.sleep(200)
     }
     collected.toSeq
   }
