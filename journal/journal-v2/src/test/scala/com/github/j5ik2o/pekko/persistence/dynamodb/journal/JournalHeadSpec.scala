@@ -450,6 +450,65 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
       headItem(pid).get("events").getL.asScala.map(_.getM.get("sequence-nr").getN.toLong) shouldBe Seq(102L)
     }
 
+    "stop the actor when the first write of a new aggregate is rejected, and write from 1 after a restart" in {
+      // a new aggregate has no JournalHead item yet, so the condition accepts only a write that starts at 1
+      val pid = "head-new-aggregate-rejected-1"
+      withActor(headEnabledSystem, pid) { (actor, probe) =>
+        actor.tell(PersistAllPayloads((1 to 100).map(index => s"e$index").toVector), probe.ref)
+        val rejected = probe
+          .fishForMessage(60.seconds, "the rejection of the first write") {
+            case PersistRejected(_) => true
+            case _                  => false
+          }.asInstanceOf[PersistRejected]
+        rejected.cause shouldBe a[JournalHeadTooManyEventsException]
+        journalSequenceNrs(pid) shouldBe Seq.empty
+        headItem(pid) shouldBe None
+
+        // the actor keeps the advanced sequence numbers, so its next write starts above 1 and stops the actor
+        actor.tell(Persist("after"), probe.ref)
+        val failed = probe
+          .fishForMessage(60.seconds, "the failure of the next write of the same actor") {
+            case PersistFailed(_) => true
+            case _                => false
+          }.asInstanceOf[PersistFailed]
+        failed.cause shouldBe a[JournalHeadMissingException]
+      }
+      journalSequenceNrs(pid) shouldBe Seq.empty
+      headItem(pid) shouldBe None
+
+      // after the restart, recovery finds nothing, so the aggregate starts at sequence number 1 again
+      persistOk(headEnabledSystem, pid, "e1")
+      journalSequenceNrs(pid) shouldBe Seq(1L)
+      headSequenceNr(pid) shouldBe Some(1L)
+    }
+
+    "stop the actor when the first write of a new aggregate exceeds the item size, and write from 1 after a restart" in {
+      val pid = "head-new-aggregate-rejected-size-1"
+      withActor(headEnabledSystem, pid) { (actor, probe) =>
+        actor.tell(Persist("x" * 410000), probe.ref)
+        val rejected = probe
+          .fishForMessage(60.seconds, "the rejection of the first write") {
+            case PersistRejected(_) => true
+            case _                  => false
+          }.asInstanceOf[PersistRejected]
+        rejected.cause shouldBe a[JournalHeadItemTooLargeException]
+
+        actor.tell(Persist("after"), probe.ref)
+        val failed = probe
+          .fishForMessage(60.seconds, "the failure of the next write of the same actor") {
+            case PersistFailed(_) => true
+            case _                => false
+          }.asInstanceOf[PersistFailed]
+        failed.cause shouldBe a[JournalHeadMissingException]
+      }
+      journalSequenceNrs(pid) shouldBe Seq.empty
+      headItem(pid) shouldBe None
+
+      persistOk(headEnabledSystem, pid, "e1")
+      journalSequenceNrs(pid) shouldBe Seq(1L)
+      headSequenceNr(pid) shouldBe Some(1L)
+    }
+
     "write the first write and reject the second one of the same batch" in {
       val pid = "head-batch-partial-1"
       withActor(headEnabledSystem, pid) { (actor, probe) =>
