@@ -23,16 +23,20 @@ persistence id, so its stream is ordered per persistence id.
 The write condition of the `JournalHead` item is:
 
 ```
-(attribute_not_exists(sequence-nr) AND :first = :one) OR (sequence-nr = :prev)
+(attribute_not_exists(sequence-nr) AND :first = :one) OR (sequence-nr < :first)
 ```
 
-`:first` is the first sequence number of the write, `:prev` is `:first - 1`, and `:one` is `1`. The item is written
-only if it already holds exactly the sequence number before this write, or if it does not exist yet and the write
-starts at sequence number `1`.
+`:first` is the first sequence number of the write and `:one` is `1`. The item is written only if it is behind the
+first sequence number of this write, or if it does not exist yet and the write starts at sequence number `1`.
+
+A gap is accepted on purpose. When a write is rejected by the limits below, Pekko does not take the sequence numbers
+of that write back, so the next write of the same actor starts above the head by more than one. Recovery does not
+check the sequence numbers of an aggregate for gaps, so such a journal keeps working.
 
 This is **not** optimistic locking. It is a safety check that the assumption "there is only one writer per
-aggregate" — kept by Cluster Sharding and Split Brain Resolver — still holds. A gap (the head is older than this
-write) and a rewind (the head is newer than this write) both fail the transaction, and nothing is written.
+aggregate" — kept by Cluster Sharding and Split Brain Resolver — still holds. A head that is equal to or higher than
+the first sequence number of this write (a rewind, or another writer that already wrote these sequence numbers) fails
+the transaction, and nothing is written.
 
 The journal rows have their own condition: a row is written only if the key `(persistenceId, seqNr)` does not exist
 yet. A duplicate write fails.
@@ -109,6 +113,9 @@ node runs with `head.enabled = true`.
    replaced), the `JournalHead` item can be behind the journal. The tool raises it to the last sequence number of the
    journal, but never lowers it, and clears the event list, because the head no longer describes a single write. The
    events up to that point remain in the journal for a rebuild.
+7. The tool prints the persistence ids whose `JournalHead` item it raised. The events between the old head and the
+   raise were never written to the `JournalHead` table, so their read models did not receive them. Rebuild the read
+   model of those aggregates from the journal table before relying on it.
 
 The writes of the tool are conditional, so it can be run as often as needed. A run without `--execute` is a dry-run
 and never writes.
@@ -132,12 +139,16 @@ The rejection is returned as a failed write of that batch, so the actor handles 
 alive. A write that reaches DynamoDB but fails there (a failed condition or a service error) is a journal failure and
 stops the actor with `onPersistFailure`.
 
+Pekko does not take the sequence numbers of a rejected write back: the next write of the same actor starts above the
+rejected sequence numbers, and the journal keeps a gap. The `JournalHead` condition accepts a gap, so the actor keeps
+working. The `JournalHead` item moves to the next written sequence number.
+
 ## Failures
 
 | Failure                                      | Meaning                                                          |
 |:---------------------------------------------|:-----------------------------------------------------------------|
 | `JournalHeadMissingException`                | the aggregate has events but no `JournalHead` item — run the migration |
-| `JournalHeadSequenceMismatchException`       | the head does not hold the sequence number before this write (gap or rewind) |
+| `JournalHeadSequenceMismatchException`       | the head is equal to or higher than the first sequence number of this write (a rewind, or another writer) |
 | `DuplicateJournalEventsException`            | the journal already contains some of the written events          |
 | `JournalHeadTooManyEventsException`          | more than 99 events in one write                                 |
 | `JournalHeadItemTooLargeException`           | the `JournalHead` item would exceed 400 KB                       |
@@ -151,6 +162,6 @@ DynamoDB Stream of the `JournalHead` table, whichever of soft delete and hard de
 that moves on a delete would break the ordering guarantee.
 
 With soft delete (the default), the deleted rows stay in the journal, so a new write continues at the last sequence
-number the aggregate had. A hard delete that removes every event of an aggregate makes the next write start at
-sequence number `1` again, and the `JournalHead` condition rejects it. Do not remove every event of an aggregate
-that runs with `head.enabled`; keep soft delete on, or keep at least one event.
+number the aggregate had. A hard delete that removes every event of an aggregate empties the journal, and the journal
+no longer knows the last sequence number; the plugin then uses the `sequence-nr` of the `JournalHead` item as the
+lower bound of the highest sequence number, so the aggregate continues above the head instead of starting at `1`.
