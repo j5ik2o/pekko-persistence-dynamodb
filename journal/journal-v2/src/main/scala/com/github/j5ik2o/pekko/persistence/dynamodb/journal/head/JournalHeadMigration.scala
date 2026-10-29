@@ -23,7 +23,7 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.journal.config.{
 }
 import com.github.j5ik2o.pekko.persistence.dynamodb.utils.V2SyncClientFactory
 import org.apache.pekko.actor.ActorSystem
-import software.amazon.awssdk.services.dynamodb.model.{ AttributeValue, PutItemRequest, ScanRequest }
+import software.amazon.awssdk.services.dynamodb.model.{ AttributeValue, GetItemRequest, PutItemRequest, ScanRequest }
 import software.amazon.awssdk.services.dynamodb.{ DynamoDbClient => JavaDynamoDbSyncClient }
 
 import scala.collection.mutable
@@ -55,7 +55,7 @@ object JournalHeadMigration {
     var existing           = 0
     highestSequenceNrs.foreach { case (persistenceId, lastSequenceNr) =>
       if (dryRun) {
-        created += 1
+        if (headExists(syncClient, headConfig, persistenceId)) existing += 1 else created += 1
       } else if (putJournalHeadIfAbsent(syncClient, headConfig, persistenceId, lastSequenceNr)) {
         created += 1
       } else {
@@ -96,6 +96,24 @@ object JournalHeadMigration {
       hasMoreItemsToRead = exclusiveStartKey.nonEmpty
     }
     result.toMap
+  }
+
+  private def headExists(
+      syncClient: JavaDynamoDbSyncClient,
+      headConfig: JournalHeadConfig,
+      persistenceId: String
+  ): Boolean = {
+    val request = GetItemRequest
+      .builder()
+      .tableName(headConfig.tableName)
+      .key(
+        Map(
+          headConfig.columnsDefConfig.persistenceIdColumnName -> AttributeValue.builder().s(persistenceId).build()
+        ).asJava
+      )
+      .consistentRead(true)
+      .build()
+    Option(syncClient.getItem(request).item()).exists(!_.isEmpty)
   }
 
   private def putJournalHeadIfAbsent(
