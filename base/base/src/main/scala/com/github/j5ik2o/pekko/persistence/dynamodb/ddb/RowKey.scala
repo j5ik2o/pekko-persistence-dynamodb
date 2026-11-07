@@ -1,0 +1,39 @@
+/*
+ * Copyright 2026 Junichi Kato
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package com.github.j5ik2o.pekko.persistence.dynamodb.ddb
+
+/** The key attributes of an item together with the table they belong to.
+  *
+  * The constructor and the companion `apply` stay inside the package, so a caller builds a key through
+  * `TableSpec.keyOf` and cannot combine a key with the wrong table.
+  */
+final class RowKey private[dynamodb] (val table: TableName, val values: AttributeMap) {
+
+  def get(name: AttributeName): Option[DdbValue] = values.get(name)
+
+  override def equals(other: Any): Boolean = other match {
+    case that: RowKey => table == that.table && values == that.values
+    case _            => false
+  }
+
+  override def hashCode(): Int = 31 * table.hashCode() + values.hashCode()
+
+  override def toString: String = s"RowKey($table,$values)"
+}
+
+object RowKey {
+  private[dynamodb] def apply(table: TableName, values: AttributeMap): RowKey = new RowKey(table, values)
+}

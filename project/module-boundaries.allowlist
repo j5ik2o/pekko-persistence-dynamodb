@@ -7,6 +7,10 @@ base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/client/
 base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/client/v1/RetryPolicyProvider.scala
 base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/client/v1/StreamReadClient.scala
 base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/client/v1/StreamWriteClient.scala
+base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v1/V1AttributeValues.scala
+base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v1/V1ClientAdapter.scala
+base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v1/V1OperationRenderer.scala
+base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v1/V1RenderedOperation.scala
 base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V1AsyncClientFactory.scala
 base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V1ClientBuilderUtils.scala
 base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V1ClientConfigurationUtils.scala
@@ -15,12 +19,17 @@ base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V
 base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V1DaxClientBuilderUtils.scala
 base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V1DaxSyncClientFactory.scala
 base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V1SyncClientFactory.scala
+base/base-v1/src/test/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v1/V1RequestNormalizer.scala
 base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/client/v2/AwsCredentialsProviderProvider.scala
 base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/client/v2/ExecutionInterceptorsProvider.scala
 base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/client/v2/MetricPublishersProvider.scala
 base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/client/v2/RetryPolicyProvider.scala
 base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/client/v2/StreamReadClient.scala
 base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/client/v2/StreamWriteClient.scala
+base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v2/V2AttributeValues.scala
+base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v2/V2ClientAdapter.scala
+base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v2/V2OperationRenderer.scala
+base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v2/V2RenderedOperation.scala
 base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V2AsyncClientFactory.scala
 base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V2ClientBuilderUtils.scala
 base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V2ClientOverrideConfigurationBuilderUtils.scala
@@ -31,6 +40,7 @@ base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V
 base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V2DaxSyncClientFactory.scala
 base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V2HttpClientBuilderUtils.scala
 base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V2SyncClientFactory.scala
+base/base-v2/src/test/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v2/V2RequestNormalizer.scala
 example/src/test/scala/com/github/j5ik2o/pekko/persistence/dynamodb/example/untyped/eventsourced/CounterSpec.scala
 journal/journal-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/dao/v1/V1JournalRowReadDriver.scala
 journal/journal-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/dao/v1/V1JournalRowWriteDriver.scala
