@@ -77,8 +77,8 @@ object JournalPluginConfig extends LoggingSupport {
     val tableName  = config.as[String](tableNameKey)
     val headConfig = JournalHeadConfig.fromConfig(config.getAs[Config](headKey).getOrElse(ConfigFactory.empty()))
     if (headConfig.enabled) {
-      // TransactWriteItems is only available in the non-DAX AWS SDK v2 client. DAX does not support
-      // transactional writes, and the v1 client is not supported by the JournalHead write path.
+      // The JournalHead write path requires the non-DAX AWS SDK v2 client. DAX and the AWS SDK v1
+      // client are not supported on this path.
       require(
         clientConfig.clientVersion == ClientVersion.V2,
         s"head.enabled requires client-version = v2 without DAX, but client-version is ${clientConfig.clientVersion}"
