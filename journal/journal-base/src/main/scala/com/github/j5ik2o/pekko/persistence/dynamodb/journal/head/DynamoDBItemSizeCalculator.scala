@@ -25,16 +25,20 @@ import java.nio.charset.StandardCharsets
 
 /** Estimates the DynamoDB item size of the rows written by the JournalHead path.
   *
-  * The estimate follows the documented DynamoDB rule (attribute name length plus attribute value length, 3 bytes of
-  * overhead for list and map values) and rounds numbers up, so it never under-estimates. Rounding up means a write can
-  * be rejected a few bytes before DynamoDB itself would reject it; that is safe, because the write is rejected before
-  * anything is sent and a write that DynamoDB would refuse is never attempted.
+  * The estimate follows the documented DynamoDB rule: the attribute name length plus the attribute value length, 3
+  * bytes of overhead for a list or map value, and one byte for each element of a list and each key-value pair of a map.
+  * Numbers are rounded up, so the estimate never under-estimates. Rounding up means a write can be rejected a few bytes
+  * before DynamoDB itself would reject it; that is safe, because the write is rejected before anything is sent and a
+  * write that DynamoDB would refuse is never attempted.
   */
 object DynamoDBItemSizeCalculator {
 
-  private val ListOverheadBytes: Int = 3
-  private val MapOverheadBytes: Int  = 3
-  private val BooleanSizeBytes: Int  = 1
+  private val ListOverheadBytes: Int              = 3
+  private val ListElementOverheadBytes: Int       = 1
+  private val MapOverheadBytes: Int               = 3
+  private val MapEntryOverheadBytes: Int          = 1
+  private val JournalHeadEventAttributeCount: Int = 2
+  private val BooleanSizeBytes: Int               = 1
 
   def stringSize(value: String): Int = value.getBytes(StandardCharsets.UTF_8).length
 
@@ -64,8 +68,12 @@ object DynamoDBItemSizeCalculator {
     val eventsSize = head.events.map { event =>
       val eventMapSize =
         attributeSize(columnsDefConfig.eventSequenceNrColumnName, numberSize(event.sequenceNumber.value)) +
-        attributeSize(columnsDefConfig.eventMessageColumnName, binarySize(event.message))
-      eventMapSize + MapOverheadBytes
+        attributeSize(columnsDefConfig.eventMessageColumnName, binarySize(event.message)) +
+        MapOverheadBytes +
+        // DynamoDB charges one byte for each key-value pair of a map.
+        JournalHeadEventAttributeCount * MapEntryOverheadBytes
+      // DynamoDB charges one byte for each element of a list.
+      eventMapSize + ListElementOverheadBytes
     }.sum
     attributeSize(columnsDefConfig.persistenceIdColumnName, stringSize(head.persistenceId.asString)) +
     attributeSize(columnsDefConfig.sequenceNrColumnName, numberSize(head.sequenceNumber.value)) +
