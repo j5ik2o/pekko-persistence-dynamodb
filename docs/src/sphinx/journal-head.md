@@ -18,6 +18,44 @@ The journal table shards writes by `pkey`. Events of one persistence id can ther
 and the journal stream does not guarantee an order per persistence id. The `JournalHead` item is a single item per
 persistence id, so its stream is ordered per persistence id.
 
+## Capacity and cost
+
+The plugin keeps one `JournalHead` item per aggregate. An aggregate is one persistence id, so every write of that
+aggregate reaches the same partition. DynamoDB limits a partition to 1,000 write units per second, and a
+transactional write performs two underlying writes for each item. The write rate of one aggregate is therefore about
+`1000 / (2 × S)` writes per second, where `S` is the size of the `JournalHead` item in KB. See
+[partition throughput](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/bp-partition-key-design.html)
+and [transaction capacity](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/transaction-apis.html).
+
+| `JournalHead` item size | Writes per second for one aggregate |
+|:--|:--|
+| 1 KB | about 500 |
+| 10 KB | about 50 |
+| 100 KB | about 5 |
+| 400 KB | about 1.25 |
+
+These values are upper bounds from the DynamoDB limits. Other items in the same partition, the capacity mode of the
+table, and the capacity of the journal table also affect the rate you reach.
+
+Head mode writes each event twice, once in the journal table and once in the `JournalHead` table, and it writes both
+in one transaction. The transaction uses twice the write capacity of its items, so the write cost is up to about four
+times the cost without head mode. A transaction that fails a condition still consumes the capacity of the items it
+attempted. The stream and its consumer add their own cost.
+
+For a new deployment, start with on-demand capacity mode. It follows the traffic without a provisioning step. Move to
+provisioned mode when the traffic is steady and you know the write rate of each aggregate. In provisioned mode, the
+`JournalHead` table and the journal table need their own capacity, including the journal table's
+`GetJournalRowsIndex`.
+
+Monitor `ThrottledRequests` and `WriteThrottleEvents` on both the `JournalHead` table and the journal table. If an
+aggregate writes faster than the bound above allows, head mode is not a fit for that aggregate, or the
+`JournalHead` item must carry less data.
+
+If one item cannot carry the events at the rate you need, keep only the sequence number in the `JournalHead` item and
+read the events from the journal table in the consumer. The head stream then carries the order, and the consumer
+reads the journal rows between the previous sequence number and the new one. This lowers the item size and the write
+cost, and it makes the consumer depend on both tables.
+
 ## The premise it checks
 
 The write condition of the `JournalHead` item is:
@@ -55,14 +93,53 @@ Create the table with `tools/dynamodb-setup/journal-head-table.json`.
 | `sequence-nr`    | `N`    | last sequence number of the write   |
 | `events`         | `L`    | events of the write                 |
 
-Each element of `events` is a map of `sequence-nr` (`N`) and `message` (`B`), the serialized event as it is stored
-in the journal.
+Each element of `events` is a map of `sequence-nr` (`N`) and `message` (`B`), the bytes stored in the journal row's
+`message`.
 
 ```{important}
-Enable DynamoDB Streams on the `JournalHead` table only. When `head.enabled` is true, disable DynamoDB Streams on
-the journal table: the journal table is used for rebuilding and replaying an aggregate, not for ordering the read
-model updates. `tools/dynamodb-setup/journal-table-for-head.json` is the journal table definition without a stream.
+Enable DynamoDB Streams on the `JournalHead` table only, with the stream view type `NEW_IMAGE` or
+`NEW_AND_OLD_IMAGES`. With `KEYS_ONLY` or `OLD_IMAGE`, a record does not carry the events of the write that produced
+it. When `head.enabled` is true, disable DynamoDB Streams on the journal table. The journal table is used for
+rebuilding and replaying an aggregate, not for ordering the read model updates.
+`tools/dynamodb-setup/journal-table-for-head.json` is the journal table definition without a stream.
 ```
+
+## Consuming the stream
+
+A read model update consumes the DynamoDB Stream of the `JournalHead` table. Each record carries the new image of
+one item, so it holds the last sequence number and the events of one write. DynamoDB Streams writes each record once
+and preserves the order of modifications to one item, so the events of one aggregate arrive in write order. See
+[DynamoDB Streams](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Streams.html).
+
+The consumer applies each record at least once. It can retry a failed batch, rewind a checkpoint, or reset a shard
+iterator, and it then processes records it has already applied. Make the read model update idempotent, and
+deduplicate by the sequence number of each event. Keep a checkpoint for each persistence id, the last sequence number
+applied to the read model. Write the checkpoint in the same transaction as the read model when the read model store
+supports transactions.
+
+Each element of `events` is the bytes of a serialized `PersistentRepr`, the same value the journal row stores in
+`message`. Deserialize it with the serializer for `PersistentRepr`, then apply the same event adapter that the
+journal uses.
+
+For a Lambda consumer, use the
+[DynamoDB Streams event source mapping](https://docs.aws.amazon.com/lambda/latest/dg/invocation-eventsourcemapping.html).
+For a Kinesis Client Library consumer, use the
+[Kinesis adapter for DynamoDB Streams](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Streams.KCLAdapter.html).
+Both preserve the order of the records of one item.
+
+DynamoDB Streams keeps records for up to 24 hours. If the consumer is stopped for longer, it can lose records and the
+read model becomes incomplete. Rebuild the read model from the journal table. If the journal events of an aggregate
+were hard deleted, the journal cannot rebuild them. Restore the read model, the journal, and the `JournalHead` table
+from a backup taken at the same point in time.
+
+To rebuild a read model, stop the consumer, clear the affected read model state, replay the journal rows for the
+affected persistence ids, and set the checkpoint of each persistence id to the last sequence number you replayed.
+Start the consumer after all affected persistence ids reach that point.
+
+The migration tool writes `JournalHead` items with an empty `events` list. Do not apply such a record to the read
+model, and do not advance a checkpoint from it. The events between the old head and the new `sequence-nr` never
+reached the stream. If the checkpoint of the consumer is behind the new `sequence-nr`, rebuild the read model for
+that persistence id from the journal before you continue.
 
 ## Configuration
 
@@ -82,13 +159,12 @@ j5ik2o.dynamo-db-journal {
 }
 ```
 
-`head.enabled` defaults to `false`. When it is `false`, the plugin behaves exactly as before and does not touch the
-`JournalHead` table.
+`head.enabled` defaults to `false`. When it is `false`, the plugin does not write the `JournalHead` table and does
+not read the last sequence number from it. Read the Lifecycle constraints section below before you disable head mode.
 
 ```{warning}
-`head.enabled` requires `dynamo-db-client.client-version = "v2"` without DAX. DAX does not support
-`TransactWriteItems`, and the AWS SDK v1 client is not supported by this write path. The plugin refuses to start
-with any other client configuration.
+`head.enabled` requires `dynamo-db-client.client-version = "v2"`. The plugin does not support DAX or the AWS SDK v1
+client on this write path, and it refuses to start with either configuration.
 ```
 
 ## Enabling it on an existing system
@@ -120,8 +196,9 @@ node runs with `head.enabled = true`.
 
    Scanning the snapshot table matters: an aggregate whose journal events were all hard deleted has no journal row
    left, and its snapshot is the only record of its last sequence number. Without a migrated `JournalHead` item, the
-   next write of that aggregate fails with `JournalHeadMissingException`, and running the tool again does not repair
-   it.
+   next write of that aggregate fails with `JournalHeadMissingException`. Running the tool again repairs it only when
+   the tool scans the snapshot table. With `--without-snapshots`, or without a snapshot table, the tool cannot see
+   the aggregate.
 
 5. Set `head.enabled = true` on every node and start the application.
 6. Run the tool again with `--execute`. If a write happened after step 4 (for example while the nodes were being
@@ -130,7 +207,9 @@ node runs with `head.enabled = true`.
    single write. The events up to that point remain in the journal for a rebuild.
 7. The tool prints the persistence ids whose `JournalHead` item it raised. The events between the old head and the
    raise were never written to the `JournalHead` table, so their read models did not receive them. Rebuild the read
-   model of those aggregates from the journal table before relying on it.
+   model of those aggregates from the journal table before relying on it. If the journal events of an aggregate were
+   hard deleted, the journal cannot rebuild them. Restore the read model and the journal from a backup taken at the
+   same point in time.
 
 The writes of the tool are conditional, so it can be run as often as needed. A run without `--execute` is a dry-run
 and never writes.
@@ -138,6 +217,31 @@ and never writes.
 If an aggregate is written without its `JournalHead` item, the write fails with
 `JournalHeadMissingException`. That failure means the migration has not covered the aggregate yet. A new aggregate
 whose first sequence number is `1` does not need a migration.
+
+## Lifecycle constraints
+
+Do not disable `head.enabled` after hard-deleting the journal events of an aggregate. The journal then has no record
+of the aggregate's last sequence number, and the plugin reads that number from the `JournalHead` item only while head
+mode is enabled. With head mode off, if the journal is empty and there is no snapshot, recovery starts the aggregate
+at sequence number `1`. The journal then contains events at sequence numbers the read model has already applied. A
+rebuild can make a consumer that deduplicates by sequence number discard the new events. If you re-enable head mode
+while the aggregate's sequence number is below the existing head, the write fails with
+`JournalHeadSequenceMismatchException`. If the aggregate has already caught up to the head, the write succeeds, but
+the events written while head mode was off never reached the head stream. Keep head mode enabled, or keep a snapshot
+that holds the last sequence number, before you turn it off. Disabling head mode also stops the head stream, so the
+read model no longer receives updates from it. Plan how the read model will be updated before you disable head mode.
+
+Do not run a rolling deployment that mixes nodes with `head.enabled = true` and nodes with `head.enabled = false`. A
+node with head mode off writes journal rows without updating the `JournalHead` item, so the events of those writes
+never reach the head stream. A later write from a node with head mode on can move the head past those sequence
+numbers, because the write condition accepts a gap. The migration tool compares the head with the highest sequence
+number in the journal or the snapshot, and it reports only the aggregates whose head is still behind. After a
+head-on node writes again, the gap is invisible to the tool, and the read model stays incomplete.
+
+If a mixed deployment has happened, rebuild the read model of every aggregate that a head-off node may have written
+during that period. The tool cannot identify those aggregates after a head-on node has written. To avoid the
+situation, stop every node, run the migration tool with `--execute`, start every node with `head.enabled = true`, and
+then rebuild the read model of the aggregates the tool reports.
 
 ## Limits
 
