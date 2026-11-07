@@ -98,25 +98,36 @@ node runs with `head.enabled = true`.
 
 1. Create the `JournalHead` table with DynamoDB Streams enabled.
 2. Stop the writes of the application (stop every node).
-3. Run the migration tool without arguments. It scans the journal table, does not write anything, and reports how
-   many `JournalHead` items it would create, raise or leave as they are.
+3. Run the migration tool without arguments. It scans the journal table and the snapshot table, does not write
+   anything, and reports how many `JournalHead` items it would create, raise or leave as they are.
 
    ```shell
    $ sbt -batch "journal-v2/runMain com.github.j5ik2o.pekko.persistence.dynamodb.journal.head.JournalHeadMigration"
    ```
 
-4. Run the tool with `--execute`. It creates a `JournalHead` item for every persistence id it finds; the item holds
-   the last sequence number of the journal and an empty event list.
+4. Run the tool with `--execute`. It creates a `JournalHead` item for every persistence id it finds in the journal or
+   the snapshot table; the item holds the last sequence number of that aggregate and an empty event list.
 
    ```shell
    $ sbt -batch "journal-v2/runMain com.github.j5ik2o.pekko.persistence.dynamodb.journal.head.JournalHeadMigration --execute"
    ```
 
+   The tool reads the snapshot table from `j5ik2o.dynamo-db-snapshot` when that config is present, and otherwise uses
+   the table name `Snapshot` with the columns `persistence-id` and `sequence-nr`. Override them with
+   `--snapshot-table`, `--snapshot-persistence-id-column` and `--snapshot-sequence-nr-column`, or pass
+   `--without-snapshots` when the deployment has no snapshot table. A snapshot table that does not exist is skipped
+   and reported.
+
+   Scanning the snapshot table matters: an aggregate whose journal events were all hard deleted has no journal row
+   left, and its snapshot is the only record of its last sequence number. Without a migrated `JournalHead` item, the
+   next write of that aggregate fails with `JournalHeadMissingException`, and running the tool again does not repair
+   it.
+
 5. Set `head.enabled = true` on every node and start the application.
 6. Run the tool again with `--execute`. If a write happened after step 4 (for example while the nodes were being
    replaced), the `JournalHead` item can be behind the journal. The tool raises it to the last sequence number of the
-   journal, but never lowers it, and clears the event list, because the head no longer describes a single write. The
-   events up to that point remain in the journal for a rebuild.
+   journal or the snapshot, but never lowers it, and clears the event list, because the head no longer describes a
+   single write. The events up to that point remain in the journal for a rebuild.
 7. The tool prints the persistence ids whose `JournalHead` item it raised. The events between the old head and the
    raise were never written to the `JournalHead` table, so their read models did not receive them. Rebuild the read
    model of those aggregates from the journal table before relying on it.
