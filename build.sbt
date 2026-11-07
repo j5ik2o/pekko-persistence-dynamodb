@@ -102,6 +102,26 @@ lazy val test = (project in file("test"))
     }
   )
 
+lazy val `schema-check` = (project in file("schema-check"))
+  .settings(
+    name := "pekko-persistence-dynamodb-schema-check",
+    publish / skip := true,
+    libraryDependencies ++= Seq(
+      scalatest.scalatest(scalaTest32Version) % Test
+    ),
+    libraryDependencies ++= {
+      CrossVersion.partialVersion(scalaVersion.value) match {
+        case Some((2L, scalaMajor)) if scalaMajor == 12 =>
+          Seq(
+            scalaLangModules.scalaCollectionCompat
+          )
+        case _ =>
+          Seq.empty
+      }
+    },
+    Test / javaOptions += s"-Drepo.root=${baseDirectory.value.getParentFile.getAbsolutePath}"
+  )
+
 lazy val `base` = (project in file("base/base"))
   .settings(
     name := "pekko-persistence-dynamodb-base",
@@ -339,6 +359,7 @@ lazy val root = (project in file("."))
   )
   .aggregate(
     test,
+    `schema-check`,
     base,
     `base-v1`,
     `base-v2`,
