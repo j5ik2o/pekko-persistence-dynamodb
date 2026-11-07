@@ -89,15 +89,19 @@ object SchemaDrift {
   private def checkReferenceIndexes(repo: Repo): Seq[KnownProblem] = {
     Seq("journal" -> "journal-table.json", "snapshot" -> "snapshot-table.json").flatMap { case (system, jsonFile) =>
       val referenceKey = if (system == "journal") "get-journal-rows-index-name" else "get-snapshot-rows-index-name"
-      val pattern      = ("\"" + referenceKey + "\"\\s*=\\s*\"([^\"]+)\"").r
+      val pattern      = ("(?m)^\\s*" + java.util.regex.Pattern.quote(referenceKey) + "\\s*=\\s*\"([^\"]+)\"").r
       val path         = repo.root.resolve(s"$system/$system-base/src/main/resources/reference.conf")
       val reference    = pattern.findAllMatchIn(repo.read(path)).map(_.group(1)).toSet
       val table        = indexNamesIn(repo.read(repo.root.resolve(s"tools/dynamodb-setup/$jsonFile")))
-      (reference -- table).toSeq.sorted.map { name =>
-        KnownProblem(
-          s"index-reference-missing:$system:$name",
-          s"$system reference.conf names $name, but $jsonFile does not create it"
-        )
+      if (reference.isEmpty) {
+        Seq(KnownProblem(s"index-reference-missing-key:$system", s"$system reference.conf has no $referenceKey"))
+      } else {
+        (reference -- table).toSeq.sorted.map { name =>
+          KnownProblem(
+            s"index-reference-missing:$system:$name",
+            s"$system reference.conf names $name, but $jsonFile does not create it"
+          )
+        }
       }
     }
   }

@@ -377,5 +377,5 @@ lazy val root = (project in file("."))
   )
 
 // --- Custom commands
-addCommandAlias("lint", ";scalafmtCheck;test:scalafmtCheck;scalafmtSbtCheck;scalafixAll --check")
+addCommandAlias("lint", ";scalafmtCheck;test:scalafmtCheck;scalafmtSbtCheck;scalafixAll --check;checkModuleBoundaries")
 addCommandAlias("fmt", ";scalafmtAll;scalafmtSbt;scalafix RemoveUnused")
