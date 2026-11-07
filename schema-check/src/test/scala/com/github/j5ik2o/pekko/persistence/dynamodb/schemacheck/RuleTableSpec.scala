@@ -6,7 +6,6 @@ import java.util.regex.Pattern
 import org.scalatest.freespec.AnyFreeSpec
 import org.scalatest.matchers.should.Matchers
 
-/** Reads the rule table in `AGENTS.md` and fails when an enforcement path no longer exists. */
 final class RuleTableSpec extends AnyFreeSpec with Matchers {
 
   "every rule row names an enforcement path that exists" in {
