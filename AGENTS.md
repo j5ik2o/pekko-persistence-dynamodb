@@ -6,7 +6,7 @@ Read this file before you edit. If a rule names an enforcement path, run that ch
 
 ## Module map
 
-Every module is an sbt project in `build.sbt`. The arrow shows the compile dependency, so a module can use the types of the modules below it.
+Every module is an sbt project in `build.sbt`. The `Depends on` column lists the compile dependencies, so a module can use the types of the modules it depends on. A `(test only)` entry is used by tests and is not part of the published dependency.
 
 | Module | Directory | It owns | Depends on |
 |:--|:--|:--|:--|
@@ -45,13 +45,13 @@ The column names of each plugin live in one config value. Add the column to that
 9. Run `sbt -batch "schema-check/test"`. `SchemaDriftSpec` compares `reference.conf`, the table JSON, the docs, and `DynamoDBContainerHelper`, and fails on a name that appears in one place only.
 10. Run the tests of the family you changed. Journal, snapshot, and state each have v1 and v2 suites under their module's `src/test`.
 
-To find every site that handles an existing column, search for `tagsColumnName`. It is used by the config, both write drivers, the size calculator, and the docs.
+To find every code site that handles an existing column, search for `tagsColumnName`. To find the config and docs sites, search for `tags-column-name`.
 
 ## Change a write condition
 
 A write condition decides whether DynamoDB accepts a journal write. The v2 driver holds the conditions of the JournalHead path. The v1 driver has no condition expression on its put or batch put. The shared validation lives in `JournalHeadWriteRequest.of`, which returns `Either[JournalHeadException, JournalHeadWriteRequest]` and never throws for a rejected write.
 
-1. Decide where the condition belongs. A condition that both client versions must share goes into `journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/head/JournalHeadRow.scala`, because the two drivers are separate copies and would drift. A condition that only the transactional v2 write can express goes into the v2 driver.
+1. Decide where the check belongs. A validation that both client versions must share goes into `JournalHeadWriteRequest.of` in `journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/head/JournalHeadRow.scala`, because it runs before either driver sends anything. A DynamoDB condition expression goes into the driver for the client version that needs it. The v1 driver sets no condition expression today.
 2. Edit the v2 condition in `createTransactWriteItemsRequest` in `journal/journal-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/dao/v2/V2JournalRowWriteDriver.scala`. The journal row condition is `attribute_not_exists(#pkey) AND attribute_not_exists(#skey)`. The head condition is `(attribute_not_exists(#seq) AND :first = :one) OR (#seq < :first)`.
 3. Edit the v1 path in `journal/journal-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/dao/v1/V1JournalRowWriteDriver.scala` when the condition applies to v1. `PutItemRequest` accepts a condition expression. `BatchWriteItem` does not, so a condition on the batch path needs a different call.
 4. Map a cancelled transaction to the existing family in `classifyTransactionCancellation`. Do not add a bare `RuntimeException`, because callers and operators tell the failures apart by the subclass.
@@ -67,7 +67,7 @@ A client variant is one value of `ClientVersion`. The repository has `v1`, `v1-d
 
 1. Add the value to `base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/config/client/ClientVersion.scala`.
 2. Parse and validate it in `base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/config/client/DynamoDBClientConfig.scala`.
-3. Add the client factories to `base/base-v1/` or `base/base-v2/`. The factory classes implement `AsyncClientFactory` or `SyncClientFactory` and build the SDK client. Register them under `j5ik2o.dynamo-db-defaults` in `base/base/src/main/resources/reference.conf`.
+3. Add the client factories to `base/base-v1/` or `base/base-v2/`. The factory classes implement `V1AsyncClientFactory`, `V1SyncClientFactory`, `V2AsyncClientFactory`, or `V2SyncClientFactory`, or the DAX variant, and build the SDK client. Register them under `j5ik2o.dynamo-db-defaults` in `base/base/src/main/resources/reference.conf`.
 4. Add the dispatcher case to `base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/DispatcherUtils.scala`. `getV1DispatcherName` must accept the v1 variants, and `getV2DispatcherName` must accept the v2 variants.
 5. Add the `*ClientFactoryClassName` keys and reads to `journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/config/JournalPluginConfig.scala`, `snapshot/snapshot-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/snapshot/config/SnapshotPluginConfig.scala`, and `state/state-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/state/config/StatePluginConfig.scala`. Pass the `clientVersion == ...` predicate to `ClassCheckUtils.requireClassByName` so that a factory class is checked only for the variant that uses it.
 6. Add the variant to the factory selection and the `pluginExecutor` match in `JournalPluginContext`, `SnapshotPluginContext`, and `StatePluginContext`. The match on an `Enumeration.Value` is not checked for exhaustiveness by the compiler, so a missing case fails at runtime with a `MatchError`.
