@@ -24,7 +24,9 @@ object Allowlist {
       } else {
         val fields = trimmed.split("\\|", -1).map(_.trim)
         if (fields.length != 5) {
-          sys.error(s"$path:${index + 1}: expected 5 fields separated by '|', got ${fields.length}")
+          sys.error(
+            s"$path:${index + 1}: expected 'id | category | reason | expires | issue', got ${fields.length} fields"
+          )
         } else {
           val expires = scala.util.Try(LocalDate.parse(fields(3))).getOrElse {
             sys.error(s"$path:${index + 1}: invalid expiry date '${fields(3)}', expected YYYY-MM-DD")

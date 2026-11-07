@@ -1,9 +1,3 @@
-# Known problems accepted by the G1 guardrails.
-#
-# Format: id | category | reason | expires (YYYY-MM-DD) | owner issue
-#
-# An entry must reproduce. When a fix removes the problem, delete its entry:
-# the check fails while a stale entry remains, so the list only shrinks.
 snapshot-v1-dax-factory-missing | factory-class | DynamoDBSnapshotStore uses V1DaxSnapshotDaoFactory, but the class is V1LegacyDaxSnapshotDaoFactory | 2027-06-30 | https://github.com/j5ik2o/pekko-persistence-dynamodb/issues/855
 state-revision-column-name | schema-drift | state reference.conf uses revision-nr-column-name while customize.md documents sequence-nr-column-name | 2027-06-30 | https://github.com/j5ik2o/pekko-persistence-dynamodb/issues/854
 snapshot-get-rows-index-typo | schema-drift | table-format.md spells GetSnaphotRowsIndex while the JSON and reference.conf use GetSnapshotRowsIndex | 2027-06-30 | https://github.com/j5ik2o/pekko-persistence-dynamodb/issues/854

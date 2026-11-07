@@ -1,7 +1,3 @@
-# Files allowed to import the AWS SDKs (com.amazonaws.*, software.amazon.awssdk.*, software.amazon.dax.*).
-#
-# The list only shrinks. Delete a line when its file stops importing an SDK.
-# Never add a line: move the SDK call behind one of these boundary files instead.
 base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/client/v1/AWSCredentialsProviderProvider.scala
 base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/client/v1/CsmConfigurationProviderProvider.scala
 base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/client/v1/DnsResolverProvider.scala

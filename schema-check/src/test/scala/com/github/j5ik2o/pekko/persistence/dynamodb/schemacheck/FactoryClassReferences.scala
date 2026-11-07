@@ -90,7 +90,6 @@ object FactoryClassReferences {
     }
   }
 
-  // Tracks package and type scopes from the brace structure, so a nested object resolves as Outer$Inner.
   def definitionsInSource(source: String): Set[Definition] = {
     val tokens = TokenPattern.findAllIn(withoutCommentsAndStrings(source)).toVector
     val result = mutable.Set.empty[Definition]
@@ -268,7 +267,6 @@ object FactoryClassReferences {
     token.nonEmpty && (token.head.isLetter || token.head == '_') &&
     token.forall(character => character.isLetterOrDigit || character == '_')
 
-  // Drops comments and string literals so keywords inside them are not read as declarations.
   private def withoutCommentsAndStrings(source: String): String = {
     val out        = new StringBuilder(source.length)
     var i          = 0
