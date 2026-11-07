@@ -22,7 +22,7 @@ import org.apache.pekko.serialization.SerializationExtension
 import org.apache.pekko.stream.{ Materializer, SystemMaterializer }
 import org.apache.pekko.stream.scaladsl.Sink
 import org.apache.pekko.testkit.TestProbe
-import com.amazonaws.services.dynamodbv2.model.{ AttributeValue, ScanRequest }
+import com.amazonaws.services.dynamodbv2.model.{ AttributeValue, DeleteItemRequest, PutItemRequest, ScanRequest }
 import com.github.j5ik2o.pekko.persistence.dynamodb.config.client.{ ClientType, ClientVersion }
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.config.{
   JournalColumnsDefConfig,
@@ -276,6 +276,28 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
 
   private def headSequenceNr(persistenceId: String): Option[Long] =
     headItem(persistenceId).map(_("sequence-nr").getN.toLong)
+
+  private def putSnapshotRow(persistenceId: String, sequenceNr: Long): Unit = {
+    val request = new PutItemRequest()
+      .withTableName(snapshotTableName)
+      .withItem(
+        Map(
+          "pkey"           -> new AttributeValue().withS(persistenceId),
+          "skey"           -> new AttributeValue().withS(sequenceNr.toString),
+          "persistence-id" -> new AttributeValue().withS(persistenceId),
+          "sequence-nr"    -> new AttributeValue().withN(sequenceNr.toString)
+        ).asJava
+      )
+    dynamoDBClient.putItem(request)
+  }
+
+  private def deleteJournalRows(persistenceId: String): Unit =
+    journalRows(persistenceId).foreach { row =>
+      val request = new DeleteItemRequest()
+        .withTableName(journalTableName)
+        .withKey(Map("pkey" -> row("pkey"), "skey" -> row("skey")).asJava)
+      dynamoDBClient.deleteItem(request)
+    }
 
   private def newWriteJournalDao(system: ActorSystem): WriteJournalDaoImpl = {
     val pluginConfig  = JournalPluginConfig.fromConfig(system.settings.config.getConfig("j5ik2o.dynamo-db-journal"))
@@ -703,6 +725,57 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
       persistOk(headEnabledSystem, existingPid, "e6")
       journalSequenceNrs(existingPid) shouldBe Seq(1L, 2L, 3L, 4L, 5L, 6L)
       headSequenceNr(existingPid) shouldBe Some(6L)
+    }
+
+    "migrate an aggregate whose journal events were all hard deleted from its snapshot" in {
+      val pid = "head-snapshot-only-1"
+      persistAllOk(headDisabledSystem, pid, immutable.Seq("e1", "e2", "e3"))
+      deleteJournalRows(pid)
+      journalRows(pid) shouldBe empty
+
+      // the snapshot is the only record of the aggregate's last sequence number
+      putSnapshotRow(pid, 3L)
+
+      val client = newV2Client()
+      try {
+        // without the snapshot, the aggregate has no journal row and the tool cannot see it
+        JournalHeadMigration.run(
+          client,
+          journalTableName,
+          journalColumnsDefConfig,
+          headConfig,
+          execute = true,
+          snapshotTable = None
+        )
+        headSequenceNr(pid) shouldBe None
+
+        val result = JournalHeadMigration.run(
+          client,
+          journalTableName,
+          journalColumnsDefConfig,
+          headConfig,
+          execute = true,
+          snapshotTable = Some(JournalHeadMigration.SnapshotTable(snapshotTableName, "persistence-id", "sequence-nr"))
+        )
+        result.createdJournalHeads should be >= 1
+        result.snapshotTableScanned shouldBe true
+      } finally client.close()
+
+      headSequenceNr(pid) shouldBe Some(3L)
+      headItem(pid).get("events").getL.isEmpty shouldBe true
+
+      // the aggregate continues above the snapshot instead of failing with JournalHeadMissingException
+      val dao = newWriteJournalDao(headEnabledSystem)
+      try {
+        implicit val mat: Materializer = SystemMaterializer(headEnabledSystem).materializer
+        Await.result(
+          dao.putMessages(Seq(journalRow(headEnabledSystem, pid, 4L, "e4"))).runWith(Sink.head),
+          60.seconds
+        ) shouldBe 1L
+      } finally dao.dispose()
+
+      journalSequenceNrs(pid) shouldBe Seq(4L)
+      headSequenceNr(pid) shouldBe Some(4L)
     }
 
     "deliver the JournalHead stream records in sequence number order" in {
