@@ -36,6 +36,7 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.journal.serialization.{
   ByteArrayJournalSerializer,
   FlowPersistentReprSerializer
 }
+import com.github.j5ik2o.pekko.persistence.dynamodb.journal.write.JournalWritePlan
 import com.github.j5ik2o.pekko.persistence.dynamodb.model.{ Context, PersistenceId, SequenceNumber }
 import com.github.j5ik2o.pekko.persistence.dynamodb.utils.{ PlugInLifecycleHandler, PlugInLifecycleHandlerFactory }
 import com.typesafe.config.Config
@@ -125,17 +126,32 @@ final class DynamoDBJournal(config: Config) extends AsyncWriteJournal with Actor
         ec: ExecutionContext
     ): Future[Vector[Try[Unit]]] = {
       val serializedFutures = serializer.serialize(atomicWrites)
-      val rowsToWriteFutures = serializedFutures.map { serializeFuture =>
-        serializeFuture.recoverWith { case _ =>
+      // The head-less path sends the rows without a JournalHead item, so the JournalHead validation of the plan does
+      // not run. Measure the rows here too: a row over 400 KB is refused locally, like a serialization failure, and
+      // returned as a Failure of that one write rather than thrown into the stream.
+      val checkedFutures = serializedFutures.map { serializeFuture =>
+        serializeFuture.flatMap { rows =>
+          JournalWritePlan
+            .findJournalRowTooLarge(
+              rows,
+              journalPluginConfig.columnsDefConfig,
+              partitionKeyResolver,
+              sortKeyResolver
+            )
+            .fold(Future.successful(rows))(rejection => Future.failed(rejection.toJournalHeadException))
+        }
+      }
+      val rowsToWriteFutures = checkedFutures.map { checkedFuture =>
+        checkedFuture.recoverWith { case _ =>
           Future.successful(Seq.empty)
         }
       }
       val resultWhenWriteComplete: Future[Vector[Future[Unit]]] = {
-        Future.sequence(serializedFutures).map(_ => true).recover { case _ => false }.map { b =>
+        Future.sequence(checkedFutures).map(_ => true).recover { case _ => false }.map { b =>
           if (b) {
             Vector.empty
           } else {
-            serializedFutures.toVector.map(s => s.map(_ => ()))
+            checkedFutures.toVector.map(s => s.map(_ => ()))
           }
         }
       }

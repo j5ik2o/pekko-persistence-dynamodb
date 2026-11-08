@@ -82,13 +82,7 @@ object JournalWritePlan {
               sortedRows.map(row => JournalHeadEvent(row.sequenceNumber, row.message))
             )
             val headSize = DynamoDBItemSizeCalculator.journalHeadItemSize(head, headConfig.columnsDefConfig)
-            val rowSizes = sortedRows.map { row =>
-              val partitionKey = partitionKeyResolver.resolve(row.persistenceId, row.sequenceNumber).asString
-              val sortKey      = sortKeyResolver.resolve(row.persistenceId, row.sequenceNumber).asString
-              val itemSize =
-                DynamoDBItemSizeCalculator.journalItemSize(row, journalColumnsDefConfig, partitionKey, sortKey)
-              (row, itemSize)
-            }
+            val rowSizes = journalRowSizes(sortedRows, journalColumnsDefConfig, partitionKeyResolver, sortKeyResolver)
             val transactionSize = headSize.toLong + rowSizes.map(_._2.toLong).sum
             if (headSize > JournalHeadLimits.MaxItemSizeBytes) {
               Left(
@@ -99,15 +93,7 @@ object JournalWritePlan {
                 )
               )
             } else {
-              rowSizes.collectFirst {
-                case (row, itemSize) if itemSize > JournalHeadLimits.MaxItemSizeBytes =>
-                  WriteRejection.JournalRowTooLarge(
-                    persistenceId.asString,
-                    row.sequenceNumber.value,
-                    itemSize,
-                    JournalHeadLimits.MaxItemSizeBytes
-                  )
-              } match {
+              journalRowTooLarge(rowSizes) match {
                 case Some(rejection) =>
                   Left(rejection)
                 case None if transactionSize > JournalHeadLimits.MaxTransactionSizeBytes =>
@@ -127,5 +113,43 @@ object JournalWritePlan {
       }
     }
   }
+
+  /** The first journal row of the write that exceeds the DynamoDB item size limit, if any.
+    *
+    * `plan` runs this check as part of the JournalHead validation. The head-less write path has no JournalHead item to
+    * measure, but DynamoDB still refuses a journal row over 400 KB, so the caller of `DynamoDBJournal` runs this same
+    * check before it sends the rows and returns the rejection as a `Failure`. Both paths therefore refuse the same row
+    * locally, instead of letting DynamoDB decide depending on whether `head.enabled` is set.
+    */
+  def findJournalRowTooLarge(
+      rows: Seq[JournalRow],
+      journalColumnsDefConfig: JournalColumnsDefConfig,
+      partitionKeyResolver: PartitionKeyResolver,
+      sortKeyResolver: SortKeyResolver
+  ): Option[WriteRejection.JournalRowTooLarge] =
+    journalRowTooLarge(journalRowSizes(rows, journalColumnsDefConfig, partitionKeyResolver, sortKeyResolver))
+
+  private def journalRowSizes(
+      rows: Seq[JournalRow],
+      journalColumnsDefConfig: JournalColumnsDefConfig,
+      partitionKeyResolver: PartitionKeyResolver,
+      sortKeyResolver: SortKeyResolver
+  ): Seq[(JournalRow, Int)] =
+    rows.map { row =>
+      val partitionKey = partitionKeyResolver.resolve(row.persistenceId, row.sequenceNumber).asString
+      val sortKey      = sortKeyResolver.resolve(row.persistenceId, row.sequenceNumber).asString
+      row -> DynamoDBItemSizeCalculator.journalItemSize(row, journalColumnsDefConfig, partitionKey, sortKey)
+    }
+
+  private def journalRowTooLarge(rowSizes: Seq[(JournalRow, Int)]): Option[WriteRejection.JournalRowTooLarge] =
+    rowSizes.collectFirst {
+      case (row, itemSize) if itemSize > JournalHeadLimits.MaxItemSizeBytes =>
+        WriteRejection.JournalRowTooLarge(
+          row.persistenceId.asString,
+          row.sequenceNumber.value,
+          itemSize,
+          JournalHeadLimits.MaxItemSizeBytes
+        )
+    }
 
 }
