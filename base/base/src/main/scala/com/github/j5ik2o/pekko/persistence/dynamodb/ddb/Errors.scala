@@ -17,6 +17,7 @@ package com.github.j5ik2o.pekko.persistence.dynamodb.ddb
 
 final case class EncodeError(detail: String)
 
+/** A row decode failure. C1 adds the type so the C2 row codecs share the same error model; no C1 code decodes a row. */
 sealed trait DecodeError
 
 object DecodeError {
@@ -29,5 +30,6 @@ sealed trait KeyError
 
 object KeyError {
   final case class Missing(name: AttributeName) extends KeyError
+  final case class UndefinedColumn(name: AttributeName) extends KeyError
   final case class WrongType(name: AttributeName, expected: AttributeKind) extends KeyError
 }
