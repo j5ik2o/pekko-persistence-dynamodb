@@ -23,6 +23,23 @@ final class RuleTableSpec extends AnyFreeSpec with Matchers {
 
     missing shouldBe empty
   }
+
+  "a rule row that does not start with a pipe is reported instead of dropped" in {
+    val source =
+      "## Rule table\n" +
+      "\n" +
+      "| Repeated mistake | Rule | Enforcement |\n" +
+      "|:--|:--|:--|\n" +
+      "Missing leading pipe | Keep the pipe. | test `schema-check/example.scala` |\n" +
+      "| Valid row | Keep the pipe. | test `schema-check/example.scala` |\n"
+
+    val table = RuleTable.parse(source)
+
+    info(s"parsed rule rows: ${table.rules.size}")
+    table.errors.foreach(error => info(s"reported: $error"))
+    table.errors.exists(_.contains("does not start with '|'")) shouldBe true
+    table.rules.map(_.mistake) shouldBe Vector("Valid row")
+  }
 }
 
 private object RuleTable {
@@ -40,35 +57,41 @@ private object RuleTable {
     if (start < 0) {
       Parsed(Vector.empty, Vector("AGENTS.md has no '## Rule table' section"))
     } else {
-      val tableLines = lines
-        .drop(start + 1)
-        .takeWhile(line => !line.startsWith("## "))
-        .filter(_.trim.startsWith("|"))
-      val body = tableLines.drop(1).filterNot(line => Separator.matcher(line.trim).matches())
+      val sectionLines = lines.drop(start + 1).takeWhile(line => !line.startsWith("## "))
+      val tableStart   = sectionLines.indexWhere(_.trim.startsWith("|"))
+      if (tableStart < 0) {
+        Parsed(Vector.empty, Vector("AGENTS.md has a '## Rule table' section but no rule table rows"))
+      } else {
+        val tableBlock = sectionLines.drop(tableStart).takeWhile(_.trim.nonEmpty)
+        val malformed  = tableBlock.filter(line => !line.trim.startsWith("|"))
+        val tableLines = tableBlock.filter(_.trim.startsWith("|"))
+        val body       = tableLines.drop(1).filterNot(line => Separator.matcher(line.trim).matches())
 
-      val errors = Vector.newBuilder[String]
-      val rules = body.flatMap { line =>
-        val cells = splitCells(line)
-        if (cells.size != 3) {
-          errors += s"expected 3 cells but got ${cells.size}: ${line.trim}"
-          None
-        } else {
-          val matcher = Enforcement.matcher(cells(2))
-          if (matcher.matches()) {
-            val path = matcher.group(2).trim
-            if (path.isEmpty || path.startsWith("/") || path.split("/").contains("..")) {
-              errors += s"enforcement path must be relative to the repository root: ${cells(2)}"
-              None
-            } else {
-              Some(Rule(cells(0), path))
-            }
-          } else {
-            errors += s"enforcement must be 'type', 'check', or 'test' followed by a backticked path: ${cells(2)}"
+        val errors = Vector.newBuilder[String]
+        malformed.foreach(line => errors += s"rule row does not start with '|': ${line.trim}")
+        val rules = body.flatMap { line =>
+          val cells = splitCells(line)
+          if (cells.size != 3) {
+            errors += s"expected 3 cells but got ${cells.size}: ${line.trim}"
             None
+          } else {
+            val matcher = Enforcement.matcher(cells(2))
+            if (matcher.matches()) {
+              val path = matcher.group(2).trim
+              if (path.isEmpty || path.startsWith("/") || path.split("/").contains("..")) {
+                errors += s"enforcement path must be relative to the repository root: ${cells(2)}"
+                None
+              } else {
+                Some(Rule(cells(0), path))
+              }
+            } else {
+              errors += s"enforcement must be 'type', 'check', or 'test' followed by a backticked path: ${cells(2)}"
+              None
+            }
           }
         }
+        Parsed(rules, errors.result())
       }
-      Parsed(rules, errors.result())
     }
   }
 
