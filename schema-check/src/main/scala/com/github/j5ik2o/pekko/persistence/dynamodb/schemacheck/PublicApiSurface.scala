@@ -43,7 +43,7 @@ object PublicApiSurface {
   private val ExcludedDirectories = Set("target", ".git", ".bsp", ".bloop", ".metals", ".idea")
 
   private val StartPattern: Regex =
-    """((?:(?:@[A-Za-z_][A-Za-z0-9_.]*(?:\([^)]*\))?|sealed|final|abstract|implicit|override|lazy|case|transient|private(?:\[[^\]]*\])?|protected(?:\[[^\]]*\])?)\s+)*)(class|trait|object|def|val|var|type)\b""".r
+    """(?:package\s+)?((?:(?:@[A-Za-z_][A-Za-z0-9_.]*(?:\([^)]*\))?|sealed|final|abstract|implicit|override|lazy|case|transient|private(?:\[[^\]]*\])?|protected(?:\[[^\]]*\])?)\s+)*)(class|trait|object|def|val|var|type)\b""".r
 
   private final case class Start(keyword: String, name: String, isPrivate: Boolean, isType: Boolean)
 
