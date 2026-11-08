@@ -35,10 +35,6 @@ import software.amazon.awssdk.services.dynamodb.{ DynamoDbAsyncClient, DynamoDbC
 
 import scala.concurrent.{ ExecutionContext, Future }
 
-/** The AWS SDK v2 binding of the snapshot DAO.
-  *
-  * The table format comes from the plugin config, so the new and the legacy classes differ only in their name.
-  */
 private[dao] abstract class V2SnapshotDaoBase(
     pluginContext: SnapshotPluginContext,
     asyncClient: Option[DynamoDbAsyncClient],

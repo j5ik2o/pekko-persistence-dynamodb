@@ -18,10 +18,6 @@ package com.github.j5ik2o.pekko.persistence.dynamodb.state.schema
 import com.github.j5ik2o.pekko.persistence.dynamodb.ddb._
 import com.github.j5ik2o.pekko.persistence.dynamodb.model.PersistenceId
 
-/** Encodes and decodes a durable state row from the columns declared by `schema`.
-  *
-  * The key comes from `tableSpec`, so the write item and the delete key share one definition.
-  */
 final class StateRowCodec(val schema: StateSchema, val tableSpec: StateTableSpec) {
 
   def key(persistenceId: PersistenceId): RowKey = tableSpec.keyOf(persistenceId)

@@ -21,11 +21,6 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.ddb._
 import com.github.j5ik2o.pekko.persistence.dynamodb.model.PersistenceId
 import com.github.j5ik2o.pekko.persistence.dynamodb.state.schema.{ StateRow, StateRowCodec }
 
-/** Reads and writes durable state rows through one SDK-neutral adapter.
-  *
-  * The v1 and v2 bindings supply the adapter and the revision value, so the current difference stays visible at the
-  * binding.
-  */
 final class StateStore(
     adapter: DdbClientAdapter,
     private val codec: StateRowCodec,

@@ -18,10 +18,6 @@ package com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.schema
 import com.github.j5ik2o.pekko.persistence.dynamodb.ddb.AttributeName
 import com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.config.SnapshotColumnsDefConfig
 
-/** The snapshot row fields and the columns that store them.
-  *
-  * The row codec and the table spec both read these names, so a column rename changes one value.
-  */
 final case class SnapshotSchema(
     partitionKey: AttributeName,
     sortKey: AttributeName,

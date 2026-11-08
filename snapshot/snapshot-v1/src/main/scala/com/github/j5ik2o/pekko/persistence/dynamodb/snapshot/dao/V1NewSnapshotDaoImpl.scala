@@ -34,10 +34,6 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.store.SnapshotStore
 
 import scala.concurrent.{ ExecutionContext, Future }
 
-/** The AWS SDK v1 snapshot DAO over the shared store.
-  *
-  * The table format comes from the plugin config, so the new and the legacy classes share this implementation.
-  */
 private[dao] final class V1SnapshotDaoDelegate(
     pluginContext: SnapshotPluginContext,
     asyncClient: Option[AmazonDynamoDBAsync],

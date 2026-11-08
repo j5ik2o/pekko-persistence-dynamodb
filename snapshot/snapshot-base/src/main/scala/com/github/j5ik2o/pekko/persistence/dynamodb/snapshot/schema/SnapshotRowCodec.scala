@@ -19,10 +19,6 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.ddb._
 import com.github.j5ik2o.pekko.persistence.dynamodb.model.{ PersistenceId, SequenceNumber }
 import com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.dao.SnapshotRow
 
-/** Encodes and decodes a snapshot row from the columns declared by `schema`.
-  *
-  * The key comes from `tableSpec`, so the write item and the delete key share one definition.
-  */
 final class SnapshotRowCodec(val schema: SnapshotSchema, val tableSpec: SnapshotTableSpec) {
 
   def key(row: SnapshotRow): RowKey = tableSpec.keyOf(row.persistenceId, row.sequenceNumber)

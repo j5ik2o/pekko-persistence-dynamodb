@@ -15,11 +15,6 @@
  */
 package com.github.j5ik2o.pekko.persistence.dynamodb.state.schema
 
-/** One durable state row as it is stored.
-  *
-  * `revision` is the value written to the revision column, not the revision the caller passed. The v1 and v2 bindings
-  * still write different values; D1 settles which one is correct.
-  */
 final case class StateRow(
     persistenceId: String,
     revision: Long,

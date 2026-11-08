@@ -20,10 +20,7 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.model.PersistenceId
 import com.github.j5ik2o.pekko.persistence.dynamodb.state.config.StatePluginConfig
 import com.github.j5ik2o.pekko.persistence.dynamodb.state.{ PartitionKeyResolver, SortKeyResolver, TableNameResolver }
 
-/** The durable state table and the way a persistence id maps to its key.
-  *
-  * The table name comes from the resolver on every call, so the prefix resolver keeps working.
-  */
+/** The table name comes from the resolver on every call, so the prefix resolver keeps working. */
 final case class StateTableSpec(
     table: TableSpec,
     tableNameResolver: TableNameResolver,

@@ -20,11 +20,6 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.model.{ PersistenceId, Seque
 import com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.config.SnapshotPluginConfig
 import com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.{ PartitionKeyResolver, SortKeyResolver }
 
-/** How a snapshot row maps to its primary key.
-  *
-  * `Sharded` stores the row under the configured partition and sort key resolvers. `Identity` uses the persistence id
-  * and the sequence number as the key, which is the legacy table format.
-  */
 sealed trait SnapshotKeyDerivation
 
 object SnapshotKeyDerivation {
@@ -37,11 +32,6 @@ object SnapshotKeyDerivation {
   case object Identity extends SnapshotKeyDerivation
 }
 
-/** The physical snapshot table and the way a row maps to its key.
-  *
-  * The default format reads the snapshot rows through the configured index. The legacy format uses the persistence id
-  * and the sequence number as the table key and has no index.
-  */
 final case class SnapshotTableSpec(
     table: TableSpec,
     readIndex: Option[IndexName],

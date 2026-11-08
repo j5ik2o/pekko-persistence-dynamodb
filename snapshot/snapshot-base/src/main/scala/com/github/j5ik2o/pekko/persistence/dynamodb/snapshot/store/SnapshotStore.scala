@@ -27,11 +27,6 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.schema.{
   SnapshotTableSpec
 }
 
-/** Reads and writes snapshot rows through one SDK-neutral adapter.
-  *
-  * The v1 and v2 bindings supply the adapter. The table layout and the row encoding come from the codec, so the legacy
-  * table format and the default format share one implementation.
-  */
 final class SnapshotStore(
     adapter: DdbClientAdapter,
     private val codec: SnapshotRowCodec,

@@ -157,7 +157,6 @@ final class DynamoDBDurableStateStoreV2[A](
       akkaSerialization.serialize(persistenceId, value).flatMap { serialized =>
         val row = StateRow(
           persistenceId = persistenceId,
-          // v2 stores the next revision. The v1 store keeps the given revision; D1 decides which one is correct.
           revision = revision + 1,
           payload = serialized.payload,
           serializerId = serialized.serializerId,

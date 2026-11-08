@@ -18,10 +18,6 @@ package com.github.j5ik2o.pekko.persistence.dynamodb.state.schema
 import com.github.j5ik2o.pekko.persistence.dynamodb.ddb.AttributeName
 import com.github.j5ik2o.pekko.persistence.dynamodb.state.config.StateColumnsDefConfig
 
-/** The durable state row fields and the columns that store them.
-  *
-  * The row codec and the table spec both read these names, so a column rename changes one value.
-  */
 final case class StateSchema(
     partitionKey: AttributeName,
     sortKey: AttributeName,
