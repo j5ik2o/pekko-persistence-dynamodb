@@ -16,8 +16,8 @@
 package com.github.j5ik2o.pekko.persistence.dynamodb.journal
 
 import org.apache.pekko.actor.ActorSystem
-import com.github.j5ik2o.pekko.persistence.dynamodb.config.client.ClientVersion
 import com.github.j5ik2o.pekko.persistence.dynamodb.context.PluginContext
+import com.github.j5ik2o.pekko.persistence.dynamodb.ddb.ClientVariant
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.config.JournalPluginConfig
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.dao.JournalRowWriteDriver
 import com.github.j5ik2o.pekko.persistence.dynamodb.metrics.{ MetricsReporter, MetricsReporterProvider }
@@ -45,9 +45,9 @@ final case class JournalPluginContext(system: ActorSystem, pluginConfig: Journal
   }
 
   val pluginExecutor: ExecutionContext =
-    pluginConfig.clientConfig.clientVersion match {
-      case ClientVersion.V1 => DispatcherUtils.newV1Executor(this)
-      case ClientVersion.V2 => DispatcherUtils.newV2Executor(this)
+    pluginConfig.clientVariant match {
+      case ClientVariant.V1 => DispatcherUtils.newV1Executor(this)
+      case ClientVariant.V2 => DispatcherUtils.newV2Executor(this)
     }
 
   val partitionKeyResolver: PartitionKeyResolver = {
@@ -61,14 +61,14 @@ final case class JournalPluginContext(system: ActorSystem, pluginConfig: Journal
   }
 
   val journalRowWriteDriver: JournalRowWriteDriver = {
-    val className = pluginConfig.clientConfig.clientVersion match {
-      case ClientVersion.V1 =>
+    val className = pluginConfig.clientVariant match {
+      case ClientVariant.V1 =>
         pluginConfig.v1JournalRowWriteDriverFactoryClassName
-      case ClientVersion.V1Dax =>
+      case ClientVariant.V1Dax =>
         pluginConfig.v1DaxJournalRowWriteDriverFactoryClassName
-      case ClientVersion.V2 =>
+      case ClientVariant.V2 =>
         pluginConfig.v2JournalRowWriteDriverFactoryClassName
-      case ClientVersion.V2Dax =>
+      case ClientVariant.V2Dax =>
         pluginConfig.v2DaxJournalRowWriteDriverFactoryClassName
     }
     val f = newDynamicAccessor[JournalRowWriteDriverFactory]().createThrow(className)

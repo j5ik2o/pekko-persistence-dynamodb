@@ -16,8 +16,8 @@
 package com.github.j5ik2o.pekko.persistence.dynamodb.state
 
 import org.apache.pekko.actor.ActorSystem
-import com.github.j5ik2o.pekko.persistence.dynamodb.config.client.ClientVersion
 import com.github.j5ik2o.pekko.persistence.dynamodb.context.PluginContext
+import com.github.j5ik2o.pekko.persistence.dynamodb.ddb.ClientVariant
 import com.github.j5ik2o.pekko.persistence.dynamodb.metrics.{ MetricsReporter, MetricsReporterProvider }
 import com.github.j5ik2o.pekko.persistence.dynamodb.state.config.StatePluginConfig
 import com.github.j5ik2o.pekko.persistence.dynamodb.trace.{ TraceReporter, TraceReporterProvider }
@@ -45,10 +45,10 @@ final case class StatePluginContext(system: ActorSystem, pluginConfig: StatePlug
   }
 
   val pluginExecutor: ExecutionContext =
-    pluginConfig.clientConfig.clientVersion match {
-      case ClientVersion.V1 =>
+    pluginConfig.clientVariant match {
+      case ClientVariant.V1 =>
         DispatcherUtils.newV1Executor(this)
-      case ClientVersion.V2 =>
+      case ClientVariant.V2 =>
         DispatcherUtils.newV2Executor(this)
     }
 
