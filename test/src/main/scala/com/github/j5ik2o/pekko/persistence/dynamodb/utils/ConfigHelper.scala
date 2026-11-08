@@ -32,6 +32,8 @@ object ConfigHelper {
       softDelete: Boolean = true,
       headEnabled: Boolean = false
   ): Config = {
+    // The legacy journal table uses sequence-nr as its sort key; the current table uses skey.
+    val journalSortKeyColumnName = if (legacyJournalMode) "sequence-nr" else "skey"
     val configString = s"""
        |pekko.persistence.journal.plugin = "j5ik2o.dynamo-db-journal"
        |pekko.persistence.snapshot-store.plugin = "j5ik2o.dynamo-db-snapshot"
@@ -73,7 +75,7 @@ object ConfigHelper {
                            s"""journal-row-driver-wrapper-class-name = "${journalRowDriverWrapperClassName.get}" """
                          } else ""}
        |  columns-def {
-       |    sort-key-column-name = ${if (legacyJournalMode) "sequence-nr" else "skey"}
+       |    sort-key-column-name = $journalSortKeyColumnName
        |  }
        |  head {
        |    enabled = $headEnabled
@@ -119,7 +121,7 @@ object ConfigHelper {
        |    endpoint = "http://$dynamoDBHost:$dynamoDBPort/"
        |  }
        |  columns-def {
-       |    sort-key-column-name = ${if (legacyJournalMode) "sequence-nr" else "skey"}
+       |    sort-key-column-name = $journalSortKeyColumnName
        |  }
        |}
        |
