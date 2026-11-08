@@ -20,6 +20,10 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.config.client.ClientType
 import com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.{ SnapshotDynamicAccessor, SnapshotPluginContext }
 import com.github.j5ik2o.pekko.persistence.dynamodb.utils.{ V1AsyncClientFactory, V1SyncClientFactory }
 
+@deprecated(
+  "Use com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.store.SnapshotStore; this factory is a compatibility binding.",
+  since = "1.2.0"
+)
 final class V1SnapshotDaoFactory(pluginContext: SnapshotPluginContext) extends SnapshotDaoFactory {
   override def create(
       serialization: Serialization

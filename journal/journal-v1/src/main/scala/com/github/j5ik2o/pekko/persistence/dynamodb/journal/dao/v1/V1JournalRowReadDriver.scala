@@ -28,6 +28,10 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.model.{ PersistenceId, Seque
 
 import scala.collection.mutable.ArrayBuffer
 
+@deprecated(
+  "Use com.github.j5ik2o.pekko.persistence.dynamodb.journal.store.JournalRowStore; this driver delegates to it.",
+  since = "1.2.0"
+)
 final class V1JournalRowReadDriver(
     val pluginContext: JournalPluginContext,
     val asyncClient: Option[AmazonDynamoDBAsync],

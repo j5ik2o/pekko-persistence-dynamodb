@@ -25,6 +25,10 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.SnapshotPluginConte
 
 import scala.concurrent.ExecutionContext
 
+@deprecated(
+  "Use com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.store.SnapshotStore; this DAO delegates to it.",
+  since = "1.2.0"
+)
 final class V1LegacySnapshotDaoImpl(
     pluginContext: SnapshotPluginContext,
     asyncClient: Option[AmazonDynamoDBAsync],

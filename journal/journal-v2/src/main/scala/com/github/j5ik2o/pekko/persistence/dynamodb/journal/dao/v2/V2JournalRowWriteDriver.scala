@@ -40,6 +40,10 @@ import scala.jdk.CollectionConverters._
 
 import java.io.IOException
 
+@deprecated(
+  "Use com.github.j5ik2o.pekko.persistence.dynamodb.journal.store.JournalRowStore; this driver delegates to it.",
+  since = "1.2.0"
+)
 final class V2JournalRowWriteDriver(
     val pluginContext: JournalPluginContext,
     val asyncClient: Option[JavaDynamoDbAsyncClient],

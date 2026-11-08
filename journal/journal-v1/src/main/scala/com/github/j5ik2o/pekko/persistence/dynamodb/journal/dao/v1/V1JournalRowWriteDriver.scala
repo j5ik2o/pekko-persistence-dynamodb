@@ -26,6 +26,10 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.journal.dao.{ JournalRowWrit
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.store.JournalRowStore
 import com.github.j5ik2o.pekko.persistence.dynamodb.model.{ PersistenceId, SequenceNumber }
 
+@deprecated(
+  "Use com.github.j5ik2o.pekko.persistence.dynamodb.journal.store.JournalRowStore; this driver delegates to it.",
+  since = "1.2.0"
+)
 final class V1JournalRowWriteDriver(
     val pluginContext: JournalPluginContext,
     val asyncClient: Option[AmazonDynamoDBAsync],

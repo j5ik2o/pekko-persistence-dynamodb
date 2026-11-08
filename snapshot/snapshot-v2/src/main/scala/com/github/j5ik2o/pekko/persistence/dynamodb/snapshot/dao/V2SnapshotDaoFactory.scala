@@ -20,6 +20,10 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.config.client.ClientType
 import com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.{ SnapshotDynamicAccessor, SnapshotPluginContext }
 import com.github.j5ik2o.pekko.persistence.dynamodb.utils.{ V2AsyncClientFactory, V2SyncClientFactory }
 
+@deprecated(
+  "Use com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.store.SnapshotStore; this factory is a compatibility binding.",
+  since = "1.2.0"
+)
 final class V2SnapshotDaoFactory(pluginContext: SnapshotPluginContext) extends SnapshotDaoFactory {
   override def create(
       serialization: Serialization
@@ -39,14 +43,6 @@ final class V2SnapshotDaoFactory(pluginContext: SnapshotPluginContext) extends S
         val v1JavaAsyncClient = f.create
         (Some(v1JavaAsyncClient), None)
     }
-    if (pluginConfig.legacyTableFormat)
-      new V2LegacySnapshotDaoImpl(pluginContext, async, sync, serialization)
-    else
-      new V2NewSnapshotDaoImpl(
-        pluginContext,
-        async,
-        sync,
-        serialization
-      )
+    new V2SnapshotDaoImpl(pluginContext, async, sync, serialization)
   }
 }

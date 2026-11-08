@@ -20,6 +20,10 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.journal.dao.JournalRowWriteD
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.{ JournalPluginContext, JournalRowWriteDriverFactory }
 import com.github.j5ik2o.pekko.persistence.dynamodb.utils.{ V1DaxAsyncClientFactory, V1DaxSyncClientFactory }
 
+@deprecated(
+  "Use com.github.j5ik2o.pekko.persistence.dynamodb.journal.store.JournalRowStore; this factory is a compatibility binding.",
+  since = "1.2.0"
+)
 final class V1DaxJournalRowWriteDriverFactory(pluginContext: JournalPluginContext)
     extends JournalRowWriteDriverFactory {
 

@@ -47,6 +47,10 @@ import scala.concurrent.{ ExecutionContext, Future }
 import scala.util.{ Failure, Success }
 
 @ApiMayChange
+@deprecated(
+  "Use com.github.j5ik2o.pekko.persistence.dynamodb.state.store.StateStore; this store delegates to it.",
+  since = "1.2.0"
+)
 final class DynamoDBDurableStateStoreV2[A](
     val pluginContext: StatePluginContext,
     val asyncClient: Option[DynamoDbAsyncClient],
