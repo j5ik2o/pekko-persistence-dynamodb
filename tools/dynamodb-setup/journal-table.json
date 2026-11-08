@@ -16,25 +16,21 @@
     {
       "AttributeName": "sequence-nr",
       "AttributeType": "N"
-    },
-    {
-      "AttributeName": "tags",
-      "AttributeType": "S"
     }
   ],
   "KeySchema": [
     {
-      "KeyType": "HASH",
-      "AttributeName": "pkey"
+      "AttributeName": "pkey",
+      "KeyType": "HASH"
     },
     {
-      "KeyType": "RANGE",
-      "AttributeName": "skey"
+      "AttributeName": "skey",
+      "KeyType": "RANGE"
     }
   ],
   "ProvisionedThroughput": {
-    "WriteCapacityUnits": 10,
-    "ReadCapacityUnits": 10
+    "ReadCapacityUnits": 10,
+    "WriteCapacityUnits": 10
   },
   "GlobalSecondaryIndexes": [
     {
@@ -60,6 +56,6 @@
   ],
   "StreamSpecification": {
     "StreamEnabled": true,
-    "StreamViewType" : "NEW_IMAGE"
+    "StreamViewType": "NEW_IMAGE"
   }
 }

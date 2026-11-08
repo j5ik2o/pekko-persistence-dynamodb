@@ -90,6 +90,7 @@ j5ik2o.dynamo-db-snapshot {
     
     snapshot-column-name = "snapshot"
     created-column-name = "created"
+    tags-column-name = "tags"
   }
 }
 ```
@@ -103,7 +104,7 @@ j5ik2o.dynamo-db-state {
     sort-key-column-name = "skey"
     
     persistence-id-column-name = "persistence-id"
-    sequence-nr-column-name = "sequence-nr"
+    revision-nr-column-name = "revision-nr"
     
     deleted-column-name = "deleted"
     payload-column-name = "payload"
@@ -292,12 +293,14 @@ j5ik2o.dynamo-db-snapshot {
 
 ### State
 
-The state plugin has not the sort-key and SortKeyResolver.
+The state plugin has a sort key. The `skey` value comes from the `SortKeyResolver`. The default resolver uses the
+persistence id.
 
 ```
 j5ik2o.dynamo-db-state {
   shard-count = 64
   partition-key-resolver-class-name = "com.github.j5ik2o.pekko.persistence.dynamodb.state.PartitionKeyResolver$PersistenceIdBased"
+  sort-key-resolver-class-name = "com.github.j5ik2o.pekko.persistence.dynamodb.state.SortKeyResolver$PersistenceIdBased"
 }
 ```
 
@@ -312,6 +315,14 @@ There are one standard implementations as follows.
 - `com.github.j5ik2o.pekko.persistence.dynamodb.journal.PartitionKeyResolver.PersistenceIdBased`
   - This is the same implementation as Journal or Snapshot.
 
+#### Sort Key Resolver Class Name
+
+`sort-key-resolver-class-name` specifies the implementation class that generates `skey` from `PersistenceId`.
+The following implementation is available for built-in use.
+
+- `com.github.j5ik2o.pekko.persistence.dynamodb.state.SortKeyResolver$PersistenceIdBased`
+  - `skey = ${persistenceId}`
+
 #### Configure your own implementation
 
 If you need, set up your own implementation.
@@ -319,6 +330,7 @@ If you need, set up your own implementation.
 ```
 j5ik2o.dynamo-db-state {
   partition-key-resolver-class-name = "your class name(fqcn)"
+  sort-key-resolver-class-name = "your class name(fqcn)"
 }
 ```
 

@@ -14,7 +14,8 @@ object SchemaDrift {
   private val Systems: Seq[String] = Seq("journal", "snapshot", "state")
 
   def check(repo: Repo): Seq[KnownProblem] = {
-    val problems = checkColumns(repo) ++ checkIndexes(repo) ++ checkHelperAttributes(repo)
+    val problems = checkColumns(repo) ++ checkIndexes(repo) ++ checkHelperAttributes(repo) ++
+      checkDocsClaims(repo) ++ checkLegacyTableShape(repo)
     problems
       .groupBy(_.id)
       .map { case (id, found) => KnownProblem(id, found.map(_.detail).distinct.sorted.mkString("; ")) }
@@ -130,6 +131,49 @@ object SchemaDrift {
         s"DynamoDBContainerHelper uses attribute $name, but no table JSON declares it"
       )
     }
+  }
+
+  /** The docs lost the removed index and the state sort-key claim, so they must not come back, and the legacy table
+    * JSON must keep its own shape.
+    */
+  private def checkDocsClaims(repo: Repo): Seq[KnownProblem] = {
+    val tableFormat = repo.read(repo.root.resolve("docs/src/sphinx/table-format.md"))
+    val customize   = repo.read(repo.root.resolve("docs/src/sphinx/customize.md"))
+    val problems    = Vector.newBuilder[KnownProblem]
+
+    if ("""\bpersistenceId\b""".r.findFirstIn(tableFormat).isDefined) {
+      problems += KnownProblem(
+        "docs-camel-case-persistence-id",
+        "table-format.md spells persistenceId; the snapshot index uses the persistence-id column"
+      )
+    }
+    if ("""(?i)has not the sort[- ]key""".r.findFirstIn(customize).isDefined) {
+      problems += KnownProblem(
+        "state-sort-key-doc-claim",
+        "customize.md claims that the state plugin has no sort key, but state reference.conf defines sort-key-column-name and a SortKeyResolver"
+      )
+    }
+    val stateShardingBlocks = docBlocks(customize)
+      .filter(block => block.contains("j5ik2o.dynamo-db-state") && block.contains("shard-count"))
+    if (stateShardingBlocks.isEmpty || !stateShardingBlocks.exists(_.contains("sort-key-resolver-class-name"))) {
+      problems += KnownProblem(
+        "state-sort-key-resolver-doc-missing",
+        "customize.md does not document the state sort-key-resolver-class-name"
+      )
+    }
+    problems.result()
+  }
+
+  private def checkLegacyTableShape(repo: Repo): Seq[KnownProblem] = {
+    val legacyJournal = repo.read(repo.root.resolve("tools/dynamodb-setup/legacy-journal-table.json"))
+    val problems      = Vector.newBuilder[KnownProblem]
+    if (!indexNamesIn(legacyJournal).contains("TagsIndex")) {
+      problems += KnownProblem(
+        "legacy-journal-tags-index-missing",
+        "legacy-journal-table.json no longer creates TagsIndex, so the legacy table format changed"
+      )
+    }
+    problems.result()
   }
 
   private def referenceColumns(repo: Repo, system: String): Map[String, Set[String]] = {

@@ -85,7 +85,9 @@ yet. A duplicate write fails.
 
 ## Table
 
-Create the table with `tools/dynamodb-setup/journal-head-table.json`.
+Create the table with `tools/dynamodb-setup/journal-head-table.json`. That file is generated from the `JournalHead`
+table spec, and the DynamoDB Local fixture uses the same definition. Change the spec and regenerate the file instead
+of editing the JSON by hand.
 
 | Attribute        | Type   | Role                                |
 |:-----------------|:-------|:------------------------------------|

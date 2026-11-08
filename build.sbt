@@ -103,6 +103,12 @@ lazy val test = (project in file("test"))
   )
 
 lazy val `schema-check` = (project in file("schema-check"))
+  .dependsOn(
+    `base`,
+    `journal-base`  % "test->compile",
+    `snapshot-base` % "test->compile",
+    `state-base`    % "test->compile"
+  )
   .settings(
     name := "pekko-persistence-dynamodb-schema-check",
     publish / skip := true,
