@@ -136,10 +136,10 @@ final class SnapshotStore(
 
   private def deleteRows(rows: Source[AttributeMap, NotUsed]): Source[Unit, NotUsed] =
     rows
-      .map(values => tableSpec.table.keyOf(values))
+      .map(codec.decode)
       .flatMapConcat {
-        case Right(key)  => Source.single(key)
-        case Left(error) => Source.failed(new IllegalArgumentException(s"cannot build the delete key: $error"))
+        case Right(row)  => Source.single(codec.key(row))
+        case Left(error) => Source.failed(new IllegalArgumentException(s"cannot decode the snapshot row: $error"))
       }
       .grouped(batchWriteLimit)
       .flatMapConcat(keys => written(Operation.BatchWrite(tableSpec.table.table, Vector.empty, keys.toVector)))
