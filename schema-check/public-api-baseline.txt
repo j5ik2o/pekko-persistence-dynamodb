@@ -246,8 +246,9 @@ base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/conte
 base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/context/PluginContext.scala	PluginContext	def system: ActorSystem
 base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/context/PluginContext.scala	PluginContext	type This <: PluginContext
 base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/context/PluginContext.scala	PluginContext	val pluginConfig: PluginConfig
-base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/AttributeMap.scala		final case class AttributeMap(entries: Vector[(AttributeName, DdbValue)])
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/AttributeMap.scala		final class AttributeMap private (val entries: Vector[(AttributeName, DdbValue)])
 base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/AttributeMap.scala		object AttributeMap
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/AttributeMap.scala	AttributeMap	def apply(entries: Vector[(AttributeName, DdbValue)]): AttributeMap
 base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/AttributeMap.scala	AttributeMap	def contains(name: AttributeName): Boolean
 base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/AttributeMap.scala	AttributeMap	def get(name: AttributeName): Option[DdbValue]
 base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/AttributeMap.scala	AttributeMap	def isEmpty: Boolean
@@ -259,6 +260,9 @@ base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/A
 base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/AttributeMap.scala	AttributeMap	def size: Int
 base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/AttributeMap.scala	AttributeMap	def sorted: AttributeMap
 base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/AttributeMap.scala	AttributeMap	def updated(name: AttributeName, value: DdbValue): AttributeMap
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/AttributeMap.scala	AttributeMap	override def equals(other: Any): Boolean
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/AttributeMap.scala	AttributeMap	override def hashCode(): Int
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/AttributeMap.scala	AttributeMap	override def toString: String
 base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/AttributeMap.scala	AttributeMap	val empty: AttributeMap
 base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/AttributeUpdate.scala		object AttributeUpdate
 base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/AttributeUpdate.scala		sealed trait AttributeUpdate
@@ -343,6 +347,7 @@ base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/E
 base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Errors.scala	DecodeError	final case class Missing(name: AttributeName) extends DecodeError
 base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Errors.scala	DecodeError	final case class WrongType(name: AttributeName, expected: AttributeKind) extends DecodeError
 base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Errors.scala	KeyError	final case class Missing(name: AttributeName) extends KeyError
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Errors.scala	KeyError	final case class UndefinedColumn(name: AttributeName) extends KeyError
 base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Errors.scala	KeyError	final case class WrongType(name: AttributeName, expected: AttributeKind) extends KeyError
 base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/ItemSize.scala		object ItemSize
 base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/ItemSize.scala	ItemSize	def numberSize(value: BigDecimal): Int
@@ -815,6 +820,10 @@ base-v2	base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb
 base-v2	base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V2SyncClientFactory.scala	V2SyncClientFactory	class Default(pluginContext: PluginContext) extends V2SyncClientFactory
 base-v2	base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V2SyncClientFactory.scala	V2SyncClientFactory	def create: JavaDynamoDbSyncClient
 base-v2	base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V2SyncClientFactory.scala	V2SyncClientFactory.Default	override def create: JavaDynamoDbSyncClient
+journal-base	journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/config/package.scala		package object config
+journal-base	journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/config/package.scala	config	type JournalColumnsDefConfig
+journal-base	journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/config/package.scala	config	type JournalPluginBaseConfig
+journal-base	journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/config/package.scala	config	type JournalPluginConfig
 journal-base	journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/DynamoDBJournal.scala		final class DynamoDBJournal(config: Config) extends AsyncWriteJournal with ActorLogging
 journal-base	journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/DynamoDBJournal.scala		object DynamoDBJournal
 journal-base	journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/DynamoDBJournal.scala	DynamoDBJournal	final case class InPlaceUpdateEvent(persistenceId: String, sequenceNumber: Long, message: AnyRef)
@@ -1026,6 +1035,9 @@ journal-base	journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persist
 journal-base	journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/serialization/PersistentReprSerializer.scala	PersistentReprSerializer	def serialize(persistentRepr: PersistentRepr)(implicit ec: ExecutionContext): Future[A]
 journal-base	journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/serialization/PersistentReprSerializer.scala	PersistentReprSerializer	def serialize(persistentRepr: PersistentRepr, index: Option[Int])(implicit ec: ExecutionContext): Future[A]
 journal-base	journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/serialization/PersistentReprSerializer.scala	PersistentReprSerializer	def serialize(persistentRepr: PersistentRepr, tags: Set[String], index: Option[Int])(implicit ec: ExecutionContext ): Future[A]
+journal-base	journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/serialization/package.scala		package object serialization
+journal-base	journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/serialization/package.scala	serialization	def decodeTags(tags: Option[String], separator: String): Set[String]
+journal-base	journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/serialization/package.scala	serialization	def encodeTags(tags: Set[String], separator: String): Option[String]
 journal-v1	journal/journal-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/dao/v1/V1DaxJournalRowWriteDriverFactory.scala		final class V1DaxJournalRowWriteDriverFactory(pluginContext: JournalPluginContext)
 journal-v1	journal/journal-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/dao/v1/V1JournalRowReadDriver.scala		final class V1JournalRowReadDriver( val pluginContext: JournalPluginContext, val asyncClient: Option[AmazonDynamoDBAsync], val syncClient: Option[AmazonDynamoDB] ) extends JournalRowReadDriver
 journal-v1	journal/journal-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/dao/v1/V1JournalRowReadDriver.scala	V1JournalRowReadDriver	override def dispose(): Unit
@@ -1085,6 +1097,9 @@ journal-v2	journal/journal-v2/src/main/scala/com/github/j5ik2o/pekko/persistence
 journal-v2	journal/journal-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/head/JournalHeadMigration.scala	JournalHeadMigration	val configured
 journal-v2	journal/journal-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/head/JournalHeadMigration.scala	JournalHeadMigration.SnapshotTable	def fromConfig(config: Config): SnapshotTable
 journal-v2	journal/journal-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/head/JournalHeadMigration.scala	JournalHeadMigration.SnapshotTable	val default: SnapshotTable
+snapshot-base	snapshot/snapshot-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/config/package.scala		package object config
+snapshot-base	snapshot/snapshot-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/config/package.scala	config	type SnapshotColumnsDefConfig
+snapshot-base	snapshot/snapshot-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/config/package.scala	config	type SnapshotPluginConfig
 snapshot-base	snapshot/snapshot-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/snapshot/DynamoDBSnapshotStore.scala		final class DynamoDBSnapshotStore(config: Config) extends SnapshotStore
 snapshot-base	snapshot/snapshot-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/snapshot/DynamoDBSnapshotStore.scala		object DynamoDBSnapshotStore
 snapshot-base	snapshot/snapshot-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/snapshot/DynamoDBSnapshotStore.scala	DynamoDBSnapshotStore	def toSelectedSnapshot(tupled: (SnapshotMetadata, Any)): SelectedSnapshot
