@@ -143,6 +143,10 @@ sbt -batch "state-v1/testOnly *DynamoDBStateV1SyncSpec"
 
 `sbt lint` runs `scalafmtCheck`, `test:scalafmtCheck`, `scalafmtSbtCheck`, `scalafixAll --check`, and `checkModuleBoundaries`. `sbt fmt` rewrites the files.
 
+## Before you merge
+
+Before you merge, run `tools/check-review-threads.sh <owner/repo> <pr>` and make the `review-gate` CI job green. Reply to every review thread with the fix, the reason for dismissal, or a follow-up issue, then resolve the thread. An unresolved thread means a real finding can ship.
+
 ## Rule table
 
 Each row names a mistake that was made more than once, the rule that prevents it, and the file that enforces the rule. `RuleTableSpec` reads this table and fails when an enforcement path no longer exists. The known problems and their owner issues are in `schema-check/known-problems.allowlist`.
@@ -158,3 +162,4 @@ Each row names a mistake that was made more than once, the rule that prevents it
 | A new rejection is a bare `RuntimeException` that callers cannot tell apart. | Add a subclass of the sealed `JournalHeadException` family. | type `journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/head/JournalHeadException.scala` |
 | `head.enabled` accepts a client version or a table pair that cannot serve it. | Require `client-version = v2` without DAX, and a `JournalHead` table name that differs from the journal table. | check `journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/config/JournalPluginConfig.scala` |
 | A change passes `sbt test` but fails `lint` on formatting or an unused import. | Run `sbt lint` before every push. | check `build.sbt` |
+| A review thread is left unresolved at merge, so a real finding ships. | Resolve every review thread with a disposition before merge. | check `tools/check-review-threads.sh` |
