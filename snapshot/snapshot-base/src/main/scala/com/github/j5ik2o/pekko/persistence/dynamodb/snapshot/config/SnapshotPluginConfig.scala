@@ -56,15 +56,10 @@ object SnapshotPluginConfig extends LoggingSupport {
     logger.debug("legacy-config-format = {}", legacyConfigFormat)
     val legacyTableFormat = config.as[Boolean](legacyTableFormatKey)
     logger.debug("legacy-table-format = {}", legacyTableFormat)
-    val clientConfig = CommonConfigParser.dynamoDbClientConfig(config, legacyConfigFormat)
-    val clientFactories =
-      CommonConfigParser.clientFactories(
-        config,
-        clientConfig.clientVersion,
-        CommonConfigParser.FactoryValidation.V2DaxUnderV2
-      )
-    val reporters = CommonConfigParser.reporters(config)
-    val backoffs  = CommonConfigParser.backoffs(config)
+    val clientConfig    = CommonConfigParser.dynamoDbClientConfig(config, legacyConfigFormat)
+    val clientFactories = CommonConfigParser.clientFactories(config, clientConfig.clientVersion)
+    val reporters       = CommonConfigParser.reporters(config)
+    val backoffs        = CommonConfigParser.backoffs(config)
     val result = SnapshotPluginConfig(
       sourceConfig = config,
       plugInLifecycleHandlerFactoryClassName = {

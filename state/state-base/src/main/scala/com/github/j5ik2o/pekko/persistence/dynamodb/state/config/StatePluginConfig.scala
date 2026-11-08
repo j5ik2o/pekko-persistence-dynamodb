@@ -46,15 +46,10 @@ object StatePluginConfig extends LoggingSupport {
 
   def fromConfig(config: Config): StatePluginConfig = {
     logger.debug("config = {}", config)
-    val clientConfig = CommonConfigParser.dynamoDbClientConfig(config, legacyConfigFormat = false)
-    val clientFactories =
-      CommonConfigParser.clientFactories(
-        config,
-        clientConfig.clientVersion,
-        CommonConfigParser.FactoryValidation.PerVariant
-      )
-    val reporters = CommonConfigParser.reporters(config)
-    val backoffs  = CommonConfigParser.backoffs(config)
+    val clientConfig    = CommonConfigParser.dynamoDbClientConfig(config, legacyConfigFormat = false)
+    val clientFactories = CommonConfigParser.clientFactories(config, clientConfig.clientVersion)
+    val reporters       = CommonConfigParser.reporters(config)
+    val backoffs        = CommonConfigParser.backoffs(config)
     val result = new StatePluginConfig(
       sourceConfig = config,
       plugInLifecycleHandlerFactoryClassName = {

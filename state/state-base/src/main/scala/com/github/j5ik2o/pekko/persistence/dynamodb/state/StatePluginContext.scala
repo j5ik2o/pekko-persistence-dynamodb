@@ -48,7 +48,11 @@ final case class StatePluginContext(system: ActorSystem, pluginConfig: StatePlug
     pluginConfig.clientVariant match {
       case ClientVariant.V1 =>
         DispatcherUtils.newV1Executor(this)
+      case ClientVariant.V1Dax =>
+        DispatcherUtils.newV1Executor(this)
       case ClientVariant.V2 =>
+        DispatcherUtils.newV2Executor(this)
+      case ClientVariant.V2Dax =>
         DispatcherUtils.newV2Executor(this)
     }
 

@@ -17,7 +17,7 @@ package com.github.j5ik2o.pekko.persistence.dynamodb.state.scaladsl
 
 import com.github.j5ik2o.pekko.persistence.dynamodb.config.client.ClientType
 import com.github.j5ik2o.pekko.persistence.dynamodb.state.{ StateDynamicAccessor, StatePluginContext }
-import com.github.j5ik2o.pekko.persistence.dynamodb.utils.{ V1AsyncClientFactory, V1SyncClientFactory }
+import com.github.j5ik2o.pekko.persistence.dynamodb.utils.{ V1DaxAsyncClientFactory, V1DaxSyncClientFactory }
 
 final class V1DaxScalaDurableStateUpdateStoreFactory(pluginContext: StatePluginContext)
     extends ScalaDurableStateUpdateStoreFactory {
@@ -25,14 +25,14 @@ final class V1DaxScalaDurableStateUpdateStoreFactory(pluginContext: StatePluginC
     import pluginContext._
     val (maybeV1SyncClient, maybeV1AsyncClient) = pluginConfig.clientConfig.clientType match {
       case ClientType.Sync =>
-        val f = StateDynamicAccessor[V1SyncClientFactory](pluginContext).createThrow(
-          pluginConfig.v1SyncClientFactoryClassName
+        val f = StateDynamicAccessor[V1DaxSyncClientFactory](pluginContext).createThrow(
+          pluginConfig.v1DaxSyncClientFactoryClassName
         )
         val client = f.create
         (Some(client), None)
       case ClientType.Async =>
-        val f = StateDynamicAccessor[V1AsyncClientFactory](pluginContext).createThrow(
-          pluginConfig.v1AsyncClientFactoryClassName
+        val f = StateDynamicAccessor[V1DaxAsyncClientFactory](pluginContext).createThrow(
+          pluginConfig.v1DaxAsyncClientFactoryClassName
         )
         val client = f.create
         (None, Some(client))

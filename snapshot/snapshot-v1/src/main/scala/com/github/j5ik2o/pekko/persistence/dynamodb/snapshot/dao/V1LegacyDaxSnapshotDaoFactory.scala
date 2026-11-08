@@ -28,7 +28,7 @@ final class V1LegacyDaxSnapshotDaoFactory(pluginContext: SnapshotPluginContext) 
     val (async, sync) = pluginConfig.clientConfig.clientType match {
       case ClientType.Sync =>
         val f = SnapshotDynamicAccessor[V1DaxSyncClientFactory](pluginContext).createThrow(
-          pluginConfig.v1SyncClientFactoryClassName
+          pluginConfig.v1DaxSyncClientFactoryClassName
         )
         val v1JavaSyncClient = f.create
         (None, Some(v1JavaSyncClient))

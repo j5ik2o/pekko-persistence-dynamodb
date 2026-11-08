@@ -58,37 +58,17 @@ object CommonConfigParser {
 
   final case class Backoffs(write: BackoffConfig, read: BackoffConfig)
 
-  /** Which client factory keys the parser validates for the selected client version. */
-  sealed trait FactoryValidation
-
-  object FactoryValidation {
-
-    /** Validate only the factories of the selected variant. */
-    case object PerVariant extends FactoryValidation
-
-    /** Keep the journal and snapshot behavior before D2: v2 validates the v2 DAX factory keys, and v2-dax validates
-      * none.
-      *
-      * D2 fixes the DAX startup path and removes this policy.
-      */
-    case object V2DaxUnderV2 extends FactoryValidation
-  }
-
   def dynamoDbClientConfig(config: Config, legacyConfigFormat: Boolean): DynamoDBClientConfig =
     DynamoDBClientConfig.fromConfig(
       config.getAs[Config](dynamoDbClientKey).getOrElse(ConfigFactory.empty()),
       legacyConfigFormat
     )
 
-  def clientFactories(
-      config: Config,
-      selected: ClientVersion.Value,
-      validation: FactoryValidation
-  ): ClientFactories = {
-    val v1    = readClientFactories(config, ClientVariantRegistry.V1, selected, validation)
-    val v1Dax = readClientFactories(config, ClientVariantRegistry.V1Dax, selected, validation)
-    val v2    = readClientFactories(config, ClientVariantRegistry.V2, selected, validation)
-    val v2Dax = readClientFactories(config, ClientVariantRegistry.V2Dax, selected, validation)
+  def clientFactories(config: Config, selected: ClientVersion.Value): ClientFactories = {
+    val v1    = readClientFactories(config, ClientVariantRegistry.V1, selected)
+    val v1Dax = readClientFactories(config, ClientVariantRegistry.V1Dax, selected)
+    val v2    = readClientFactories(config, ClientVariantRegistry.V2, selected)
+    val v2Dax = readClientFactories(config, ClientVariantRegistry.V2Dax, selected)
     ClientFactories(
       v1AsyncClientFactoryClassName = v1._1,
       v1SyncClientFactoryClassName = v1._2,
@@ -131,25 +111,15 @@ object CommonConfigParser {
       )
     )
 
-  private[config] def validates(
-      entry: ClientVariantEntry,
-      selected: ClientVersion.Value,
-      validation: FactoryValidation
-  ): Boolean =
-    validation match {
-      case FactoryValidation.PerVariant => entry.clientVersion == selected
-      case FactoryValidation.V2DaxUnderV2 =>
-        (entry.clientVersion == selected && selected != ClientVersion.V2Dax) ||
-        (selected == ClientVersion.V2 && entry.clientVersion == ClientVersion.V2Dax)
-    }
+  private[config] def validates(entry: ClientVariantEntry, selected: ClientVersion.Value): Boolean =
+    entry.clientVersion == selected
 
   private def readClientFactories(
       config: Config,
       entry: ClientVariantEntry,
-      selected: ClientVersion.Value,
-      validation: FactoryValidation
+      selected: ClientVersion.Value
   ): (String, String) = {
-    val enabled = validates(entry, selected, validation)
+    val enabled = validates(entry, selected)
     (
       ClassCheckUtils.requireClassByName(
         entry.expectedAsyncClientFactoryClassName,

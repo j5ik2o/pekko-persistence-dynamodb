@@ -1,1 +1,2 @@
-snapshot-v1-dax-factory-missing | factory-class | DynamoDBSnapshotStore uses V1DaxSnapshotDaoFactory, but the class is V1LegacyDaxSnapshotDaoFactory | 2027-06-30 | https://github.com/j5ik2o/pekko-persistence-dynamodb/issues/855
+# Known problems that the repository checks tolerate. An entry must still reproduce; remove it when the problem is
+# fixed. See schema-check/src/test/scala/com/github/j5ik2o/pekko/persistence/dynamodb/schemacheck/Allowlist.scala.
