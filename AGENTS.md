@@ -74,7 +74,7 @@ A client variant is one value of `ClientVersion`. The repository has `v1`, `v1-d
 7. Add the factory class names to the three `reference.conf` files.
 8. Run the three module test suites for the client module you changed and `sbt -batch "schema-check/test"`. `FactoryClassReferenceSpec` fails when a class name in a config does not resolve to a class, object, or trait.
 
-The three `pluginExecutor` matches currently accept only `V1` and `V2`. A DAX variant reaches one of them at startup. The DAX cases are a known gap that the DAX startup work fixes; do not copy the gap into a new variant.
+The three `pluginExecutor` matches resolve all four registered variants: `V1`, `V1Dax`, `V2`, and `V2Dax`. A new variant still needs its own case, because the match on an `Enumeration.Value` is not checked for exhaustiveness and a missing case fails at startup with a `MatchError`.
 
 ## Build matrix
 
