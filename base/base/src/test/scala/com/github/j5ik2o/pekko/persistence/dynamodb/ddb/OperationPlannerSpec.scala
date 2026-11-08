@@ -157,6 +157,9 @@ final class OperationPlannerSpec extends AnyFreeSpec with Matchers {
     OperationPlanner.plan(Operation.Update(table, rowKey, Vector.empty)).isLeft shouldBe true
     OperationPlanner.plan(Operation.BatchWrite(table, Vector.empty, Vector.empty)).isLeft shouldBe true
     OperationPlanner.plan(Operation.TransactWrite(Vector.empty)).isLeft shouldBe true
+    OperationPlanner
+      .plan(Operation.TransactWrite(Vector(TransactItem.Update(table, rowKey, Vector.empty))))
+      .isLeft shouldBe true
   }
 
   "OperationPlanner renders every operation case" in {

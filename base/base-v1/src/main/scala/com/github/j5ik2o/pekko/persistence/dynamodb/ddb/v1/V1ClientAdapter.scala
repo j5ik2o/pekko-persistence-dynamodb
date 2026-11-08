@@ -81,7 +81,9 @@ final class V1ClientAdapter(
 
     case V1RenderedOperation.Get(request) =>
       call(client => client.getItemAsync(request), client => client.getItem(request))
-        .map(response => OperationResult.Item(Option(response.getItem).map(V1AttributeValues.fromItem)))
+        .map(response =>
+          OperationResult.Item(Option(response.getItem).filter(_.asScala.nonEmpty).map(V1AttributeValues.fromItem))
+        )
 
     case V1RenderedOperation.Delete(request) =>
       call(client => client.deleteItemAsync(request), client => client.deleteItem(request))
@@ -106,9 +108,15 @@ final class V1ClientAdapter(
 
     case V1RenderedOperation.BatchWrite(request) =>
       call(client => client.batchWriteItemAsync(request), client => client.batchWriteItem(request))
-        .map { _ =>
-          val count = Option(request.getRequestItems).map(_.asScala.values.map(_.size).sum).getOrElse(0)
-          OperationResult.Written(count)
+        .flatMap { response =>
+          val unprocessed =
+            Option(response.getUnprocessedItems).map(_.asScala.values.map(_.size).sum).getOrElse(0)
+          if (unprocessed > 0) {
+            Future.failed(new IllegalStateException(s"BatchWriteItem left $unprocessed unprocessed items"))
+          } else {
+            val count = Option(request.getRequestItems).map(_.asScala.values.map(_.size).sum).getOrElse(0)
+            Future.successful(OperationResult.Written(count))
+          }
         }
 
     case V1RenderedOperation.TransactWrite(request) =>

@@ -21,7 +21,8 @@ import org.apache.pekko.stream.scaladsl.Source
 /** Executes operations against one AWS SDK version.
   *
   * A transport or service failure fails the returned stream. A condition that did not hold is an `OperationResult`
-  * value.
+  * value. A batch write that DynamoDB leaves partly unprocessed also fails the stream, so the caller retries the whole
+  * idempotent batch instead of losing the unprocessed items.
   */
 trait DdbClientAdapter {
 
