@@ -33,6 +33,7 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.journal.config.{
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.dao.WriteJournalDaoImpl
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.head._
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.serialization.ByteArrayJournalSerializer
+import com.github.j5ik2o.pekko.persistence.dynamodb.model.{ PersistenceId, SequenceNumber }
 import com.github.j5ik2o.pekko.persistence.dynamodb.utils.{ ConfigHelper, DynamoDBContainerHelper, RandomPortUtil }
 import com.typesafe.config.ConfigFactory
 import org.scalatest.concurrent.ScalaFutures
@@ -313,6 +314,32 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
     implicit val ec: ExecutionContext = system.dispatcher
     Await.result(serializer.serialize(PersistentRepr(payload, sequenceNr, persistenceId)), 30.seconds)
   }
+
+  private def journalRowWithMessage(
+      persistenceId: String,
+      sequenceNr: Long,
+      messageLength: Int
+  ): JournalRow =
+    JournalRow(
+      persistenceId = PersistenceId(persistenceId),
+      sequenceNumber = SequenceNumber(sequenceNr),
+      deleted = false,
+      message = Array.fill(messageLength)(0x41.toByte),
+      ordering = sequenceNr
+    )
+
+  private def headItemSize(persistenceId: String, messageLength: Int): Int =
+    DynamoDBItemSizeCalculator.journalHeadItemSize(
+      JournalHeadRow(
+        PersistenceId(persistenceId),
+        SequenceNumber(1),
+        Seq(JournalHeadEvent(SequenceNumber(1), Array.fill(messageLength)(0x41.toByte)))
+      ),
+      headConfig.columnsDefConfig
+    )
+
+  private def messageLengthAtItemSize(persistenceId: String, itemSizeBytes: Int): Int =
+    itemSizeBytes - headItemSize(persistenceId, 0)
 
   private def failedWith(dao: WriteJournalDaoImpl, rows: Seq[JournalRow]): Throwable = {
     implicit val mat: Materializer = SystemMaterializer(headEnabledSystem).materializer
@@ -671,6 +698,41 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
       failure shouldBe a[JournalHeadItemTooLargeException]
       journalSequenceNrs(rejectedPid) shouldBe Seq.empty
       headItem(rejectedPid) shouldBe None
+    }
+
+    "accept a JournalHead item of exactly 409600 bytes and reject 409601 bytes on the same queue" in {
+      val acceptedPid           = "head-size-boundary-accepted-1"
+      val rejectedPid           = "head-size-boundary-rejected-1"
+      val acceptedMessageLength = messageLengthAtItemSize(acceptedPid, JournalHeadLimits.MaxItemSizeBytes)
+      val rejectedMessageLength = messageLengthAtItemSize(rejectedPid, JournalHeadLimits.MaxItemSizeBytes + 1)
+
+      headItemSize(acceptedPid, acceptedMessageLength) shouldBe JournalHeadLimits.MaxItemSizeBytes
+      headItemSize(rejectedPid, rejectedMessageLength) shouldBe JournalHeadLimits.MaxItemSizeBytes + 1
+
+      val dao = newWriteJournalDao(headEnabledSystem)
+      try {
+        implicit val mat: Materializer = SystemMaterializer(headEnabledSystem).materializer
+        Await.result(
+          dao.putMessages(Seq(journalRowWithMessage(acceptedPid, 1L, acceptedMessageLength))).runWith(Sink.head),
+          120.seconds
+        ) shouldBe 1L
+        journalSequenceNrs(acceptedPid) shouldBe Seq(1L)
+        headSequenceNr(acceptedPid) shouldBe Some(1L)
+
+        val exception = failedWith(dao, Seq(journalRowWithMessage(rejectedPid, 1L, rejectedMessageLength)))
+        exception shouldBe a[JournalHeadItemTooLargeException]
+        exception.asInstanceOf[JournalHeadItemTooLargeException].itemSizeBytes shouldBe
+        JournalHeadLimits.MaxItemSizeBytes + 1
+        journalSequenceNrs(rejectedPid) shouldBe Seq.empty
+        headItem(rejectedPid) shouldBe None
+
+        // the rejection did not abort the queue of the same dao
+        Await.result(
+          dao.putMessages(Seq(journalRowWithMessage(rejectedPid, 1L, 1))).runWith(Sink.head),
+          60.seconds
+        ) shouldBe 1L
+        headSequenceNr(rejectedPid) shouldBe Some(1L)
+      } finally dao.dispose()
     }
 
     "require the migration for an existing aggregate and accept new aggregates before it" in {
