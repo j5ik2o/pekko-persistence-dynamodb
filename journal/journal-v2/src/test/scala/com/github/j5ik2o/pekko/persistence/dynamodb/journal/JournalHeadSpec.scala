@@ -654,6 +654,28 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
       headSequenceNr(pid) shouldBe Some(3L)
     }
 
+    "reject a journal row over 400 KB locally when head.enabled is false and keep the actor alive" in {
+      val pid = "head-disabled-row-size-over-1"
+      persistOk(headDisabledSystem, pid, "e1")
+
+      withActor(headDisabledSystem, pid) { (actor, probe) =>
+        // The head-less path has no JournalHead item to check, but the row itself still must be refused before
+        // DynamoDB sees it, so the actor reports the write through onPersistRejected and keeps running.
+        actor.tell(PersistTaggedAll(1, 410000), probe.ref)
+        val rejected = probe.expectMsgType[PersistRejected](120.seconds)
+        rejected.cause shouldBe a[JournalHeadJournalRowTooLargeException]
+        rejected.cause.asInstanceOf[JournalHeadJournalRowTooLargeException].limitBytes shouldBe
+        JournalHeadLimits.MaxItemSizeBytes
+
+        // Pekko does not take the rejected sequence number back, so the next write starts at 3 and is accepted.
+        actor.tell(Persist("e3"), probe.ref)
+        probe.expectMsg(60.seconds, Persisted("e3"))
+      }
+
+      journalSequenceNrs(pid) shouldBe Seq(1L, 3L)
+      headItem(pid) shouldBe None
+    }
+
     "reject an in-place event update when head mode is enabled" in {
       val pid = "head-in-place-update-1"
       persistOk(headEnabledSystem, pid, "e1")
