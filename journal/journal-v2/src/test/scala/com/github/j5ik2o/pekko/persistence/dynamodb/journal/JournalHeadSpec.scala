@@ -33,6 +33,7 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.journal.config.{
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.dao.WriteJournalDaoImpl
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.head._
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.serialization.ByteArrayJournalSerializer
+import com.github.j5ik2o.pekko.persistence.dynamodb.model.{ PersistenceId, SequenceNumber }
 import com.github.j5ik2o.pekko.persistence.dynamodb.utils.{ ConfigHelper, DynamoDBContainerHelper, RandomPortUtil }
 import com.typesafe.config.ConfigFactory
 import org.scalatest.concurrent.ScalaFutures
@@ -312,6 +313,38 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
     val serializer                    = new ByteArrayJournalSerializer(SerializationExtension(system), ",", None, None)
     implicit val ec: ExecutionContext = system.dispatcher
     Await.result(serializer.serialize(PersistentRepr(payload, sequenceNr, persistenceId)), 30.seconds)
+  }
+
+  private def journalRowWithMessage(
+      persistenceId: String,
+      sequenceNr: Long,
+      messageLength: Int
+  ): JournalRow =
+    JournalRow(
+      persistenceId = PersistenceId(persistenceId),
+      sequenceNumber = SequenceNumber(sequenceNr),
+      deleted = false,
+      message = Array.fill(messageLength)(0x41.toByte),
+      ordering = sequenceNr
+    )
+
+  /** Two events keep each journal row under 400 KB while the head item reaches the exact item size limit. */
+  private def headItemSize(persistenceId: String, firstMessageLength: Int, secondMessageLength: Int): Int =
+    DynamoDBItemSizeCalculator.journalHeadItemSize(
+      JournalHeadRow(
+        PersistenceId(persistenceId),
+        SequenceNumber(2),
+        Seq(
+          JournalHeadEvent(SequenceNumber(1), Array.fill(firstMessageLength)(0x41.toByte)),
+          JournalHeadEvent(SequenceNumber(2), Array.fill(secondMessageLength)(0x41.toByte))
+        )
+      ),
+      headConfig.columnsDefConfig
+    )
+
+  private def messageLengthsAtItemSize(persistenceId: String, itemSizeBytes: Int): (Int, Int) = {
+    val available = itemSizeBytes - headItemSize(persistenceId, 0, 0)
+    (available / 2, available / 2 + available % 2)
   }
 
   private def failedWith(dao: WriteJournalDaoImpl, rows: Seq[JournalRow]): Throwable = {
@@ -671,6 +704,56 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
       failure shouldBe a[JournalHeadItemTooLargeException]
       journalSequenceNrs(rejectedPid) shouldBe Seq.empty
       headItem(rejectedPid) shouldBe None
+    }
+
+    "accept a JournalHead item of exactly 409600 bytes and reject 409601 bytes on the same queue" in {
+      // Two events keep each journal row under 400 KB while the head item reaches the exact item size limit. One
+      // event at the head limit would put the journal row itself over the limit, and DynamoDB would refuse it first.
+      val acceptedPid                     = "head-size-boundary-accepted-1"
+      val rejectedPid                     = "head-size-boundary-rejected-1"
+      val (acceptedFirst, acceptedSecond) = messageLengthsAtItemSize(acceptedPid, JournalHeadLimits.MaxItemSizeBytes)
+      val (rejectedFirst, rejectedSecond) =
+        messageLengthsAtItemSize(rejectedPid, JournalHeadLimits.MaxItemSizeBytes + 1)
+
+      headItemSize(acceptedPid, acceptedFirst, acceptedSecond) shouldBe JournalHeadLimits.MaxItemSizeBytes
+      headItemSize(rejectedPid, rejectedFirst, rejectedSecond) shouldBe JournalHeadLimits.MaxItemSizeBytes + 1
+
+      val dao = newWriteJournalDao(headEnabledSystem)
+      try {
+        implicit val mat: Materializer = SystemMaterializer(headEnabledSystem).materializer
+        Await.result(
+          dao
+            .putMessages(
+              Seq(
+                journalRowWithMessage(acceptedPid, 1L, acceptedFirst),
+                journalRowWithMessage(acceptedPid, 2L, acceptedSecond)
+              )
+            ).runWith(Sink.head),
+          120.seconds
+        ) shouldBe 2L
+        journalSequenceNrs(acceptedPid) shouldBe Seq(1L, 2L)
+        headSequenceNr(acceptedPid) shouldBe Some(2L)
+
+        val exception = failedWith(
+          dao,
+          Seq(
+            journalRowWithMessage(rejectedPid, 1L, rejectedFirst),
+            journalRowWithMessage(rejectedPid, 2L, rejectedSecond)
+          )
+        )
+        exception shouldBe a[JournalHeadItemTooLargeException]
+        exception.asInstanceOf[JournalHeadItemTooLargeException].itemSizeBytes shouldBe
+        JournalHeadLimits.MaxItemSizeBytes + 1
+        journalSequenceNrs(rejectedPid) shouldBe Seq.empty
+        headItem(rejectedPid) shouldBe None
+
+        // the rejection did not abort the queue of the same dao
+        Await.result(
+          dao.putMessages(Seq(journalRowWithMessage(rejectedPid, 1L, 1))).runWith(Sink.head),
+          60.seconds
+        ) shouldBe 1L
+        headSequenceNr(rejectedPid) shouldBe Some(1L)
+      } finally dao.dispose()
     }
 
     "require the migration for an existing aggregate and accept new aggregates before it" in {

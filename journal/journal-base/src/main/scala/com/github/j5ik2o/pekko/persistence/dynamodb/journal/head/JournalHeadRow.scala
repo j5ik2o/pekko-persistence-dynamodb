@@ -16,6 +16,7 @@
 package com.github.j5ik2o.pekko.persistence.dynamodb.journal.head
 
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.config.{ JournalColumnsDefConfig, JournalHeadConfig }
+import com.github.j5ik2o.pekko.persistence.dynamodb.journal.write.JournalWritePlan
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.{ JournalRow, PartitionKeyResolver, SortKeyResolver }
 import com.github.j5ik2o.pekko.persistence.dynamodb.model.{ PersistenceId, SequenceNumber }
 
@@ -42,6 +43,9 @@ object JournalHeadWriteRequest {
 
   /** Builds the request for one AtomicWrite and rejects writes that cannot be carried by a single TransactWriteItems
     * call. Validation happens before anything is sent to DynamoDB, so a rejected write leaves both tables untouched.
+    *
+    * The validation itself lives in `JournalWritePlan`, which returns a `WriteRejection` value. This method is the
+    * compatibility adapter that maps that value to the public `JournalHeadException` family.
     */
   def of(
       rows: Seq[JournalRow],
@@ -49,76 +53,11 @@ object JournalHeadWriteRequest {
       journalColumnsDefConfig: JournalColumnsDefConfig,
       partitionKeyResolver: PartitionKeyResolver,
       sortKeyResolver: SortKeyResolver
-  ): Either[JournalHeadException, JournalHeadWriteRequest] = {
-    if (rows.isEmpty) {
-      return Left(
-        new JournalHeadInvalidWriteException(
-          "",
-          "a single transaction must contain at least one event"
-        )
-      )
-    }
-    val persistenceIds = rows.map(_.persistenceId).distinct
-    if (persistenceIds.size != 1) {
-      return Left(
-        new JournalHeadInvalidWriteException(
-          persistenceIds.map(_.asString).mkString(", "),
-          s"a single transaction must contain the rows of exactly one persistence id, but got [${persistenceIds.map(_.asString).mkString(", ")}]"
-        )
-      )
-    }
-    val sortedRows = rows.sortBy(_.sequenceNumber.value)
-    val firstSeqNr = sortedRows.head.sequenceNumber.value
-    if (sortedRows.map(_.sequenceNumber.value) != (firstSeqNr until firstSeqNr + sortedRows.size).toList) {
-      return Left(
-        new JournalHeadInvalidWriteException(
-          sortedRows.head.persistenceId.asString,
-          s"the sequence numbers of a single write must be contiguous, but got [${sortedRows.map(_.sequenceNumber.value).mkString(", ")}]"
-        )
-      )
-    }
-    val persistenceId = sortedRows.head.persistenceId
-
-    if (sortedRows.size > JournalHeadLimits.MaxEventsPerTransaction) {
-      Left(
-        new JournalHeadTooManyEventsException(
-          persistenceId.asString,
-          sortedRows.size,
-          JournalHeadLimits.MaxEventsPerTransaction
-        )
-      )
-    } else {
-      val head = JournalHeadRow(
-        persistenceId,
-        sortedRows.last.sequenceNumber,
-        sortedRows.map(row => JournalHeadEvent(row.sequenceNumber, row.message))
-      )
-      val headSize = DynamoDBItemSizeCalculator.journalHeadItemSize(head, headConfig.columnsDefConfig)
-      val transactionSize = headSize.toLong + sortedRows.map { row =>
-        val pkey = partitionKeyResolver.resolve(row.persistenceId, row.sequenceNumber).asString
-        val skey = sortKeyResolver.resolve(row.persistenceId, row.sequenceNumber).asString
-        DynamoDBItemSizeCalculator.journalItemSize(row, journalColumnsDefConfig, pkey, skey).toLong
-      }.sum
-      if (headSize > JournalHeadLimits.MaxItemSizeBytes) {
-        Left(
-          new JournalHeadItemTooLargeException(
-            persistenceId.asString,
-            headSize,
-            JournalHeadLimits.MaxItemSizeBytes
-          )
-        )
-      } else if (transactionSize > JournalHeadLimits.MaxTransactionSizeBytes) {
-        Left(
-          new JournalHeadTransactionTooLargeException(
-            persistenceId.asString,
-            transactionSize,
-            JournalHeadLimits.MaxTransactionSizeBytes
-          )
-        )
-      } else {
-        Right(JournalHeadWriteRequest(sortedRows, head))
-      }
-    }
-  }
+  ): Either[JournalHeadException, JournalHeadWriteRequest] =
+    JournalWritePlan
+      .plan(rows, headConfig, journalColumnsDefConfig, partitionKeyResolver, sortKeyResolver)
+      .left
+      .map(_.toJournalHeadException)
+      .map(plan => JournalHeadWriteRequest(plan.rows, plan.head))
 
 }

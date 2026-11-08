@@ -23,6 +23,7 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.ddb._
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.config.JournalHeadConfig
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.dao.PersistenceIdWithSeqNr
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.schema.{ JournalKeyCodec, JournalRowCodec, JournalSchema }
+import com.github.j5ik2o.pekko.persistence.dynamodb.journal.write.WriteRejection
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.{
   JournalPluginContext,
   JournalRow,
@@ -110,11 +111,13 @@ final class JournalRowStore(
       Source.single(0L)
     } else {
       val entries = rows.map(row => row -> keyOf(row.persistenceId, row.sequenceNumber))
-      require(
-        entries.map { case (_, key) => key }.toSet.size == entries.size,
-        "journal rows contain duplicate keys"
-      )
-      if (entries.size == 1) {
+      if (entries.map { case (_, key) => key }.distinct.size != entries.size) {
+        // Two rows that resolve to the same key would silently collapse in one batch. Report it as a rejected write
+        // instead of throwing: a throw here runs inside a stream stage and aborts every later write on the queue.
+        val persistenceId = rows.head.persistenceId.asString
+        val keys          = entries.map { case (_, key) => key.toString }
+        Source.failed(WriteRejection.DuplicateJournalKeys(persistenceId, keys).toJournalHeadException)
+      } else if (entries.size == 1) {
         val (row, key) = entries.head
         run(Operation.Put(schema.table, rowCodec.encode(row, key)), writeBackoffConfig).map(expectWritten)
       } else {

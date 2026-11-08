@@ -25,6 +25,7 @@ import org.apache.pekko.persistence.{ AtomicWrite, PersistentRepr }
 import org.apache.pekko.serialization.{ Serialization, SerializationExtension }
 import org.apache.pekko.stream.scaladsl.Sink
 import org.apache.pekko.stream.{ Materializer, SystemMaterializer }
+import com.github.j5ik2o.pekko.persistence.dynamodb.journal.aggregate.JournalAggregateStore
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.config.JournalPluginConfig
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.dao._
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.head.JournalHeadWriteRequest
@@ -96,6 +97,13 @@ final class DynamoDBJournal(config: Config) extends AsyncWriteJournal with Actor
     }
 
   protected val writeInProgress: mutable.Map[String, Future[_]] = mutable.Map.empty
+
+  private val aggregateStore: JournalAggregateStore =
+    JournalAggregateStore.fromJournalDao(
+      journalDao,
+      persistenceId => journalRowWriteDriver.headSequenceNr(persistenceId),
+      journalPluginConfig.headConfig.enabled
+    )
 
   override def asyncWriteMessages(atomicWrites: immutable.Seq[AtomicWrite]): Future[immutable.Seq[Try[Unit]]] = {
     val persistenceId = atomicWrites.head.persistenceId
@@ -267,23 +275,11 @@ final class DynamoDBJournal(config: Config) extends AsyncWriteJournal with Actor
     val context                       = Context.newContext(UUID.randomUUID(), pid)
     val newContext = metricsReporter.fold(context)(_.beforeJournalAsyncReadHighestSequenceNr(context))
 
-    def fetchHighestSeqNr(): Future[Long] = {
-      val journalHighest = journalDao
-        .highestSequenceNr(PersistenceId.apply(persistenceId), SequenceNumber(fromSequenceNr)).map(
-          _.getOrElse(0L)
-        )
-      if (journalPluginConfig.headConfig.enabled) {
-        // The JournalHead item knows the last sequence number even when every event of the aggregate has been hard
-        // deleted from the journal; without this lower bound the next write would start at 1 and the head condition
-        // would reject it.
-        journalHighest
-          .zip(journalRowWriteDriver.headSequenceNr(PersistenceId.apply(persistenceId)))
-          .map { case (journalSeqNr, headSeqNr) => Math.max(journalSeqNr, headSeqNr.getOrElse(0L)) }
-          .runWith(Sink.head)
-      } else {
-        journalHighest.runWith(Sink.head)
-      }
-    }
+    def fetchHighestSeqNr(): Future[Long] =
+      aggregateStore
+        .highestSequenceNr(PersistenceId.apply(persistenceId), SequenceNumber(fromSequenceNr))
+        .map(_.highestSequenceNr)
+        .runWith(Sink.head)
 
     def future = writeInProgress.get(persistenceId) match {
       case None    => fetchHighestSeqNr()
