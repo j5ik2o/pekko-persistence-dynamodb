@@ -10,12 +10,15 @@ object SchemaDrift {
   private val AttributeName: Regex   = "\"AttributeName\"\\s*:\\s*\"([^\"]+)\"".r
   private val IndexRow: Regex        = "^\\s*\\|\\s*index\\s*\\|\\s*([A-Za-z0-9]+)".r
   private val HelperAttribute: Regex = "withAttributeName\\(\"([^\"]+)\"\\)".r
+  private val TableRow: Regex        = """(?m)^\s*\|\s*table\s*\|\s*([^|]*?)\s*\|([^|]*)\|([^|]*)\|""".r
+  private val Backticked: Regex      = """`([^`]+)`""".r
+  private val RangeKeyEntry: Regex   = """\{[^{}]*"KeyType"\s*:\s*"RANGE"[^{}]*\}""".r
 
   private val Systems: Seq[String] = Seq("journal", "snapshot", "state")
 
   def check(repo: Repo): Seq[KnownProblem] = {
     val problems = checkColumns(repo) ++ checkIndexes(repo) ++ checkHelperAttributes(repo) ++
-      checkDocsClaims(repo) ++ checkLegacyTableShape(repo)
+      checkDocsClaims(repo) ++ checkLegacyTableShape(repo) ++ checkTableFormatKeys(repo)
     problems
       .groupBy(_.id)
       .map { case (id, found) => KnownProblem(id, found.map(_.detail).distinct.sorted.mkString("; ")) }
@@ -164,6 +167,15 @@ object SchemaDrift {
     problems.result()
   }
 
+  /** `table-format.md` and the generated state table JSON both describe the state primary key. The docs once lost the
+    * state sort key, so the State row must name the RANGE key that the table JSON declares.
+    */
+  private def checkTableFormatKeys(repo: Repo): Seq[KnownProblem] =
+    stateSortKeyProblem(
+      repo.read(repo.root.resolve("docs/src/sphinx/table-format.md")),
+      repo.read(repo.root.resolve("tools/dynamodb-setup/state-table.json"))
+    ).toSeq
+
   private def checkLegacyTableShape(repo: Repo): Seq[KnownProblem] = {
     val legacyJournal = repo.read(repo.root.resolve("tools/dynamodb-setup/legacy-journal-table.json"))
     val problems      = Vector.newBuilder[KnownProblem]
@@ -267,4 +279,24 @@ object SchemaDrift {
     }
 
   private def render(values: Set[String]): String = values.toSeq.sorted.mkString(", ")
+
+  private[schemacheck] def stateSortKeyProblem(tableFormat: String, stateTableJson: String): Option[KnownProblem] = {
+    val documented = TableRow
+      .findAllMatchIn(tableFormat)
+      .collectFirst { case matched if matched.group(1).trim == "State" => matched.group(3) }
+      .flatMap(cell => Backticked.findFirstMatchIn(cell).map(_.group(1)))
+    val declared = RangeKeyEntry
+      .findFirstMatchIn(stateTableJson)
+      .flatMap(entry => AttributeName.findFirstMatchIn(entry.matched).map(_.group(1)))
+    if (documented == declared) {
+      None
+    } else {
+      Some(
+        KnownProblem(
+          "state-sort-key-table-format",
+          s"table-format.md State sort key is ${documented.getOrElse("<missing>")}, but state-table.json declares RANGE key ${declared.getOrElse("<missing>")}"
+        )
+      )
+    }
+  }
 }
