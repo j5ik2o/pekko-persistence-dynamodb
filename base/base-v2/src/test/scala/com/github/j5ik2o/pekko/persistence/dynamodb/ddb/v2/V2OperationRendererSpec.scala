@@ -20,6 +20,8 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.ddb.internal.OperationConfor
 import org.scalatest.freespec.AnyFreeSpec
 import org.scalatest.matchers.should.Matchers
 
+import scala.jdk.CollectionConverters._
+
 final class V2OperationRendererSpec extends AnyFreeSpec with Matchers {
 
   "the renderer produces one request kind for every operation case" in {
@@ -57,7 +59,26 @@ final class V2OperationRendererSpec extends AnyFreeSpec with Matchers {
     request.limit().intValue() shouldBe 25
     request.keyConditionExpression() shouldBe "#n0 = :v0 AND #n1 BETWEEN :v1 AND :v2"
     request.filterExpression() shouldBe "begins_with(#n2, :v3)"
+    request.expressionAttributeNames().keySet.asScala should contain allOf ("#n0", "#n1", "#n2")
+    request.expressionAttributeValues().keySet.asScala should contain allOf (":v0", ":v1", ":v2", ":v3")
     request.exclusiveStartKey() should not be null
+  }
+
+  "an update request carries the update and condition placeholders" in {
+    val update = OperationConformanceCases.operations
+      .collectFirst { case ("update with set and remove", value: Operation.Update) =>
+        value
+      }.getOrElse(fail("the conformance update is missing"))
+
+    val request = V2OperationRenderer.render(update) match {
+      case Right(V2RenderedOperation.Update(request)) => request
+      case other                                      => fail(s"expected an update request, got $other")
+    }
+
+    request.updateExpression() shouldBe "SET #n0 = :v0 REMOVE #n1"
+    request.conditionExpression() shouldBe "attribute_not_exists(#n2)"
+    request.expressionAttributeNames().keySet.asScala should contain allOf ("#n0", "#n1", "#n2")
+    request.expressionAttributeValues().keySet.asScala should contain(":v0")
   }
 
   "a batch write carries one write per put and delete" in {
@@ -86,6 +107,13 @@ final class V2OperationRendererSpec extends AnyFreeSpec with Matchers {
     }
 
     request.transactItems() should have size 3
+  }
+
+  "the renderer rejects a key from another table" in {
+    val otherSpec = OperationConformanceCases.spec.copy(table = TableName("Other"))
+    val otherKey  = otherSpec.keyOf(OperationConformanceCases.rowKey.values).toOption.get
+
+    V2OperationRenderer.render(Operation.Get(OperationConformanceCases.table, otherKey)).isLeft shouldBe true
   }
 
   "the renderer rejects an empty update, batch write, and transaction" in {

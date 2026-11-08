@@ -15,7 +15,7 @@
  */
 package com.github.j5ik2o.pekko.persistence.dynamodb.ddb.v2
 
-import com.github.j5ik2o.pekko.persistence.dynamodb.ddb.{ EncodeError, Operation }
+import com.github.j5ik2o.pekko.persistence.dynamodb.ddb.{ AttributeName, DdbValue, EncodeError, Operation }
 import com.github.j5ik2o.pekko.persistence.dynamodb.ddb.internal.{
   OperationPlanner,
   RenderedExpression,
@@ -87,8 +87,9 @@ object V2OperationRenderer {
         .tableName(table.value)
         .key(V2AttributeValues.toItem(key))
         .updateExpression(update.expression)
-      if (update.names.nonEmpty) builder.expressionAttributeNames(names(update))
-      if (update.values.nonEmpty) builder.expressionAttributeValues(values(update))
+      val expressions = update +: condition.toVector
+      if (expressions.exists(_.names.nonEmpty)) builder.expressionAttributeNames(names(expressions: _*))
+      if (expressions.exists(_.values.nonEmpty)) builder.expressionAttributeValues(values(expressions: _*))
       condition.foreach(c => builder.conditionExpression(c.expression))
       V2RenderedOperation.Update(builder.build())
 
@@ -109,8 +110,9 @@ object V2OperationRenderer {
         .consistentRead(Boolean.box(consistentRead))
         .scanIndexForward(Boolean.box(scanForward))
       index.foreach(value => builder.indexName(value.value))
-      if (keyCondition.names.nonEmpty) builder.expressionAttributeNames(names(keyCondition))
-      if (keyCondition.values.nonEmpty) builder.expressionAttributeValues(values(keyCondition))
+      val expressions = keyCondition +: filter.toVector
+      if (expressions.exists(_.names.nonEmpty)) builder.expressionAttributeNames(names(expressions: _*))
+      if (expressions.exists(_.values.nonEmpty)) builder.expressionAttributeValues(values(expressions: _*))
       filter.foreach(c => builder.filterExpression(c.expression))
       limit.foreach(value => builder.limit(Integer.valueOf(value)))
       exclusiveStartKey.foreach(key => builder.exclusiveStartKey(V2AttributeValues.toItem(key)))
@@ -156,15 +158,22 @@ object V2OperationRenderer {
         .tableName(table.value)
         .key(V2AttributeValues.toItem(key))
         .updateExpression(update.expression)
-      if (update.names.nonEmpty) builder.expressionAttributeNames(names(update))
-      if (update.values.nonEmpty) builder.expressionAttributeValues(values(update))
+      val expressions = update +: condition.toVector
+      if (expressions.exists(_.names.nonEmpty)) builder.expressionAttributeNames(names(expressions: _*))
+      if (expressions.exists(_.values.nonEmpty)) builder.expressionAttributeValues(values(expressions: _*))
       condition.foreach(c => builder.conditionExpression(c.expression))
       TransactWriteItem.builder().update(builder.build()).build()
   }
 
-  private def names(expression: RenderedExpression): java.util.Map[String, String] =
-    expression.names.map { case (placeholder, name) => placeholder -> name.value }.toMap.asJava
+  private def names(expressions: RenderedExpression*): java.util.Map[String, String] = {
+    val merged = scala.collection.mutable.LinkedHashMap.empty[String, AttributeName]
+    expressions.foreach(_.names.foreach { case (placeholder, name) => merged.update(placeholder, name) })
+    merged.iterator.map { case (placeholder, name) => placeholder -> name.value }.toMap.asJava
+  }
 
-  private def values(expression: RenderedExpression): java.util.Map[String, AttributeValue] =
-    expression.values.map { case (placeholder, value) => placeholder -> V2AttributeValues.toSdk(value) }.toMap.asJava
+  private def values(expressions: RenderedExpression*): java.util.Map[String, AttributeValue] = {
+    val merged = scala.collection.mutable.LinkedHashMap.empty[String, DdbValue]
+    expressions.foreach(_.values.foreach { case (placeholder, value) => merged.update(placeholder, value) })
+    merged.iterator.map { case (placeholder, value) => placeholder -> V2AttributeValues.toSdk(value) }.toMap.asJava
+  }
 }
