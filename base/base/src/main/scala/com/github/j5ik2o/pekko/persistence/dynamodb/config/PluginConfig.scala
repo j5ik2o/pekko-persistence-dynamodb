@@ -1,6 +1,8 @@
 package com.github.j5ik2o.pekko.persistence.dynamodb.config
 
+import com.github.j5ik2o.pekko.persistence.dynamodb.client.ClientVariantRegistry
 import com.github.j5ik2o.pekko.persistence.dynamodb.config.client.DynamoDBClientConfig
+import com.github.j5ik2o.pekko.persistence.dynamodb.ddb.ClientVariant
 
 object PluginConfig {
 
@@ -52,4 +54,7 @@ trait PluginConfig {
   val traceReporterProviderClassName: String
   val traceReporterClassName: Option[String]
   val clientConfig: DynamoDBClientConfig
+
+  /** The registered variant that matches [[clientConfig]]. */
+  def clientVariant: ClientVariant = ClientVariantRegistry.variant(clientConfig.clientVersion)
 }

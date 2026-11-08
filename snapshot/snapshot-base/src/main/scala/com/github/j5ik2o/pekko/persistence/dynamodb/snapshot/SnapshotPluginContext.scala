@@ -16,8 +16,8 @@
 package com.github.j5ik2o.pekko.persistence.dynamodb.snapshot
 
 import org.apache.pekko.actor.ActorSystem
-import com.github.j5ik2o.pekko.persistence.dynamodb.config.client.ClientVersion
 import com.github.j5ik2o.pekko.persistence.dynamodb.context.PluginContext
+import com.github.j5ik2o.pekko.persistence.dynamodb.ddb.ClientVariant
 import com.github.j5ik2o.pekko.persistence.dynamodb.metrics.{ MetricsReporter, MetricsReporterProvider }
 import com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.config.SnapshotPluginConfig
 import com.github.j5ik2o.pekko.persistence.dynamodb.trace.{ TraceReporter, TraceReporterProvider }
@@ -43,9 +43,9 @@ final case class SnapshotPluginContext(system: ActorSystem, pluginConfig: Snapsh
     traceReporterProvider.create
   }
 
-  val pluginExecutor: ExecutionContext = pluginConfig.clientConfig.clientVersion match {
-    case ClientVersion.V1 => DispatcherUtils.newV1Executor(this)
-    case ClientVersion.V2 => DispatcherUtils.newV2Executor(this)
+  val pluginExecutor: ExecutionContext = pluginConfig.clientVariant match {
+    case ClientVariant.V1 => DispatcherUtils.newV1Executor(this)
+    case ClientVariant.V2 => DispatcherUtils.newV2Executor(this)
   }
 
   val partitionKeyResolver: PartitionKeyResolver = {
