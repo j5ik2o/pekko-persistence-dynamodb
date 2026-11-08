@@ -15,8 +15,12 @@
  */
 package com.github.j5ik2o.pekko.persistence.dynamodb.ddb
 
-/** An attribute map that keeps insertion order, so that encoding and size calculation are reproducible. */
-final case class AttributeMap(entries: Vector[(AttributeName, DdbValue)]) {
+/** An attribute map that keeps insertion order and one value per name.
+  *
+  * The constructor deduplicates by name and keeps the last value, so `get`, the renderer's map conversion, and the size
+  * calculation all see the same value for a name.
+  */
+final class AttributeMap private (val entries: Vector[(AttributeName, DdbValue)]) {
 
   def get(name: AttributeName): Option[DdbValue] =
     entries.collectFirst { case (candidate, value) if candidate == name => value }
@@ -41,10 +45,27 @@ final case class AttributeMap(entries: Vector[(AttributeName, DdbValue)]) {
   def size: Int = entries.size
 
   def sorted: AttributeMap = AttributeMap(entries.sortBy { case (name, _) => name.value })
+
+  override def equals(other: Any): Boolean = other match {
+    case that: AttributeMap => entries == that.entries
+    case _                  => false
+  }
+
+  override def hashCode(): Int = entries.hashCode()
+
+  override def toString: String = s"AttributeMap(${entries.mkString(", ")})"
 }
 
 object AttributeMap {
-  val empty: AttributeMap = AttributeMap(Vector.empty)
+  val empty: AttributeMap = new AttributeMap(Vector.empty)
 
-  def of(entries: (AttributeName, DdbValue)*): AttributeMap = AttributeMap(entries.toVector)
+  def apply(entries: Vector[(AttributeName, DdbValue)]): AttributeMap =
+    new AttributeMap(deduplicate(entries))
+
+  def of(entries: (AttributeName, DdbValue)*): AttributeMap = apply(entries.toVector)
+
+  private def deduplicate(entries: Vector[(AttributeName, DdbValue)]): Vector[(AttributeName, DdbValue)] = {
+    val seen = scala.collection.mutable.HashSet.empty[AttributeName]
+    entries.reverse.filter { case (name, _) => seen.add(name) }.reverse
+  }
 }

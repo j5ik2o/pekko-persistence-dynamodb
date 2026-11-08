@@ -32,7 +32,7 @@ import com.amazonaws.services.dynamodbv2.model.{
 import com.amazonaws.services.dynamodbv2.model.{ Delete => TransactionDelete }
 import com.amazonaws.services.dynamodbv2.model.{ Put => TransactionPut }
 import com.amazonaws.services.dynamodbv2.model.{ Update => TransactionUpdate }
-import com.github.j5ik2o.pekko.persistence.dynamodb.ddb.{ EncodeError, Operation }
+import com.github.j5ik2o.pekko.persistence.dynamodb.ddb.{ AttributeName, DdbValue, EncodeError, Operation }
 import com.github.j5ik2o.pekko.persistence.dynamodb.ddb.internal.{
   OperationPlanner,
   RenderedExpression,
@@ -84,8 +84,9 @@ object V1OperationRenderer {
         .withTableName(table.value)
         .withKey(V1AttributeValues.toItem(key))
         .withUpdateExpression(update.expression)
-      if (update.names.nonEmpty) request.setExpressionAttributeNames(names(update))
-      if (update.values.nonEmpty) request.setExpressionAttributeValues(values(update))
+      val expressions = update +: condition.toVector
+      if (expressions.exists(_.names.nonEmpty)) request.setExpressionAttributeNames(names(expressions: _*))
+      if (expressions.exists(_.values.nonEmpty)) request.setExpressionAttributeValues(values(expressions: _*))
       condition.foreach(c => request.setConditionExpression(c.expression))
       V1RenderedOperation.Update(request)
 
@@ -105,8 +106,9 @@ object V1OperationRenderer {
         .withKeyConditionExpression(keyCondition.expression)
         .withConsistentRead(Boolean.box(consistentRead))
         .withScanIndexForward(Boolean.box(scanForward))
-      if (keyCondition.names.nonEmpty) request.setExpressionAttributeNames(names(keyCondition))
-      if (keyCondition.values.nonEmpty) request.setExpressionAttributeValues(values(keyCondition))
+      val expressions = keyCondition +: filter.toVector
+      if (expressions.exists(_.names.nonEmpty)) request.setExpressionAttributeNames(names(expressions: _*))
+      if (expressions.exists(_.values.nonEmpty)) request.setExpressionAttributeValues(values(expressions: _*))
       filter.foreach(c => request.setFilterExpression(c.expression))
       limit.foreach(value => request.setLimit(Integer.valueOf(value)))
       exclusiveStartKey.foreach(key => request.setExclusiveStartKey(V1AttributeValues.toItem(key)))
@@ -152,15 +154,22 @@ object V1OperationRenderer {
         .withTableName(table.value)
         .withKey(V1AttributeValues.toItem(key))
         .withUpdateExpression(update.expression)
-      if (update.names.nonEmpty) request.setExpressionAttributeNames(names(update))
-      if (update.values.nonEmpty) request.setExpressionAttributeValues(values(update))
+      val expressions = update +: condition.toVector
+      if (expressions.exists(_.names.nonEmpty)) request.setExpressionAttributeNames(names(expressions: _*))
+      if (expressions.exists(_.values.nonEmpty)) request.setExpressionAttributeValues(values(expressions: _*))
       condition.foreach(c => request.setConditionExpression(c.expression))
       new TransactWriteItem().withUpdate(request)
   }
 
-  private def names(expression: RenderedExpression): java.util.Map[String, String] =
-    expression.names.map { case (placeholder, name) => placeholder -> name.value }.toMap.asJava
+  private def names(expressions: RenderedExpression*): java.util.Map[String, String] = {
+    val merged = scala.collection.mutable.LinkedHashMap.empty[String, AttributeName]
+    expressions.foreach(_.names.foreach { case (placeholder, name) => merged.update(placeholder, name) })
+    merged.iterator.map { case (placeholder, name) => placeholder -> name.value }.toMap.asJava
+  }
 
-  private def values(expression: RenderedExpression): java.util.Map[String, AttributeValue] =
-    expression.values.map { case (placeholder, value) => placeholder -> V1AttributeValues.toSdk(value) }.toMap.asJava
+  private def values(expressions: RenderedExpression*): java.util.Map[String, AttributeValue] = {
+    val merged = scala.collection.mutable.LinkedHashMap.empty[String, DdbValue]
+    expressions.foreach(_.values.foreach { case (placeholder, value) => merged.update(placeholder, value) })
+    merged.iterator.map { case (placeholder, value) => placeholder -> V1AttributeValues.toSdk(value) }.toMap.asJava
+  }
 }
