@@ -28,4 +28,11 @@ final class V2AttributeValuesSpec extends AnyFreeSpec with Matchers {
       }
     }
   }
+
+  "map entries come back in key order" in {
+    val value = DdbValue.M(Vector("b" -> DdbValue.Str("2"), "a" -> DdbValue.Str("1")))
+
+    V2AttributeValues.fromSdk(V2AttributeValues.toSdk(value)) shouldBe
+    DdbValue.M(Vector("a" -> DdbValue.Str("1"), "b" -> DdbValue.Str("2")))
+  }
 }
