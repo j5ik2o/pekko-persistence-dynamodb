@@ -1,4 +1,6 @@
 name: CI
+permissions:
+  contents: read
 on:
   workflow_dispatch:
   push:
@@ -8,16 +10,22 @@ on:
       - '**.scala'
       - '**.java'
       - '**.sbt'
+      - '**.md'
+      - '**.conf'
+      - '**.allowlist'
+      - 'tools/**'
       - '.scalafmt.conf'
       - 'project/build.properties'
       - '.github/workflows/ci.yml'
   pull_request:
-    branches:
-      - main
     paths:
       - '**.scala'
       - '**.java'
       - '**.sbt'
+      - '**.md'
+      - '**.conf'
+      - '**.allowlist'
+      - 'tools/**'
       - '.scalafmt.conf'
       - 'project/build.properties'
       - '.github/workflows/ci.yml'
