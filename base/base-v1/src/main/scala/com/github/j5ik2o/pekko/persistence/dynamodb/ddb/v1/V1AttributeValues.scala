@@ -62,7 +62,7 @@ private[v1] object V1AttributeValues {
     } else if (value.getL != null) {
       DdbValue.L(value.getL.asScala.toVector.map(fromSdk))
     } else if (value.getM != null) {
-      DdbValue.M(value.getM.asScala.toVector.map { case (key, entryValue) => key -> fromSdk(entryValue) })
+      DdbValue.M(value.getM.asScala.toVector.map { case (key, entryValue) => key -> fromSdk(entryValue) }.sortBy(_._1))
     } else {
       DdbValue.Null
     }

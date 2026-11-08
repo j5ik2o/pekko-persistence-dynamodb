@@ -84,7 +84,7 @@ private[dynamodb] object OperationPlanner {
       if (items.isEmpty) {
         Left(EncodeError("a transaction needs at least one item"))
       } else {
-        Right(RenderedOperation.TransactWrite(items.map(renderTransactItem)))
+        sequence(items.map(renderTransactItem)).map(rendered => RenderedOperation.TransactWrite(rendered))
       }
   }
 
@@ -94,18 +94,31 @@ private[dynamodb] object OperationPlanner {
     builder.result(expression)
   }
 
-  private def renderTransactItem(item: TransactItem): RenderedTransactItem = item match {
+  private def sequence(
+      items: Vector[Either[EncodeError, RenderedTransactItem]]
+  ): Either[EncodeError, Vector[RenderedTransactItem]] =
+    items.foldLeft[Either[EncodeError, Vector[RenderedTransactItem]]](Right(Vector.empty)) {
+      case (Right(rendered), Right(item)) => Right(rendered :+ item)
+      case (left @ Left(_), _)            => left
+      case (_, Left(error))               => Left(error)
+    }
+
+  private def renderTransactItem(item: TransactItem): Either[EncodeError, RenderedTransactItem] = item match {
     case TransactItem.Put(table, attributes, condition) =>
-      RenderedTransactItem.Put(table, attributes, condition.map(renderCondition))
+      Right(RenderedTransactItem.Put(table, attributes, condition.map(renderCondition)))
     case TransactItem.Delete(table, key, condition) =>
-      RenderedTransactItem.Delete(table, key.values, condition.map(renderCondition))
+      Right(RenderedTransactItem.Delete(table, key.values, condition.map(renderCondition)))
     case TransactItem.Update(table, key, updates, condition) =>
-      val builder             = new ExpressionBuilder
-      val updateExpression    = builder.updates(updates)
-      val conditionExpression = condition.map(builder.condition)
-      val update              = builder.result(updateExpression)
-      val renderedCondition   = conditionExpression.map(expression => update.copy(expression = expression))
-      RenderedTransactItem.Update(table, key.values, update, renderedCondition)
+      if (updates.isEmpty) {
+        Left(EncodeError("an update needs at least one attribute update"))
+      } else {
+        val builder             = new ExpressionBuilder
+        val updateExpression    = builder.updates(updates)
+        val conditionExpression = condition.map(builder.condition)
+        val update              = builder.result(updateExpression)
+        val renderedCondition   = conditionExpression.map(expression => update.copy(expression = expression))
+        Right(RenderedTransactItem.Update(table, key.values, update, renderedCondition))
+      }
   }
 
   private final class ExpressionBuilder {

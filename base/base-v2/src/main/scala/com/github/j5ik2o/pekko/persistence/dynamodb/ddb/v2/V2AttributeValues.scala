@@ -44,7 +44,7 @@ private[v2] object V2AttributeValues {
   }
 
   def fromSdk(value: AttributeValue): DdbValue = {
-    if (isTrue(value.nul())) {
+    if (value.nul() != null) {
       DdbValue.Null
     } else if (value.s() != null) {
       DdbValue.Str(value.s())
@@ -54,16 +54,16 @@ private[v2] object V2AttributeValues {
       DdbValue.Bin(value.b().asByteArray().toVector)
     } else if (value.bool() != null) {
       DdbValue.Bool(value.bool().booleanValue())
-    } else if (value.ss() != null) {
+    } else if (value.hasSs()) {
       DdbValue.StrSet(value.ss().asScala.toSet)
-    } else if (value.ns() != null) {
+    } else if (value.hasNs()) {
       DdbValue.NumSet(value.ns().asScala.map(BigDecimal(_)).toSet)
-    } else if (value.bs() != null) {
+    } else if (value.hasBs()) {
       DdbValue.BinSet(value.bs().asScala.map(_.asByteArray().toVector).toSet)
-    } else if (value.l() != null) {
+    } else if (value.hasL()) {
       DdbValue.L(value.l().asScala.toVector.map(fromSdk))
-    } else if (value.m() != null) {
-      DdbValue.M(value.m().asScala.toVector.map { case (key, entryValue) => key -> fromSdk(entryValue) })
+    } else if (value.hasM()) {
+      DdbValue.M(value.m().asScala.toVector.map { case (key, entryValue) => key -> fromSdk(entryValue) }.sortBy(_._1))
     } else {
       DdbValue.Null
     }
@@ -82,6 +82,4 @@ private[v2] object V2AttributeValues {
         )
       }
       .getOrElse(AttributeMap.empty)
-
-  private def isTrue(value: java.lang.Boolean): Boolean = value != null && value.booleanValue()
 }
