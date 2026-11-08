@@ -18,8 +18,6 @@ on:
       - 'project/build.properties'
       - '.github/workflows/ci.yml'
   pull_request:
-    branches:
-      - main
     paths:
       - '**.scala'
       - '**.java'
