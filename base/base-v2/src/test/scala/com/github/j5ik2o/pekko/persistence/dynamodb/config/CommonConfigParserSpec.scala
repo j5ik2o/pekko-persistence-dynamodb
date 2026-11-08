@@ -57,106 +57,52 @@ final class CommonConfigParserSpec extends AnyFreeSpec with Matchers {
     "reads every factory key even when its variant is not selected" in {
       val factories = CommonConfigParser.clientFactories(
         config("""v1-async-client-factory-class-name = "com.example.Unvalidated""""),
-        ClientVersion.V2,
-        CommonConfigParser.FactoryValidation.PerVariant
+        ClientVersion.V2
       )
 
       factories.v1AsyncClientFactoryClassName shouldBe "com.example.Unvalidated"
     }
 
-    "validates only the selected variant when the policy is PerVariant" in {
+    "validates only the selected variant" in {
       an[IllegalArgumentException] should be thrownBy {
         CommonConfigParser.clientFactories(
           config(s"""v2-async-client-factory-class-name = "$wrongClass""""),
-          ClientVersion.V2,
-          CommonConfigParser.FactoryValidation.PerVariant
+          ClientVersion.V2
         )
       }
 
       noException should be thrownBy {
         CommonConfigParser.clientFactories(
           config(s"""v2-dax-async-client-factory-class-name = "$wrongClass""""),
-          ClientVersion.V2,
-          CommonConfigParser.FactoryValidation.PerVariant
+          ClientVersion.V2
         )
       }
 
       an[IllegalArgumentException] should be thrownBy {
         CommonConfigParser.clientFactories(
           config(s"""v2-dax-async-client-factory-class-name = "$wrongClass""""),
-          ClientVersion.V2Dax,
-          CommonConfigParser.FactoryValidation.PerVariant
+          ClientVersion.V2Dax
         )
       }
 
       noException should be thrownBy {
         CommonConfigParser.clientFactories(
           config(s"""v2-async-client-factory-class-name = "$wrongClass""""),
-          ClientVersion.V2Dax,
-          CommonConfigParser.FactoryValidation.PerVariant
-        )
-      }
-    }
-
-    "keeps v2 validating the v2 DAX keys when the policy is V2DaxUnderV2" in {
-      an[IllegalArgumentException] should be thrownBy {
-        CommonConfigParser.clientFactories(
-          config(s"""v2-dax-async-client-factory-class-name = "$wrongClass""""),
-          ClientVersion.V2,
-          CommonConfigParser.FactoryValidation.V2DaxUnderV2
-        )
-      }
-
-      noException should be thrownBy {
-        CommonConfigParser.clientFactories(
-          config(s"""v2-dax-async-client-factory-class-name = "$wrongClass""""),
-          ClientVersion.V2Dax,
-          CommonConfigParser.FactoryValidation.V2DaxUnderV2
+          ClientVersion.V2Dax
         )
       }
     }
   }
 
   "validates" - {
-    "selects the matching entry under PerVariant" in {
+    "selects only the matching entry" in {
       ClientVariantRegistry.all.foreach { entry =>
-        CommonConfigParser.validates(
-          entry,
-          entry.clientVersion,
-          CommonConfigParser.FactoryValidation.PerVariant
-        ) shouldBe true
+        CommonConfigParser.validates(entry, entry.clientVersion) shouldBe true
 
         ClientVariantRegistry.all.filterNot(_ == entry).foreach { other =>
-          CommonConfigParser.validates(
-            other,
-            entry.clientVersion,
-            CommonConfigParser.FactoryValidation.PerVariant
-          ) shouldBe false
+          CommonConfigParser.validates(other, entry.clientVersion) shouldBe false
         }
       }
-    }
-
-    "adds the v2 DAX entry to v2 and skips it under v2-dax for V2DaxUnderV2" in {
-      CommonConfigParser.validates(
-        ClientVariantRegistry.V2,
-        ClientVersion.V2,
-        CommonConfigParser.FactoryValidation.V2DaxUnderV2
-      ) shouldBe true
-      CommonConfigParser.validates(
-        ClientVariantRegistry.V2Dax,
-        ClientVersion.V2,
-        CommonConfigParser.FactoryValidation.V2DaxUnderV2
-      ) shouldBe true
-      CommonConfigParser.validates(
-        ClientVariantRegistry.V2,
-        ClientVersion.V2Dax,
-        CommonConfigParser.FactoryValidation.V2DaxUnderV2
-      ) shouldBe false
-      CommonConfigParser.validates(
-        ClientVariantRegistry.V2Dax,
-        ClientVersion.V2Dax,
-        CommonConfigParser.FactoryValidation.V2DaxUnderV2
-      ) shouldBe false
     }
   }
 

@@ -40,6 +40,21 @@ object DynamoDBSnapshotStore {
     case (meta: SnapshotMetadata, snapshot: Any) => SelectedSnapshot(meta, snapshot)
   }
 
+  /** The snapshot DAO factory of one client variant. The v1 DAX factory is `V1LegacyDaxSnapshotDaoFactory`, because the
+    * legacy snapshot DAO is the one that supports DAX.
+    */
+  def snapshotDaoFactoryClassName(clientVersion: ClientVersion.Value): String =
+    clientVersion match {
+      case ClientVersion.V2 =>
+        "com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.dao.V2SnapshotDaoFactory"
+      case ClientVersion.V2Dax =>
+        "com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.dao.V2DaxSnapshotDaoFactory"
+      case ClientVersion.V1 =>
+        "com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.dao.V1SnapshotDaoFactory"
+      case ClientVersion.V1Dax =>
+        "com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.dao.V1LegacyDaxSnapshotDaoFactory"
+    }
+
 }
 
 final class DynamoDBSnapshotStore(config: Config) extends SnapshotStore {
@@ -66,17 +81,8 @@ final class DynamoDBSnapshotStore(config: Config) extends SnapshotStore {
   private implicit val ec: ExecutionContext = pluginExecutor
 
   private val snapshotDao: SnapshotDao = {
-    val className = pluginConfig.clientConfig.clientVersion match {
-      case ClientVersion.V2 =>
-        "com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.dao.V2SnapshotDaoFactory"
-      case ClientVersion.V2Dax =>
-        "com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.dao.V2DaxSnapshotDaoFactory"
-      case ClientVersion.V1 =>
-        "com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.dao.V1SnapshotDaoFactory"
-      case ClientVersion.V1Dax =>
-        "com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.dao.V1DaxSnapshotDaoFactory"
-    }
-    val f = SnapshotDynamicAccessor[SnapshotDaoFactory](pluginContext).createThrow(className)
+    val className = DynamoDBSnapshotStore.snapshotDaoFactoryClassName(pluginConfig.clientConfig.clientVersion)
+    val f         = SnapshotDynamicAccessor[SnapshotDaoFactory](pluginContext).createThrow(className)
     f.create(
       serialization
     )

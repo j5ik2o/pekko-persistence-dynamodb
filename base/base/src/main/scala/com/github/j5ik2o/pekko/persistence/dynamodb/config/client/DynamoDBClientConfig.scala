@@ -88,7 +88,7 @@ object DynamoDBClientConfig extends LoggingSupport {
       DynamoDBClientV2DaxConfig
         .fromConfig(
           config.getAs[Config](v2DaxKey).getOrElse(ConfigFactory.empty()),
-          clientVersion == ClientVersion.V2
+          clientVersion == ClientVersion.V2Dax
         ),
       batchGetItemLimit = config.as[Int](batchGetItemLimitKey),
       batchWriteItemLimit = config.as[Int](batchWriteItemLimitKey)

@@ -65,15 +65,10 @@ object JournalPluginConfig extends LoggingSupport {
     logger.debug("config = {}", config)
     val legacyConfigFormat = config.as[Boolean](legacyConfigFormatKey)
     val clientConfig       = CommonConfigParser.dynamoDbClientConfig(config, legacyConfigFormat)
-    val clientFactories =
-      CommonConfigParser.clientFactories(
-        config,
-        clientConfig.clientVersion,
-        CommonConfigParser.FactoryValidation.V2DaxUnderV2
-      )
-    val reporters  = CommonConfigParser.reporters(config)
-    val backoffs   = CommonConfigParser.backoffs(config)
-    val tableName  = config.as[String](tableNameKey)
+    val clientFactories    = CommonConfigParser.clientFactories(config, clientConfig.clientVersion)
+    val reporters          = CommonConfigParser.reporters(config)
+    val backoffs           = CommonConfigParser.backoffs(config)
+    val tableName          = config.as[String](tableNameKey)
     val headConfig = JournalHeadConfig.fromConfig(config.getAs[Config](headKey).getOrElse(ConfigFactory.empty()))
     if (headConfig.enabled) {
       // The JournalHead write path requires transactional writes, which only the non-DAX AWS SDK v2 client offers.
@@ -118,7 +113,7 @@ object JournalPluginConfig extends LoggingSupport {
           .requireClassByName(
             JournalRowWriteDriverFactoryClassName,
             className,
-            clientConfig.clientVersion == ClientVersion.V1
+            clientConfig.clientVersion == ClientVersion.V1Dax
           )
       },
       v2JournalRowWriteDriverFactoryClassName = {
@@ -136,7 +131,7 @@ object JournalPluginConfig extends LoggingSupport {
           .requireClassByName(
             JournalRowWriteDriverFactoryClassName,
             className,
-            clientConfig.clientVersion == ClientVersion.V2
+            clientConfig.clientVersion == ClientVersion.V2Dax
           )
       },
       tableName = tableName,

@@ -65,6 +65,8 @@ object DispatcherUtils extends LoggingSupport {
       pluginConfig.clientConfig.v2ClientConfig.dispatcherName.orElse(
         pluginConfig.clientConfig.v2ClientConfig.syncClientConfig.dispatcherName
       )
+    case ClientVersion.V2Dax =>
+      pluginConfig.clientConfig.v2DaxClientConfig.dispatcherName
     case _ =>
       throw new IllegalArgumentException("Invalid the client version")
   }
