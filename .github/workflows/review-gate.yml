@@ -1,0 +1,32 @@
+name: Review gate
+
+on:
+  # A dispatch records its run against the dispatched branch SHA. It may not
+  # update the pull request's required check when that SHA differs from the PR
+  # head, so treat the dispatch as an auxiliary re-run.
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number
+        required: true
+        type: string
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+  pull_request_review_comment:
+    types: [created, edited, deleted]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  unresolved-review-threads:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check unresolved review threads
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: tools/check-review-threads.sh "${{ github.repository }}" "${{ inputs.pr || github.event.pull_request.number }}"
