@@ -51,7 +51,9 @@ journal/journal-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/j
 journal/journal-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/dao/v2/V2JournalRowReadDriver.scala
 journal/journal-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/dao/v2/V2JournalRowWriteDriver.scala
 journal/journal-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/head/JournalHeadMigration.scala
+journal/journal-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/head/JournalHeadPreflight.scala
 journal/journal-v2/src/test/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/JournalHeadSpec.scala
+journal/journal-v2/src/test/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/head/JournalHeadPreflightIntegrationSpec.scala
 metrics/metrics-v2/src/main/scala/com/github/j5ik2o/akka/persistence/dynamodb/metrics/AwsSDKMetricPublisher.scala
 metrics/metrics-v2/src/main/scala/com/github/j5ik2o/akka/persistence/dynamodb/metrics/AwsSDKMetricPublishersProvider.scala
 snapshot/snapshot-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/snapshot/dao/V1LegacySnapshotDaoImpl.scala

@@ -220,6 +220,24 @@ If an aggregate is written without its `JournalHead` item, the write fails with
 `JournalHeadMissingException`. That failure means the migration has not covered the aggregate yet. A new aggregate
 whose first sequence number is `1` does not need a migration.
 
+## Preflight
+
+Run the preflight once before a deployment enables `head.enabled`:
+
+```shell
+$ sbt -batch "journal-v2/runMain com.github.j5ik2o.pekko.persistence.dynamodb.journal.head.JournalHeadPreflight"
+```
+
+The tool reads `j5ik2o.dynamo-db-journal` and calls `DescribeTable` for the `JournalHead` table and the journal table.
+It exits 0 when both stream settings are right, and reports a failure when:
+
+- the `JournalHead` table has no stream, or its stream view type is not `NEW_IMAGE` or `NEW_AND_OLD_IMAGES`;
+- the journal table has a stream.
+
+The preflight is a deployment step, not a plugin startup check. A plugin reads only its own configuration, and
+`DescribeTable` costs a request that a startup should not pay. The preflight also cannot detect a mixed deployment, so
+the mixed-node warning in Lifecycle constraints still applies.
+
 ## Lifecycle constraints
 
 Do not disable `head.enabled` after hard-deleting the journal events of an aggregate. The journal then has no record
