@@ -571,6 +571,32 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
       headStreamRecords(pid, 1).size shouldBe 1
     }
 
+    "not write the JournalHead item on a soft delete when the head is ahead" in {
+      val pid = "head-soft-delete-ahead-1"
+      persistAllOk(headEnabledSystem, pid, immutable.Seq("e1", "e2", "e3"))
+
+      // A soft delete that went through the JournalHead transaction would fail here: the journal rows already exist,
+      // so the row condition rejects the write, and the head is ahead of the first sequence number.
+      val headAheadItem = new PutItemRequest()
+        .withTableName(journalHeadTableName)
+        .withItem(
+          Map(
+            "persistence-id" -> new AttributeValue().withS(pid),
+            "sequence-nr"    -> new AttributeValue().withN("10"),
+            "events"         -> new AttributeValue().withL(java.util.Collections.emptyList[AttributeValue]())
+          ).asJava
+        )
+      dynamoDBClient.putItem(headAheadItem)
+
+      withActor(headEnabledSystem, pid) { (actor, probe) =>
+        actor.tell(DeleteTo(3L), probe.ref)
+        probe.expectMsg(60.seconds, Deleted())
+      }
+
+      journalRows(pid).map(_("deleted").getBOOL.booleanValue()) shouldBe Seq(true, true, true)
+      headSequenceNr(pid) shouldBe Some(10L)
+    }
+
     "keep the JournalHead item and its stream unchanged on a hard delete" in {
       val pid = "head-hard-delete-1"
       persistAllOk(headEnabledHardDeleteSystem, pid, immutable.Seq("e1", "e2", "e3"))

@@ -18,17 +18,13 @@ package com.github.j5ik2o.pekko.persistence.dynamodb.journal.dao.v1
 import org.apache.pekko.NotUsed
 import org.apache.pekko.actor.ActorSystem
 import org.apache.pekko.stream.scaladsl.{ Flow, Source }
-import com.amazonaws.services.dynamodbv2.model._
 import com.amazonaws.services.dynamodbv2.{ AmazonDynamoDB, AmazonDynamoDBAsync }
-import com.github.j5ik2o.pekko.persistence.dynamodb.client.v1.StreamWriteClient
+import com.github.j5ik2o.pekko.persistence.dynamodb.ddb.ClientVariant
+import com.github.j5ik2o.pekko.persistence.dynamodb.ddb.v1.V1ClientAdapter
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal._
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.dao.{ JournalRowWriteDriver, PersistenceIdWithSeqNr }
+import com.github.j5ik2o.pekko.persistence.dynamodb.journal.store.JournalRowStore
 import com.github.j5ik2o.pekko.persistence.dynamodb.model.{ PersistenceId, SequenceNumber }
-import org.slf4j.LoggerFactory
-
-import java.io.IOException
-import java.nio.ByteBuffer
-import scala.jdk.CollectionConverters._
 
 final class V1JournalRowWriteDriver(
     val pluginContext: JournalPluginContext,
@@ -46,15 +42,19 @@ final class V1JournalRowWriteDriver(
     case _ =>
   }
 
-  private val logger = LoggerFactory.getLogger(getClass)
+  private def clientVariant: ClientVariant =
+    ClientVariant
+      .fromClientVersion(pluginConfig.clientConfig.clientVersion)
+      .getOrElse(
+        throw new IllegalArgumentException(
+          s"unsupported client version: ${pluginConfig.clientConfig.clientVersion}"
+        )
+      )
 
-  private val streamClient =
-    new StreamWriteClient(
-      pluginContext,
-      asyncClient,
-      syncClient,
-      pluginConfig.writeBackoffConfig
-    )
+  private val store = JournalRowStore.fromPluginContext(
+    pluginContext,
+    new V1ClientAdapter(clientVariant, asyncClient, syncClient, pluginExecutor)
+  )
 
   private val readDriver = new V1JournalRowReadDriver(
     pluginContext,
@@ -91,221 +91,26 @@ final class V1JournalRowWriteDriver(
       deleted: Option[Boolean]
   ): Source[Option[Long], NotUsed] = readDriver.highestSequenceNr(persistenceId, fromSequenceNr, deleted)
 
-  override def singlePutJournalRowFlow: Flow[JournalRow, Long, NotUsed] = Flow[JournalRow].flatMapConcat { journalRow =>
-    val pkey = partitionKeyResolver.resolve(journalRow.persistenceId, journalRow.sequenceNumber).asString
-    val skey = sortKeyResolver.resolve(journalRow.persistenceId, journalRow.sequenceNumber).asString
-    val request = new PutItemRequest()
-      .withTableName(pluginConfig.tableName)
-      .withItem(
-        (Map(
-          pluginConfig.columnsDefConfig.partitionKeyColumnName -> new AttributeValue()
-            .withS(pkey),
-          pluginConfig.columnsDefConfig.sortKeyColumnName -> new AttributeValue()
-            .withS(skey),
-          pluginConfig.columnsDefConfig.persistenceIdColumnName -> new AttributeValue()
-            .withS(journalRow.persistenceId.asString),
-          pluginConfig.columnsDefConfig.sequenceNrColumnName -> new AttributeValue()
-            .withN(journalRow.sequenceNumber.asString),
-          pluginConfig.columnsDefConfig.orderingColumnName -> new AttributeValue()
-            .withN(journalRow.ordering.toString),
-          pluginConfig.columnsDefConfig.deletedColumnName -> new AttributeValue()
-            .withBOOL(journalRow.deleted),
-          pluginConfig.columnsDefConfig.messageColumnName -> new AttributeValue()
-            .withB(ByteBuffer.wrap(journalRow.message))
-        ) ++ journalRow.tags
-          .map { tag =>
-            Map(pluginConfig.columnsDefConfig.tagsColumnName -> new AttributeValue().withS(tag))
-          }.getOrElse(
-            Map.empty
-          )).asJava
-      )
-    Source.single(request).via(streamClient.putItemFlow).flatMapConcat { response =>
-      if (response.getSdkHttpMetadata.getHttpStatusCode == 200) {
-        Source.single(1L)
-      } else {
-        val statusCode = response.getSdkHttpMetadata.getHttpStatusCode
-        Source.failed(new IOException(s"statusCode: $statusCode"))
-      }
-    }
-  }
+  override def singlePutJournalRowFlow: Flow[JournalRow, Long, NotUsed] =
+    Flow[JournalRow]
+      .flatMapConcat(journalRow => store.write(Seq(journalRow)))
+      .withAttributes(logLevels)
 
-  override def multiPutJournalRowsFlow: Flow[Seq[JournalRow], Long, NotUsed] = Flow[Seq[JournalRow]].flatMapConcat {
-    journalRows =>
-      if (journalRows.isEmpty)
-        Source.single(0L)
-      else
-        {
-          require(journalRows.size == journalRows.toSet.size, "journalRows: keys contains duplicates")
-          val journalRowWithPKeyWithSKeys = journalRows.map { journalRow =>
-            val pkey = partitionKeyResolver
-              .resolve(journalRow.persistenceId, journalRow.sequenceNumber).asString
-            val skey = sortKeyResolver.resolve(journalRow.persistenceId, journalRow.sequenceNumber).asString
-            (journalRow, pkey, skey)
-          }
-          logger.debug(
-            s"multiPutJournalRowsFlow: journalRowWithPKeyWithSKeys = ${journalRowWithPKeyWithSKeys.mkString("\n", ",\n", "\n")}"
-          )
-          require(
-            journalRowWithPKeyWithSKeys.map { case (_, p, s) => (p, s) }.toSet.size == journalRows.size,
-            "journalRowWithPKeyWithSKeys: keys contains duplicates"
-          )
-
-          Source
-            .single(journalRowWithPKeyWithSKeys.map { case (journalRow, pkey, skey) =>
-              val pid      = journalRow.persistenceId.asString
-              val seqNr    = journalRow.sequenceNumber.asString
-              val ordering = journalRow.ordering.toString
-              val deleted  = journalRow.deleted
-              val message  = ByteBuffer.wrap(journalRow.message)
-              val tagsOpt  = journalRow.tags
-              new WriteRequest()
-                .withPutRequest(
-                  new PutRequest()
-                    .withItem(
-                      (Map(
-                        pluginConfig.columnsDefConfig.partitionKeyColumnName -> new AttributeValue()
-                          .withS(pkey),
-                        pluginConfig.columnsDefConfig.sortKeyColumnName -> new AttributeValue()
-                          .withS(skey),
-                        pluginConfig.columnsDefConfig.persistenceIdColumnName -> new AttributeValue()
-                          .withS(pid),
-                        pluginConfig.columnsDefConfig.sequenceNrColumnName -> new AttributeValue()
-                          .withN(seqNr),
-                        pluginConfig.columnsDefConfig.orderingColumnName -> new AttributeValue()
-                          .withN(ordering),
-                        pluginConfig.columnsDefConfig.deletedColumnName -> new AttributeValue()
-                          .withBOOL(deleted),
-                        pluginConfig.columnsDefConfig.messageColumnName -> new AttributeValue()
-                          .withB(message)
-                      ) ++ tagsOpt
-                        .map { tags =>
-                          Map(
-                            pluginConfig.columnsDefConfig.tagsColumnName -> new AttributeValue()
-                              .withS(tags)
-                          )
-                        }.getOrElse(Map.empty)).asJava
-                    )
-                )
-            }).flatMapConcat { requestItems =>
-              Source
-                .single(
-                  new BatchWriteItemRequest()
-                    .withRequestItems(Map(pluginConfig.tableName -> requestItems.asJava).asJava)
-                ).via(streamClient.recursiveBatchWriteItemFlow).map { _ =>
-                  requestItems.size.toLong
-                }
-            }
-        }.withAttributes(logLevels)
-  }
+  override def multiPutJournalRowsFlow: Flow[Seq[JournalRow], Long, NotUsed] =
+    Flow[Seq[JournalRow]]
+      .flatMapConcat(journalRows => store.write(journalRows))
+      .withAttributes(logLevels)
 
   override def multiDeleteJournalRowsFlow: Flow[Seq[PersistenceIdWithSeqNr], Long, NotUsed] =
     Flow[Seq[PersistenceIdWithSeqNr]]
-      .flatMapConcat { persistenceIdWithSeqNrs =>
-        persistenceIdWithSeqNrs
-          .map { case PersistenceIdWithSeqNr(pid, seqNr) => s"pid = $pid, seqNr = $seqNr" }.foreach(logger.debug)
-        if (persistenceIdWithSeqNrs.isEmpty)
-          Source.single(0L)
-        else {
-          Source
-            .single(persistenceIdWithSeqNrs.map { persistenceIdWithSeqNr =>
-              val pkey = partitionKeyResolver
-                .resolve(persistenceIdWithSeqNr.persistenceId, persistenceIdWithSeqNr.sequenceNumber).asString
-              val skey =
-                sortKeyResolver
-                  .resolve(persistenceIdWithSeqNr.persistenceId, persistenceIdWithSeqNr.sequenceNumber).asString
-              new WriteRequest().withDeleteRequest(
-                new DeleteRequest().withKey(
-                  Map(
-                    pluginConfig.columnsDefConfig.partitionKeyColumnName -> new AttributeValue().withS(pkey),
-                    pluginConfig.columnsDefConfig.sortKeyColumnName      -> new AttributeValue().withS(skey)
-                  ).asJava
-                )
-              )
-            }).flatMapConcat { requestItems =>
-              Source
-                .single(
-                  new BatchWriteItemRequest()
-                    .withRequestItems(Map(pluginConfig.tableName -> requestItems.asJava).asJava)
-                ).via(streamClient.recursiveBatchWriteItemFlow).map { _ =>
-                  requestItems.size.toLong
-                }
-            }
-        }
-      }
+      .flatMapConcat(persistenceIdWithSeqNrs => store.delete(persistenceIdWithSeqNrs))
       .withAttributes(logLevels)
 
-  override def singleDeleteJournalRowFlow: Flow[PersistenceIdWithSeqNr, Long, NotUsed] = {
-    Flow[PersistenceIdWithSeqNr].flatMapConcat { persistenceIdWithSeqNr =>
-      val pkey = partitionKeyResolver
-        .resolve(persistenceIdWithSeqNr.persistenceId, persistenceIdWithSeqNr.sequenceNumber).asString
-      val skey =
-        sortKeyResolver.resolve(persistenceIdWithSeqNr.persistenceId, persistenceIdWithSeqNr.sequenceNumber).asString
-      val deleteRequest = new DeleteItemRequest()
-        .withKey(
-          Map(
-            pluginConfig.columnsDefConfig.partitionKeyColumnName -> new AttributeValue().withS(pkey),
-            pluginConfig.columnsDefConfig.sortKeyColumnName      -> new AttributeValue().withS(skey)
-          ).asJava
-        )
-      Source.single(deleteRequest).via(streamClient.deleteItemFlow).flatMapConcat { response =>
-        if (response.getSdkHttpMetadata.getHttpStatusCode == 200) {
-          Source.single(1L)
-        } else {
-          val statusCode = response.getSdkHttpMetadata.getHttpStatusCode
-          Source.failed(new IOException(s"statusCode: $statusCode"))
-        }
-      }
-    }
-  }
+  override def singleDeleteJournalRowFlow: Flow[PersistenceIdWithSeqNr, Long, NotUsed] =
+    Flow[PersistenceIdWithSeqNr]
+      .flatMapConcat(persistenceIdWithSeqNr => store.delete(Seq(persistenceIdWithSeqNr)))
+      .withAttributes(logLevels)
 
-  override def updateMessage(journalRow: JournalRow): Source[Unit, NotUsed] = {
-    logger.debug(s"updateMessage(journalRow = $journalRow): start")
-    val pkey = journalRow.partitionKey(partitionKeyResolver).asString
-    val skey = journalRow.sortKey(sortKeyResolver).asString
-    def createUpdateRequest =
-      new UpdateItemRequest()
-        .withTableName(pluginConfig.tableName).withKey(
-          Map(
-            pluginConfig.columnsDefConfig.partitionKeyColumnName -> new AttributeValue()
-              .withS(pkey),
-            pluginConfig.columnsDefConfig.sortKeyColumnName -> new AttributeValue()
-              .withS(skey)
-          ).asJava
-        ).withAttributeUpdates(
-          (Map(
-            pluginConfig.columnsDefConfig.messageColumnName -> new AttributeValueUpdate()
-              .withAction(AttributeAction.PUT).withValue(
-                new AttributeValue().withB(ByteBuffer.wrap(journalRow.message))
-              ),
-            pluginConfig.columnsDefConfig.orderingColumnName ->
-            new AttributeValueUpdate()
-              .withAction(AttributeAction.PUT).withValue(
-                new AttributeValue().withN(journalRow.ordering.toString)
-              ),
-            pluginConfig.columnsDefConfig.deletedColumnName -> new AttributeValueUpdate()
-              .withAction(AttributeAction.PUT).withValue(
-                new AttributeValue().withBOOL(journalRow.deleted)
-              )
-          ) ++ journalRow.tags
-            .map { tag =>
-              Map(
-                pluginConfig.columnsDefConfig.tagsColumnName -> new AttributeValueUpdate()
-                  .withAction(AttributeAction.PUT).withValue(new AttributeValue().withS(tag))
-              )
-            }.getOrElse(Map.empty)).asJava
-        )
-    Source
-      .single(createUpdateRequest)
-      .via(streamClient.updateItemFlow).flatMapConcat { response =>
-        if (response.getSdkHttpMetadata.getHttpStatusCode == 200) {
-          Source.single(())
-        } else {
-          val statusCode = response.getSdkHttpMetadata.getHttpStatusCode
-          logger.debug(s"updateMessage(journalRow = $journalRow): finished")
-          Source.failed(new IOException(s"statusCode: $statusCode"))
-        }
-      }.withAttributes(logLevels)
-
-  }
-
+  override def updateMessage(journalRow: JournalRow): Source[Unit, NotUsed] =
+    store.update(journalRow).withAttributes(logLevels)
 }
