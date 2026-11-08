@@ -19,20 +19,22 @@ import org.apache.pekko.NotUsed
 import org.apache.pekko.persistence.SnapshotMetadata
 import org.apache.pekko.serialization.Serialization
 import org.apache.pekko.stream.scaladsl.Source
-import com.amazonaws.services.dynamodbv2.model._
 import com.amazonaws.services.dynamodbv2.{ AmazonDynamoDB, AmazonDynamoDBAsync }
-import com.github.j5ik2o.pekko.persistence.dynamodb.client.v1.{ StreamReadClient, StreamWriteClient }
+import com.github.j5ik2o.pekko.persistence.dynamodb.ddb.{ ClientVariant, DdbClientAdapter }
+import com.github.j5ik2o.pekko.persistence.dynamodb.ddb.v1.V1ClientAdapter
 import com.github.j5ik2o.pekko.persistence.dynamodb.model.{ PersistenceId, SequenceNumber }
 import com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.SnapshotPluginContext
+import com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.schema.{
+  SnapshotRowCodec,
+  SnapshotSchema,
+  SnapshotTableSpec
+}
 import com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.serialization.ByteArraySnapshotSerializer
-import org.slf4j.{ Logger, LoggerFactory }
+import com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.store.SnapshotStore
 
-import java.io.IOException
-import java.nio.ByteBuffer
 import scala.concurrent.{ ExecutionContext, Future }
-import scala.jdk.CollectionConverters._
 
-final class V1NewSnapshotDaoImpl(
+private[dao] final class V1SnapshotDaoDelegate(
     pluginContext: SnapshotPluginContext,
     asyncClient: Option[AmazonDynamoDBAsync],
     syncClient: Option[AmazonDynamoDB],
@@ -47,110 +49,42 @@ final class V1NewSnapshotDaoImpl(
   import pluginContext._
   import pluginContext.pluginConfig._
 
-  private val logger: Logger = LoggerFactory.getLogger(getClass)
+  private val variant: ClientVariant =
+    ClientVariant.fromClientVersion(clientConfig.clientVersion) match {
+      case Some(value) => value
+      case None        => throw new IllegalArgumentException(s"unknown client version: ${clientConfig.clientVersion}")
+    }
 
-  private val streamReadClient =
-    new StreamReadClient(pluginContext, asyncClient, syncClient, pluginConfig.readBackoffConfig)
+  private val adapter: DdbClientAdapter = new V1ClientAdapter(variant, asyncClient, syncClient, pluginExecutor)
 
-  private val streamWriteClient =
-    new StreamWriteClient(pluginContext, asyncClient, syncClient, pluginConfig.writeBackoffConfig)
+  private val schema    = SnapshotSchema.fromColumns(columnsDefConfig)
+  private val tableSpec = SnapshotTableSpec.fromConfig(schema, pluginConfig, partitionKeyResolver, sortKeyResolver)
+  private val codec     = new SnapshotRowCodec(schema, tableSpec)
+  private val store     = new SnapshotStore(adapter, codec, consistentRead, clientConfig.batchWriteItemLimit)
 
   private val serializer = new ByteArraySnapshotSerializer(serialization, metricsReporter, traceReporter)
 
   override def delete(persistenceId: PersistenceId, sequenceNr: SequenceNumber): Source[Unit, NotUsed] = {
-    logger.debug(s"delete($persistenceId, $sequenceNr): start")
-    logger.debug(s"pluginConfig: $pluginConfig")
-    val queryRequest = new QueryRequest()
-      .withTableName(tableName)
-      .withIndexName(pluginConfig.getSnapshotRowsIndexName)
-      .withKeyConditionExpression("#pid = :pid and #snr = :snr")
-      .withExpressionAttributeNames(
-        Map("#pid" -> columnsDefConfig.persistenceIdColumnName, "#snr" -> columnsDefConfig.sequenceNrColumnName).asJava
-      ).withExpressionAttributeValues(
-        Map(
-          ":pid" -> new AttributeValue().withS(persistenceId.asString),
-          ":snr" -> new AttributeValue().withN(sequenceNr.asString)
-        ).asJava
-      ).withConsistentRead(consistentRead)
-    val result = queryDelete(queryRequest)
-    logger.debug(s"delete($persistenceId, $sequenceNr):$result: finish")
-    result
+    store.delete(persistenceId, sequenceNr)
   }
 
   override def deleteAllSnapshots(
       persistenceId: PersistenceId
   )(implicit ec: ExecutionContext): Source[Unit, NotUsed] = {
-    logger.debug(s"deleteAllSnapshots($persistenceId): start")
-    logger.debug(s"pluginConfig: $pluginConfig")
-    val queryRequest = new QueryRequest()
-      .withTableName(tableName)
-      .withIndexName(pluginConfig.getSnapshotRowsIndexName)
-      .withKeyConditionExpression("#pid = :pid and #snr between :min and :max")
-      .withExpressionAttributeNames(
-        Map("#pid" -> columnsDefConfig.persistenceIdColumnName, "#snr" -> columnsDefConfig.sequenceNrColumnName).asJava
-      ).withExpressionAttributeValues(
-        Map(
-          ":pid" -> new AttributeValue().withS(persistenceId.asString),
-          ":min" -> new AttributeValue().withN(0.toString),
-          ":max" -> new AttributeValue().withN(Long.MaxValue.toString)
-        ).asJava
-      ).withConsistentRead(consistentRead)
-    val result = queryDelete(queryRequest)
-    logger.debug(s"deleteAllSnapshots($persistenceId):$result: finish")
-    result
+    store.deleteAll(persistenceId)
   }
 
   override def deleteUpToMaxSequenceNr(
       persistenceId: PersistenceId,
       maxSequenceNr: SequenceNumber
   )(implicit ec: ExecutionContext): Source[Unit, NotUsed] = {
-    logger.debug(s"deleteUpToMaxSequenceNr($persistenceId, $maxSequenceNr): start")
-    logger.debug(s"pluginConfig: $pluginConfig")
-    val queryRequest = new QueryRequest()
-      .withTableName(tableName)
-      .withIndexName(pluginConfig.getSnapshotRowsIndexName)
-      .withKeyConditionExpression("#pid = :pid and #snr between :min and :max")
-      .withExpressionAttributeNames(
-        Map("#pid" -> columnsDefConfig.persistenceIdColumnName, "#snr" -> columnsDefConfig.sequenceNrColumnName).asJava
-      ).withExpressionAttributeValues(
-        Map(
-          ":pid" -> new AttributeValue().withS(persistenceId.asString),
-          ":min" -> new AttributeValue().withN(0.toString),
-          ":max" -> new AttributeValue().withN(maxSequenceNr.asString)
-        ).asJava
-      ).withConsistentRead(consistentRead)
-    val result = queryDelete(queryRequest)
-    logger.debug(s"deleteUpToMaxSequenceNr($persistenceId):$result: finish")
-    result
+    store.deleteUpToMaxSequenceNr(persistenceId, maxSequenceNr)
   }
 
   override def deleteUpToMaxTimestamp(persistenceId: PersistenceId, maxTimestamp: Long)(implicit
       ec: ExecutionContext
   ): Source[Unit, NotUsed] = {
-    logger.debug(s"deleteUpToMaxTimestamp($persistenceId): start")
-    logger.debug(s"pluginConfig: $pluginConfig")
-    val queryRequest = new QueryRequest()
-      .withTableName(tableName)
-      .withIndexName(pluginConfig.getSnapshotRowsIndexName)
-      .withKeyConditionExpression("#pid = :pid and #snr between :min and :max")
-      .withFilterExpression("#created <= :maxTimestamp")
-      .withExpressionAttributeNames(
-        Map(
-          "#pid"     -> columnsDefConfig.persistenceIdColumnName,
-          "#snr"     -> columnsDefConfig.sequenceNrColumnName,
-          "#created" -> columnsDefConfig.createdColumnName
-        ).asJava
-      ).withExpressionAttributeValues(
-        Map(
-          ":pid"          -> new AttributeValue().withS(persistenceId.asString),
-          ":min"          -> new AttributeValue().withN(0.toString),
-          ":max"          -> new AttributeValue().withN(Long.MaxValue.toString),
-          ":maxTimestamp" -> new AttributeValue().withN(maxTimestamp.toString)
-        ).asJava
-      ).withConsistentRead(consistentRead)
-    val result = queryDelete(queryRequest)
-    logger.debug(s"deleteUpToMaxTimestamp($persistenceId):$result: finish")
-    result
+    store.deleteUpToMaxTimestamp(persistenceId, maxTimestamp)
   }
 
   override def deleteUpToMaxSequenceNrAndMaxTimestamp(
@@ -158,139 +92,27 @@ final class V1NewSnapshotDaoImpl(
       maxSequenceNr: SequenceNumber,
       maxTimestamp: Long
   )(implicit ec: ExecutionContext): Source[Unit, NotUsed] = {
-    logger.debug(s"deleteUpToMaxSequenceNrAndMaxTimestamp($persistenceId, $maxSequenceNr, $maxTimestamp): start")
-    logger.debug(s"pluginConfig: $pluginConfig")
-    val queryRequest = new QueryRequest()
-      .withTableName(tableName)
-      .withIndexName(pluginConfig.getSnapshotRowsIndexName)
-      .withKeyConditionExpression("#pid = :pid and #snr between :min and :max")
-      .withFilterExpression("#created <= :maxTimestamp")
-      .withExpressionAttributeNames(
-        Map(
-          "#pid"     -> columnsDefConfig.persistenceIdColumnName,
-          "#snr"     -> columnsDefConfig.sequenceNrColumnName,
-          "#created" -> columnsDefConfig.createdColumnName
-        ).asJava
-      ).withExpressionAttributeValues(
-        Map(
-          ":pid"          -> new AttributeValue().withS(persistenceId.asString),
-          ":min"          -> new AttributeValue().withN(0.toString),
-          ":max"          -> new AttributeValue().withN(maxSequenceNr.asString),
-          ":maxTimestamp" -> new AttributeValue().withN(maxTimestamp.toString)
-        ).asJava
-      ).withConsistentRead(consistentRead)
-    val result = queryDelete(queryRequest)
-    logger.debug(
-      s"deleteUpToMaxSequenceNrAndMaxTimestamp($persistenceId, $maxSequenceNr, $maxTimestamp):$result: finish"
-    )
-    result
+    store.deleteUpToMaxSequenceNrAndMaxTimestamp(persistenceId, maxSequenceNr, maxTimestamp)
   }
 
   override def latestSnapshot(
       persistenceId: PersistenceId
   )(implicit ec: ExecutionContext): Source[Option[(SnapshotMetadata, Any)], NotUsed] = {
-    logger.debug(s"latestSnapshot($persistenceId): start")
-    logger.debug(s"pluginConfig: $pluginConfig")
-    val queryRequest = new QueryRequest()
-      .withTableName(tableName)
-      .withIndexName(pluginConfig.getSnapshotRowsIndexName)
-      .withKeyConditionExpression("#pid = :pid and #snr between :min and :max")
-      .withExpressionAttributeNames(
-        Map("#pid" -> columnsDefConfig.persistenceIdColumnName, "#snr" -> columnsDefConfig.sequenceNrColumnName).asJava
-      ).withExpressionAttributeValues(
-        Map(
-          ":pid" -> new AttributeValue().withS(persistenceId.asString),
-          ":min" -> new AttributeValue().withN(0.toString),
-          ":max" -> new AttributeValue().withN(Long.MaxValue.toString)
-        ).asJava
-      )
-      .withScanIndexForward(false)
-      .withLimit(1)
-      .withConsistentRead(consistentRead)
-    val result = Source
-      .single(queryRequest).via(streamReadClient.queryFlow)
-      .flatMapConcat { response =>
-        if (response.getSdkHttpMetadata.getHttpStatusCode == 200)
-          Source.single(Option(response.getItems).map(_.asScala).getOrElse(Seq.empty).map(_.asScala.toMap).headOption)
-        else {
-          val statusCode = response.getSdkHttpMetadata.getHttpStatusCode
-          Source.failed(new IOException(s"statusCode: $statusCode"))
-        }
-      }.mapAsync(1)(deserialize)
-    logger.debug(s"latestSnapshot($persistenceId):$result: finish")
-    result
+    deserialize(store.latest(persistenceId))
   }
 
   override def snapshotForMaxTimestamp(
       persistenceId: PersistenceId,
       maxTimestamp: Long
   )(implicit ec: ExecutionContext): Source[Option[(SnapshotMetadata, Any)], NotUsed] = {
-    logger.debug(s"snapshotForMaxTimestamp($persistenceId, $maxTimestamp): start")
-    logger.debug(s"pluginConfig: $pluginConfig")
-    val queryRequest = new QueryRequest()
-      .withTableName(tableName)
-      .withIndexName(pluginConfig.getSnapshotRowsIndexName)
-      .withKeyConditionExpression("#pid = :pid and #snr between :min and :max")
-      .withFilterExpression("#created <= :maxTimestamp")
-      .withExpressionAttributeNames(
-        Map(
-          "#pid"     -> columnsDefConfig.persistenceIdColumnName,
-          "#snr"     -> columnsDefConfig.sequenceNrColumnName,
-          "#created" -> columnsDefConfig.createdColumnName
-        ).asJava
-      ).withExpressionAttributeValues(
-        Map(
-          ":pid"          -> new AttributeValue().withS(persistenceId.asString),
-          ":min"          -> new AttributeValue().withN(0.toString),
-          ":max"          -> new AttributeValue().withN(Long.MaxValue.toString),
-          ":maxTimestamp" -> new AttributeValue().withN(maxTimestamp.toString)
-        ).asJava
-      ).withScanIndexForward(false)
-      .withConsistentRead(consistentRead)
-    val result = Source
-      .single(queryRequest).via(streamReadClient.queryFlow).flatMapConcat { response =>
-        if (response.getSdkHttpMetadata.getHttpStatusCode == 200)
-          Source.single(Option(response.getItems).map(_.asScala).getOrElse(Seq.empty).map(_.asScala.toMap).headOption)
-        else {
-          val statusCode = response.getSdkHttpMetadata.getHttpStatusCode
-          Source.failed(new IOException(s"statusCode: $statusCode"))
-        }
-      }.mapAsync(1)(deserialize)
-    logger.debug(s"snapshotForMaxTimestamp($persistenceId, $maxTimestamp):$result: finish")
-    result
+    deserialize(store.forMaxTimestamp(persistenceId, maxTimestamp))
   }
 
   override def snapshotForMaxSequenceNr(
       persistenceId: PersistenceId,
       maxSequenceNr: SequenceNumber
   )(implicit ec: ExecutionContext): Source[Option[(SnapshotMetadata, Any)], NotUsed] = {
-    logger.debug(s"snapshotForMaxSequenceNr($persistenceId, $maxSequenceNr): start")
-    logger.debug(s"pluginConfig: $pluginConfig")
-    val queryRequest = new QueryRequest()
-      .withTableName(tableName)
-      .withIndexName(pluginConfig.getSnapshotRowsIndexName)
-      .withKeyConditionExpression("#pid = :pid and #snr between :min and :max")
-      .withExpressionAttributeNames(
-        Map("#pid" -> columnsDefConfig.persistenceIdColumnName, "#snr" -> columnsDefConfig.sequenceNrColumnName).asJava
-      ).withExpressionAttributeValues(
-        Map(
-          ":pid" -> new AttributeValue().withS(persistenceId.asString),
-          ":min" -> new AttributeValue().withN(0.toString),
-          ":max" -> new AttributeValue().withN(maxSequenceNr.asString)
-        ).asJava
-      ).withScanIndexForward(false)
-      .withConsistentRead(consistentRead)
-    val result = Source
-      .single(queryRequest).via(streamReadClient.queryFlow).flatMapConcat { response =>
-        if (response.getSdkHttpMetadata.getHttpStatusCode == 200)
-          Source.single(Option(response.getItems).map(_.asScala).getOrElse(Seq.empty).map(_.asScala.toMap).headOption)
-        else {
-          val statusCode = response.getSdkHttpMetadata.getHttpStatusCode
-          Source.failed(new IOException(s"statusCode: $statusCode"))
-        }
-      }.mapAsync(1)(deserialize)
-    logger.debug(s"snapshotForMaxSequenceNr($persistenceId, $maxSequenceNr):$result: finish")
-    result
+    deserialize(store.forMaxSequenceNr(persistenceId, maxSequenceNr))
   }
 
   override def snapshotForMaxSequenceNrAndMaxTimestamp(
@@ -298,146 +120,99 @@ final class V1NewSnapshotDaoImpl(
       maxSequenceNr: SequenceNumber,
       maxTimestamp: Long
   )(implicit ec: ExecutionContext): Source[Option[(SnapshotMetadata, Any)], NotUsed] = {
-    logger.debug(s"snapshotForMaxSequenceNrAndMaxTimestamp($persistenceId, $maxSequenceNr, $maxTimestamp): start")
-    logger.debug(s"pluginConfig: $pluginConfig")
-    val queryRequest = new QueryRequest()
-      .withTableName(tableName)
-      .withIndexName(pluginConfig.getSnapshotRowsIndexName)
-      .withKeyConditionExpression("#pid = :pid and #snr between :min and :max")
-      .withFilterExpression("#created <= :maxTimestamp")
-      .withExpressionAttributeNames(
-        Map(
-          "#pid"     -> columnsDefConfig.persistenceIdColumnName,
-          "#snr"     -> columnsDefConfig.sequenceNrColumnName,
-          "#created" -> columnsDefConfig.createdColumnName
-        ).asJava
-      ).withExpressionAttributeValues(
-        Map(
-          ":pid"          -> new AttributeValue().withS(persistenceId.asString),
-          ":min"          -> new AttributeValue().withN(0.toString),
-          ":max"          -> new AttributeValue().withN(maxSequenceNr.asString),
-          ":maxTimestamp" -> new AttributeValue().withN(maxTimestamp.toString)
-        ).asJava
-      ).withScanIndexForward(false)
-      .withConsistentRead(consistentRead)
-    val result = Source
-      .single(queryRequest).via(streamReadClient.queryFlow).flatMapConcat { response =>
-        if (response.getSdkHttpMetadata.getHttpStatusCode == 200)
-          Source.single(Option(response.getItems).map(_.asScala).getOrElse(Seq.empty).map(_.asScala.toMap).headOption)
-        else {
-          val statusCode = response.getSdkHttpMetadata.getHttpStatusCode
-          Source.failed(new IOException(s"statusCode: $statusCode"))
-        }
-      }.mapAsync(1)(deserialize)
-    logger.debug(s"snapshotForMaxSequenceNrAndMaxTimestamp($persistenceId, $maxSequenceNr, $maxTimestamp): finish")
-    result
+    deserialize(store.forMaxSequenceNrAndMaxTimestamp(persistenceId, maxSequenceNr, maxTimestamp))
   }
 
   override def save(snapshotMetadata: SnapshotMetadata, snapshot: Any)(implicit
       ec: ExecutionContext
   ): Source[Unit, NotUsed] = {
-    logger.debug(s"save($snapshotMetadata, $snapshot): start")
-    logger.debug(s"pluginConfig: $pluginConfig")
-    val result = Source
-      .future(serializer.serialize(snapshotMetadata, snapshot))
-      .flatMapConcat { snapshotRow =>
-        val pkey = partitionKeyResolver.resolve(snapshotRow.persistenceId, snapshotRow.sequenceNumber)
-        val skey = sortKeyResolver.resolve(snapshotRow.persistenceId, snapshotRow.sequenceNumber)
-        val req = new PutItemRequest()
-          .withTableName(tableName)
-          .withItem(
-            Map(
-              columnsDefConfig.partitionKeyColumnName -> new AttributeValue().withS(pkey.asString),
-              columnsDefConfig.sortKeyColumnName      -> new AttributeValue().withS(skey.asString),
-              columnsDefConfig.persistenceIdColumnName -> new AttributeValue()
-                .withS(snapshotRow.persistenceId.asString),
-              columnsDefConfig.sequenceNrColumnName -> new AttributeValue().withN(snapshotRow.sequenceNumber.asString),
-              columnsDefConfig.snapshotColumnName -> new AttributeValue().withB(ByteBuffer.wrap(snapshotRow.snapshot)),
-              columnsDefConfig.createdColumnName  -> new AttributeValue().withN(snapshotRow.created.toString)
-            ).asJava
-          )
-        Source.single(req).via(streamWriteClient.putItemFlow).flatMapConcat { response =>
-          if (response.getSdkHttpMetadata.getHttpStatusCode == 200)
-            Source.single(())
-          else {
-            val statusCode = response.getSdkHttpMetadata.getHttpStatusCode
-            Source.failed(new IOException(s"statusCode: $statusCode"))
-          }
-        }
-      }
-    logger.debug(s"save($snapshotMetadata, $snapshot):$result: finish")
-    result
+    Source.future(serializer.serialize(snapshotMetadata, snapshot)).flatMapConcat(store.save)
   }
 
-  private def queryDelete(queryRequest: QueryRequest): Source[Unit, NotUsed] = {
-    Source
-      .single(queryRequest).via(streamReadClient.queryFlow).map { response =>
-        Option(response.getItems).map(_.asScala).getOrElse(Seq.empty)
-      }.mapConcat(_.toVector).grouped(clientConfig.batchWriteItemLimit).map { rows =>
-        rows.map { javaRow =>
-          val row = javaRow.asScala
-          SnapshotRow(
-            persistenceId = PersistenceId(row(columnsDefConfig.persistenceIdColumnName).getS),
-            sequenceNumber = SequenceNumber(row(columnsDefConfig.sequenceNrColumnName).getN.toLong),
-            snapshot = row(columnsDefConfig.snapshotColumnName).getB.array(),
-            created = row(columnsDefConfig.createdColumnName).getN.toLong
-          )
-        }
-      }.map { rows =>
-        new BatchWriteItemRequest()
-          .withRequestItems(
-            Map(
-              tableName -> rows.map { row =>
-                val pkey = partitionKeyResolver.resolve(row.persistenceId, row.sequenceNumber)
-                val skey = sortKeyResolver.resolve(row.persistenceId, row.sequenceNumber)
-                new WriteRequest()
-                  .withDeleteRequest(
-                    new DeleteRequest()
-                      .withKey(
-                        Map(
-                          columnsDefConfig.partitionKeyColumnName -> new AttributeValue()
-                            .withS(pkey.asString),
-                          columnsDefConfig.sortKeyColumnName -> new AttributeValue()
-                            .withS(skey.asString)
-                        ).asJava
-                      )
-                  )
-              }.asJava
-            ).asJava
-          )
-      }.via(streamWriteClient.batchWriteItemFlow).flatMapConcat { response =>
-        if (response.getSdkHttpMetadata.getHttpStatusCode == 200)
-          Source.single(())
-        else {
-          val statusCode = response.getSdkHttpMetadata.getHttpStatusCode
-          Source.failed(new IOException(s"statusCode: $statusCode"))
-        }
-      }
-  }
+  override def dispose(): Unit = adapter.close()
 
-  private def deserialize(rowOpt: Option[Map[String, AttributeValue]])(implicit ec: ExecutionContext) = {
-    rowOpt match {
-      case Some(row) =>
-        serializer
-          .deserialize(
-            SnapshotRow(
-              persistenceId = PersistenceId(row(columnsDefConfig.persistenceIdColumnName).getS),
-              sequenceNumber = SequenceNumber(row(columnsDefConfig.sequenceNrColumnName).getN.toLong),
-              snapshot = row(columnsDefConfig.snapshotColumnName).getB.array(),
-              created = row(columnsDefConfig.createdColumnName).getN.toLong
-            )
-          ).map(Some(_))
-      case None =>
-        Future.successful(None)
+  private def deserialize(rows: Source[Option[SnapshotRow], NotUsed])(implicit
+      ec: ExecutionContext
+  ): Source[Option[(SnapshotMetadata, Any)], NotUsed] =
+    rows.mapAsync(1) {
+      case Some(row) => serializer.deserialize(row).map(Some(_))
+      case None      => Future.successful(None)
     }
+}
+
+final class V1NewSnapshotDaoImpl(
+    pluginContext: SnapshotPluginContext,
+    asyncClient: Option[AmazonDynamoDBAsync],
+    syncClient: Option[AmazonDynamoDB],
+    serialization: Serialization
+) extends SnapshotDao {
+
+  private val delegate = new V1SnapshotDaoDelegate(pluginContext, asyncClient, syncClient, serialization)
+
+  override def delete(persistenceId: PersistenceId, sequenceNr: SequenceNumber): Source[Unit, NotUsed] = {
+    delegate.delete(persistenceId, sequenceNr)
   }
 
-  override def dispose(): Unit = {
-    (asyncClient, syncClient) match {
-      case (Some(a), _) => a.shutdown()
-      case (_, Some(s)) => s.shutdown()
-      case _            =>
-    }
+  override def deleteAllSnapshots(
+      persistenceId: PersistenceId
+  )(implicit ec: ExecutionContext): Source[Unit, NotUsed] = {
+    delegate.deleteAllSnapshots(persistenceId)
   }
 
+  override def deleteUpToMaxSequenceNr(
+      persistenceId: PersistenceId,
+      maxSequenceNr: SequenceNumber
+  )(implicit ec: ExecutionContext): Source[Unit, NotUsed] = {
+    delegate.deleteUpToMaxSequenceNr(persistenceId, maxSequenceNr)
+  }
+
+  override def deleteUpToMaxTimestamp(persistenceId: PersistenceId, maxTimestamp: Long)(implicit
+      ec: ExecutionContext
+  ): Source[Unit, NotUsed] = {
+    delegate.deleteUpToMaxTimestamp(persistenceId, maxTimestamp)
+  }
+
+  override def deleteUpToMaxSequenceNrAndMaxTimestamp(
+      persistenceId: PersistenceId,
+      maxSequenceNr: SequenceNumber,
+      maxTimestamp: Long
+  )(implicit ec: ExecutionContext): Source[Unit, NotUsed] = {
+    delegate.deleteUpToMaxSequenceNrAndMaxTimestamp(persistenceId, maxSequenceNr, maxTimestamp)
+  }
+
+  override def latestSnapshot(
+      persistenceId: PersistenceId
+  )(implicit ec: ExecutionContext): Source[Option[(SnapshotMetadata, Any)], NotUsed] = {
+    delegate.latestSnapshot(persistenceId)
+  }
+
+  override def snapshotForMaxTimestamp(
+      persistenceId: PersistenceId,
+      maxTimestamp: Long
+  )(implicit ec: ExecutionContext): Source[Option[(SnapshotMetadata, Any)], NotUsed] = {
+    delegate.snapshotForMaxTimestamp(persistenceId, maxTimestamp)
+  }
+
+  override def snapshotForMaxSequenceNr(
+      persistenceId: PersistenceId,
+      maxSequenceNr: SequenceNumber
+  )(implicit ec: ExecutionContext): Source[Option[(SnapshotMetadata, Any)], NotUsed] = {
+    delegate.snapshotForMaxSequenceNr(persistenceId, maxSequenceNr)
+  }
+
+  override def snapshotForMaxSequenceNrAndMaxTimestamp(
+      persistenceId: PersistenceId,
+      maxSequenceNr: SequenceNumber,
+      maxTimestamp: Long
+  )(implicit ec: ExecutionContext): Source[Option[(SnapshotMetadata, Any)], NotUsed] = {
+    delegate.snapshotForMaxSequenceNrAndMaxTimestamp(persistenceId, maxSequenceNr, maxTimestamp)
+  }
+
+  override def save(snapshotMetadata: SnapshotMetadata, snapshot: Any)(implicit
+      ec: ExecutionContext
+  ): Source[Unit, NotUsed] = {
+    delegate.save(snapshotMetadata, snapshot)
+  }
+
+  override def dispose(): Unit = delegate.dispose()
 }
