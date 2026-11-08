@@ -288,15 +288,15 @@ object SchemaDrift {
     val declared = RangeKeyEntry
       .findFirstMatchIn(stateTableJson)
       .flatMap(entry => AttributeName.findFirstMatchIn(entry.matched).map(_.group(1)))
-    if (documented == declared) {
-      None
-    } else {
-      Some(
-        KnownProblem(
-          "state-sort-key-table-format",
-          s"table-format.md State sort key is ${documented.getOrElse("<missing>")}, but state-table.json declares RANGE key ${declared.getOrElse("<missing>")}"
+    (documented, declared) match {
+      case (Some(documentedValue), Some(declaredValue)) if documentedValue == declaredValue => None
+      case _ =>
+        Some(
+          KnownProblem(
+            "state-sort-key-table-format",
+            s"table-format.md State sort key is ${documented.getOrElse("<missing>")}, but state-table.json declares RANGE key ${declared.getOrElse("<missing>")}"
+          )
         )
-      )
     }
   }
 }
