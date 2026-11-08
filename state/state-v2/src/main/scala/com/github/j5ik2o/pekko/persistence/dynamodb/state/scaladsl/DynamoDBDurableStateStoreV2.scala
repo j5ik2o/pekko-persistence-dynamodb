@@ -21,25 +21,29 @@ import org.apache.pekko.annotation.ApiMayChange
 import org.apache.pekko.persistence.state.scaladsl.GetObjectResult
 import org.apache.pekko.serialization.{ Serialization, SerializationExtension }
 import org.apache.pekko.stream.scaladsl.{ Sink, Source }
-import com.github.j5ik2o.pekko.persistence.dynamodb.client.v2.{ StreamReadClient, StreamWriteClient }
-import com.github.j5ik2o.pekko.persistence.dynamodb.config.BackoffConfig
+import com.github.j5ik2o.pekko.persistence.dynamodb.ddb.{
+  AttributeName,
+  ClientVariant,
+  DdbClientAdapter,
+  DdbValue,
+  RowKey
+}
+import com.github.j5ik2o.pekko.persistence.dynamodb.ddb.v2.V2ClientAdapter
 import com.github.j5ik2o.pekko.persistence.dynamodb.model.{ Context, PersistenceId }
 import com.github.j5ik2o.pekko.persistence.dynamodb.state.DynamoDBDurableStateStoreProvider.Identifier
 import com.github.j5ik2o.pekko.persistence.dynamodb.state._
-import com.github.j5ik2o.pekko.persistence.dynamodb.utils.LoggingSupport
-import software.amazon.awssdk.core.SdkBytes
-import software.amazon.awssdk.services.dynamodb.model.{
-  AttributeValue,
-  DeleteItemRequest,
-  GetItemRequest,
-  PutItemRequest
+import com.github.j5ik2o.pekko.persistence.dynamodb.state.schema.{
+  StateRow,
+  StateRowCodec,
+  StateSchema,
+  StateTableSpec
 }
+import com.github.j5ik2o.pekko.persistence.dynamodb.state.store.StateStore
+import com.github.j5ik2o.pekko.persistence.dynamodb.utils.LoggingSupport
 import software.amazon.awssdk.services.dynamodb.{ DynamoDbAsyncClient, DynamoDbClient }
 
-import java.io.IOException
 import java.util.UUID
 import scala.concurrent.{ ExecutionContext, Future }
-import scala.jdk.CollectionConverters._
 import scala.util.{ Failure, Success }
 
 @ApiMayChange
@@ -59,8 +63,6 @@ final class DynamoDBDurableStateStoreV2[A](
 
   private val id: UUID = UUID.randomUUID()
 
-  import pluginContext._
-
   CoordinatedShutdown(system).addTask(
     CoordinatedShutdown.PhaseBeforeActorSystemTerminate,
     s"$Identifier-$id"
@@ -71,13 +73,20 @@ final class DynamoDBDurableStateStoreV2[A](
     }
   }
 
-  private val writeBackoffConfig: BackoffConfig = pluginConfig.writeBackoffConfig
-  private val readBackoffConfig: BackoffConfig  = pluginConfig.readBackoffConfig
+  private val adapter: DdbClientAdapter = {
+    val variant = ClientVariant.fromClientVersion(pluginConfig.clientConfig.clientVersion) match {
+      case Some(value) => value
+      case None =>
+        throw new IllegalArgumentException(s"unknown client version: ${pluginConfig.clientConfig.clientVersion}")
+    }
+    new V2ClientAdapter(variant, asyncClient, syncClient, pluginExecutor)
+  }
 
-  private val streamWriteClient: StreamWriteClient =
-    new StreamWriteClient(pluginContext, asyncClient, syncClient, writeBackoffConfig)
-  private val streamReadClient: StreamReadClient =
-    new StreamReadClient(pluginContext, asyncClient, syncClient, readBackoffConfig)
+  private val schema = StateSchema.fromColumns(pluginConfig.columnsDefConfig)
+  private val tableSpec =
+    StateTableSpec.fromConfig(schema, pluginConfig, tableNameResolver, partitionKeyResolver, sortKeyResolver)
+  private val codec = new StateRowCodec(schema, tableSpec)
+  private val store = new StateStore(adapter, codec, pluginConfig.consistentRead)
 
   private val serialization: Serialization = SerializationExtension(system)
   private val akkaSerialization            = new StateSerializer(serialization, metricsReporter, traceReporter)
@@ -88,65 +97,33 @@ final class DynamoDBDurableStateStoreV2[A](
     val newContext = metricsReporter.fold(context)(_.beforeStateStoreGetObject(context))
 
     def future = {
-      val tableName = tableNameResolver.resolve(pid)
-      val pkey      = partitionKeyResolver.resolve(pid)
-      val skey      = sortKeyResolver.resolve(pid)
-      val request = GetItemRequest
-        .builder().tableName(tableName.asString).key(
-          Map(
-            pluginConfig.columnsDefConfig.partitionKeyColumnName -> AttributeValue.builder().s(pkey.asString).build(),
-            pluginConfig.columnsDefConfig.sortKeyColumnName      -> AttributeValue.builder().s(skey.asString).build()
-          ).asJava
-        ).consistentRead(pluginConfig.consistentRead).build()
-      Source
-        .single(request).via(streamReadClient.getFlow).flatMapConcat { result =>
-          if (result.sdkHttpResponse().isSuccessful) {
-            Option(result.item)
-              .map(_.asScala)
-              .map { item =>
-                if (item.nonEmpty) {
-                  logger.debug(s"item = $item")
-                  val persistenceId: String = item(pluginConfig.columnsDefConfig.persistenceIdColumnName).s
-                  val serializerId: Int     = item(pluginConfig.columnsDefConfig.serializerIdColumnName).n.toInt
-                  val serializerManifest: Option[String] =
-                    item.get(pluginConfig.columnsDefConfig.serializerManifestColumnName).map(_.s)
-                  val payloadAsArrayByte: Array[Byte] =
-                    item(pluginConfig.columnsDefConfig.payloadColumnName).b.asByteArray()
-                  val revision: Long = item(pluginConfig.columnsDefConfig.revisionColumnName).n.toLong
-                  val tag            = item.get(pluginConfig.columnsDefConfig.tagsColumnName).map(_.s)
-                  val ordering       = item(pluginConfig.columnsDefConfig.orderingColumnName).n.toLong
-                  val akkaSerialized = AkkaSerialized(serializerId, serializerManifest, payloadAsArrayByte)
-                  val payloadFuture: Future[GetRawObjectResult[A]] =
-                    akkaSerialization
-                      .deserialize(persistenceId, akkaSerialized).map { payload =>
-                        GetRawObjectResult
-                          .Just(
-                            pkey.asString,
-                            skey.asString,
-                            persistenceId,
-                            payload.asInstanceOf[A],
-                            revision,
-                            serializerId,
-                            serializerManifest,
-                            tag,
-                            ordering
-                          )
-                      }
-                  Source.future(
-                    payloadFuture
+      val key  = tableSpec.keyOf(pid)
+      val pkey = text(key, schema.partitionKey)
+      val skey = text(key, schema.sortKey)
+      store
+        .get(pid).flatMapConcat {
+          case None => Source.single(GetRawObjectResult.Empty)
+          case Some(row) =>
+            Source.future(
+              akkaSerialization
+                .deserialize(
+                  row.persistenceId,
+                  AkkaSerialized(row.serializerId, row.serializerManifest, row.payload)
+                ).map { payload =>
+                  GetRawObjectResult.Just(
+                    pkey,
+                    skey,
+                    row.persistenceId,
+                    payload.asInstanceOf[A],
+                    row.revision,
+                    row.serializerId,
+                    row.serializerManifest,
+                    row.tag,
+                    row.ordering
                   )
-                } else {
-                  Source.single(GetRawObjectResult.Empty)
                 }
-              }.getOrElse {
-                Source.single(GetRawObjectResult.Empty)
-              }
-          } else {
-            val statusCode = result.sdkHttpResponse().statusCode()
-            Source.failed(new IOException(s"statusCode: $statusCode"))
-          }
-        }
-        .runWith(Sink.head)
+            )
+        }.runWith(Sink.head)
     }
 
     val traced = traceReporter.fold(future)(_.traceStateStoreGetObject(context)(future))
@@ -176,47 +153,20 @@ final class DynamoDBDurableStateStoreV2[A](
     val context    = Context.newContext(UUID.randomUUID(), pid)
     val newContext = metricsReporter.fold(context)(_.beforeStateStoreUpsertObject(context))
 
-    def future = {
-      val tableName = tableNameResolver.resolve(pid)
-      val pkey      = partitionKeyResolver.resolve(pid)
-      val skey      = sortKeyResolver.resolve(pid)
-      val request = akkaSerialization.serialize(persistenceId, value).map { serialized =>
-        PutItemRequest
-          .builder().tableName(tableName.asString).item(
-            (Map(
-              pluginConfig.columnsDefConfig.partitionKeyColumnName -> AttributeValue.builder().s(pkey.asString).build(),
-              pluginConfig.columnsDefConfig.sortKeyColumnName      -> AttributeValue.builder().s(skey.asString).build(),
-              pluginConfig.columnsDefConfig.persistenceIdColumnName -> AttributeValue
-                .builder().s(persistenceId).build(),
-              pluginConfig.columnsDefConfig.revisionColumnName -> AttributeValue
-                .builder().n((revision + 1).toString).build(),
-              pluginConfig.columnsDefConfig.payloadColumnName -> AttributeValue
-                .builder().b(SdkBytes.fromByteArray(serialized.payload)).build(),
-              pluginConfig.columnsDefConfig.serializerIdColumnName -> AttributeValue
-                .builder().n(serialized.serializerId.toString).build(),
-              pluginConfig.columnsDefConfig.orderingColumnName -> AttributeValue
-                .builder().n(System.currentTimeMillis().toString).build()
-            ) ++ (if (tag.isEmpty) Map.empty
-                  else
-                    Map(
-                      pluginConfig.columnsDefConfig.tagsColumnName -> AttributeValue.builder().s(tag).build()
-                    ))
-            ++ serialized.serializerManifest
-              .map(v =>
-                Map(pluginConfig.columnsDefConfig.serializerManifestColumnName -> AttributeValue.builder().s(v).build())
-              ).getOrElse(Map.empty)).asJava
-          ).build()
+    def future =
+      akkaSerialization.serialize(persistenceId, value).flatMap { serialized =>
+        val row = StateRow(
+          persistenceId = persistenceId,
+          // v2 stores the next revision. The v1 store keeps the given revision; D1 decides which one is correct.
+          revision = revision + 1,
+          payload = serialized.payload,
+          serializerId = serialized.serializerId,
+          serializerManifest = serialized.serializerManifest,
+          ordering = System.currentTimeMillis(),
+          tag = if (tag.isEmpty) None else Some(tag)
+        )
+        store.upsert(row).runWith(Sink.ignore).map(_ => Done)
       }
-      Source
-        .future(request).via(streamWriteClient.putItemFlow).flatMapConcat { response =>
-          if (response.sdkHttpResponse().isSuccessful) {
-            Source.single(Done)
-          } else {
-            val statusCode = response.sdkHttpResponse().statusCode()
-            Source.failed(new IOException(s"statusCode: $statusCode"))
-          }
-        }.runWith(Sink.head)
-    }
 
     val traced = traceReporter.fold(future)(_.traceStateStoreUpsertObject(context)(future))
 
@@ -237,27 +187,7 @@ final class DynamoDBDurableStateStoreV2[A](
     val context    = Context.newContext(UUID.randomUUID(), pid)
     val newContext = metricsReporter.fold(context)(_.beforeStateStoreDeleteObject(context))
 
-    def future = {
-      val tableName = tableNameResolver.resolve(pid)
-      val pkey      = partitionKeyResolver.resolve(pid)
-      val skey      = sortKeyResolver.resolve(pid)
-      val request = DeleteItemRequest
-        .builder().tableName(tableName.asString).key(
-          Map(
-            pluginConfig.columnsDefConfig.partitionKeyColumnName -> AttributeValue.builder().s(pkey.asString).build(),
-            pluginConfig.columnsDefConfig.sortKeyColumnName      -> AttributeValue.builder().s(skey.asString).build()
-          ).asJava
-        ).build()
-      Source
-        .single(request).via(streamWriteClient.deleteItemFlow).flatMapConcat { response =>
-          if (response.sdkHttpResponse().isSuccessful) {
-            Source.single(Done)
-          } else {
-            val statusCode = response.sdkHttpResponse().statusCode()
-            Source.failed(new IOException(s"statusCode: $statusCode"))
-          }
-        }.runWith(Sink.head)
-    }
+    def future = store.delete(pid).runWith(Sink.ignore).map(_ => Done)
 
     val traced = traceReporter.fold(future)(_.traceStateStoreDeleteObject(context)(future))
 
@@ -271,12 +201,9 @@ final class DynamoDBDurableStateStoreV2[A](
     traced
   }
 
-  private def dispose(): Unit = {
-    (asyncClient, syncClient) match {
-      case (Some(a), _) => a.close()
-      case (_, Some(s)) => s.close()
-      case _            =>
-    }
-  }
+  private def text(key: RowKey, name: AttributeName): String =
+    key.get(name).collect { case DdbValue.Str(value) => value }.getOrElse("")
+
+  private def dispose(): Unit = adapter.close()
 
 }
