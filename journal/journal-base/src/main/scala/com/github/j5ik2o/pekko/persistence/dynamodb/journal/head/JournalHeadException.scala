@@ -57,6 +57,21 @@ final class JournalHeadItemTooLargeException(val persistenceId: String, val item
       s"persistenceId=[$persistenceId]: the JournalHead item would be $itemSizeBytes bytes, which exceeds the limit of $limitBytes bytes"
     )
 
+/** A journal row of the write would be larger than the DynamoDB item size limit.
+  *
+  * A journal row carries the encoded event and its tags, so it can exceed the limit while the JournalHead item of the
+  * same write stays below it. The write is rejected before anything is sent, so the actor handles it with
+  * `onPersistRejected` instead of failing at DynamoDB and stopping.
+  */
+final class JournalHeadJournalRowTooLargeException(
+    val persistenceId: String,
+    val sequenceNr: Long,
+    val itemSizeBytes: Int,
+    val limitBytes: Int
+) extends JournalHeadWriteRejectedException(
+      s"persistenceId=[$persistenceId]: the journal row at sequence number $sequenceNr would be $itemSizeBytes bytes, which exceeds the limit of $limitBytes bytes"
+    )
+
 /** The transaction as a whole would be larger than the DynamoDB transaction size limit. */
 final class JournalHeadTransactionTooLargeException(
     val persistenceId: String,
@@ -95,6 +110,18 @@ final class JournalHeadSequenceMismatchException(
 ) extends JournalHeadException(
       s"persistenceId=[$persistenceId]: expected the JournalHead sequence number to be lower than the first sequence" +
       s" number of the write ($expectedPreviousSequenceNr) but it was $actualSequenceNr",
+      null
+    )
+
+/** An in-place event update is not supported while head mode is enabled.
+  *
+  * `asyncUpdateEvent` rewrites the `message` column of one journal row and does not touch the JournalHead item, so the
+  * head stream would keep the old event and the two tables would disagree. The update is refused instead of leaving the
+  * head stale. Updating the head in the same transaction is a future change.
+  */
+final class JournalHeadAsyncUpdateEventUnsupportedException(val persistenceId: String, val sequenceNr: Long)
+    extends JournalHeadException(
+      s"persistenceId=[$persistenceId]: asyncUpdateEvent at sequence number $sequenceNr is not supported when head.enabled is true, because the JournalHead item would keep the old event. Disable head.enabled for this journal or persist a new event.",
       null
     )
 

@@ -63,6 +63,8 @@ final class DynamoDBStateV1SyncSpec
         store.upsertObject(id, revision, data, tag).futureValue
         val result = store.getObject(id).futureValue
         result.value shouldBe Some(data)
+        // The revision the caller passed is the revision of the object, the same as the v2 store returns.
+        result.revision shouldBe revision
       }
       {
         val id       = UUID.randomUUID().toString

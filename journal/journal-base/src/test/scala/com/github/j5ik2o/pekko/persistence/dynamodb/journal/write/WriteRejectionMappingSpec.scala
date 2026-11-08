@@ -19,6 +19,7 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.journal.head.{
   JournalHeadException,
   JournalHeadInvalidWriteException,
   JournalHeadItemTooLargeException,
+  JournalHeadJournalRowTooLargeException,
   JournalHeadTooManyEventsException,
   JournalHeadTransactionTooLargeException
 }
@@ -42,6 +43,10 @@ final class WriteRejectionMappingSpec extends AnyWordSpec with Matchers {
     ),
     Mapping(WriteRejection.TooManyEvents("pid-1", 100, 99), classOf[JournalHeadTooManyEventsException]),
     Mapping(WriteRejection.HeadItemTooLarge("pid-1", 409601, 409600), classOf[JournalHeadItemTooLargeException]),
+    Mapping(
+      WriteRejection.JournalRowTooLarge("pid-1", 1L, 409601, 409600),
+      classOf[JournalHeadJournalRowTooLargeException]
+    ),
     Mapping(
       WriteRejection.TransactionTooLarge("pid-1", 4194305L, 4194304L),
       classOf[JournalHeadTransactionTooLargeException]
@@ -88,6 +93,14 @@ final class WriteRejectionMappingSpec extends AnyWordSpec with Matchers {
       exception shouldBe a[JournalHeadItemTooLargeException]
       exception.asInstanceOf[JournalHeadItemTooLargeException].itemSizeBytes shouldBe 409601
       exception.asInstanceOf[JournalHeadItemTooLargeException].limitBytes shouldBe 409600
+    }
+
+    "map a journal-row size rejection to the exception that carries the sequence number and both sizes" in {
+      val exception = WriteRejection.JournalRowTooLarge("pid-1", 2L, 409601, 409600).toJournalHeadException
+      exception shouldBe a[JournalHeadJournalRowTooLargeException]
+      exception.asInstanceOf[JournalHeadJournalRowTooLargeException].sequenceNr shouldBe 2L
+      exception.asInstanceOf[JournalHeadJournalRowTooLargeException].itemSizeBytes shouldBe 409601
+      exception.asInstanceOf[JournalHeadJournalRowTooLargeException].limitBytes shouldBe 409600
     }
 
     "map an event-count rejection to the exception that carries the count and the limit" in {

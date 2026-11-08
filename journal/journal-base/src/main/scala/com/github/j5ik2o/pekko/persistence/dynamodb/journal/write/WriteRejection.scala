@@ -19,6 +19,7 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.journal.head.{
   JournalHeadException,
   JournalHeadInvalidWriteException,
   JournalHeadItemTooLargeException,
+  JournalHeadJournalRowTooLargeException,
   JournalHeadTooManyEventsException,
   JournalHeadTransactionTooLargeException
 }
@@ -98,6 +99,23 @@ object WriteRejection {
 
     override def toJournalHeadException: JournalHeadException =
       new JournalHeadItemTooLargeException(persistenceId, itemSizeBytes, limitBytes)
+
+  }
+
+  /** One journal row of the write is larger than the DynamoDB item size limit.
+    *
+    * A journal row carries the encoded event and its tags, so it can exceed the limit while the JournalHead item of the
+    * same write stays below it.
+    */
+  final case class JournalRowTooLarge(
+      persistenceId: String,
+      sequenceNr: Long,
+      itemSizeBytes: Int,
+      limitBytes: Int
+  ) extends WriteRejection {
+
+    override def toJournalHeadException: JournalHeadException =
+      new JournalHeadJournalRowTooLargeException(persistenceId, sequenceNr, itemSizeBytes, limitBytes)
 
   }
 
