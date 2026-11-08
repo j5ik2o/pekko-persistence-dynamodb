@@ -54,6 +54,22 @@ private[dynamodb] object OperationConformanceCases {
     )
   )
 
+  val transaction: Operation.TransactWrite = Operation.TransactWrite(
+    Vector(
+      TransactItem.Put(
+        table,
+        AttributeMap.of(AttributeName("pkey") -> DdbValue.Str("p"), AttributeName("skey") -> DdbValue.Str("s")),
+        Some(Condition.AttributeNotExists(AttributeName("pkey")))
+      ),
+      TransactItem.Delete(table, rowKey, Some(Condition.AttributeExists(AttributeName("pkey")))),
+      TransactItem.Update(
+        table,
+        rowKey,
+        Vector(AttributeUpdate.Set(AttributeName("tags"), DdbValue.Str("t")))
+      )
+    )
+  )
+
   val operations: Vector[(String, Operation)] = Vector(
     "put with condition" -> Operation.Put(
       table,
@@ -112,20 +128,6 @@ private[dynamodb] object OperationConformanceCases {
       ),
       deletes = Vector(rowKey)
     ),
-    "transact write" -> Operation.TransactWrite(
-      Vector(
-        TransactItem.Put(
-          table,
-          AttributeMap.of(AttributeName("pkey") -> DdbValue.Str("p"), AttributeName("skey") -> DdbValue.Str("s")),
-          Some(Condition.AttributeNotExists(AttributeName("pkey")))
-        ),
-        TransactItem.Delete(table, rowKey, Some(Condition.AttributeExists(AttributeName("pkey")))),
-        TransactItem.Update(
-          table,
-          rowKey,
-          Vector(AttributeUpdate.Set(AttributeName("tags"), DdbValue.Str("t")))
-        )
-      )
-    )
+    "transact write" -> transaction
   )
 }

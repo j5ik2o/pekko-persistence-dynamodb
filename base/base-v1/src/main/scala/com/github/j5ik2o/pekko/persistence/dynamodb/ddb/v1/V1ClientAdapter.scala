@@ -18,6 +18,7 @@ package com.github.j5ik2o.pekko.persistence.dynamodb.ddb.v1
 import com.amazonaws.services.dynamodbv2.model.{ ConditionalCheckFailedException, TransactionCanceledException }
 import com.amazonaws.services.dynamodbv2.{ AmazonDynamoDB, AmazonDynamoDBAsync }
 import com.github.j5ik2o.pekko.persistence.dynamodb.ddb._
+import com.github.j5ik2o.pekko.persistence.dynamodb.ddb.internal.OperationCapabilities
 import com.github.j5ik2o.pekko.persistence.dynamodb.utils.CompletableFutureUtils._
 import org.apache.pekko.NotUsed
 import org.apache.pekko.stream.scaladsl.Source
@@ -50,7 +51,9 @@ final class V1ClientAdapter(
   override def capabilities: CapabilityProfile = variant.capabilities
 
   override def run(operation: Operation): Source[OperationResult, NotUsed] =
-    V1OperationRenderer.render(operation) match {
+    OperationCapabilities
+      .validate(capabilities, operation)
+      .flatMap(_ => V1OperationRenderer.render(operation)) match {
       case Left(error)     => Source.failed(new IllegalArgumentException(error.detail))
       case Right(rendered) => Source.future(execute(rendered))
     }
