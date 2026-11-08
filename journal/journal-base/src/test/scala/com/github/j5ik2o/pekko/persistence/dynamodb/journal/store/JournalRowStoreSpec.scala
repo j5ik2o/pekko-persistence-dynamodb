@@ -19,7 +19,16 @@ import org.apache.pekko.NotUsed
 import org.apache.pekko.actor.ActorSystem
 import org.apache.pekko.stream.{ Materializer, SystemMaterializer }
 import org.apache.pekko.stream.scaladsl.{ Sink, Source }
-import com.github.j5ik2o.pekko.persistence.dynamodb.ddb.{ AttributeMap, AttributeName, DdbValue, TableName }
+import com.github.j5ik2o.pekko.persistence.dynamodb.ddb.{
+  AttributeMap,
+  AttributeName,
+  CapabilityProfile,
+  DdbClientAdapter,
+  DdbValue,
+  Operation,
+  OperationResult,
+  TableName
+}
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.config.{ JournalHeadColumnsDefConfig, JournalHeadConfig }
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.dao.PersistenceIdWithSeqNr
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.schema.JournalTestSupport
@@ -42,6 +51,26 @@ final class JournalRowStoreSpec extends AnyFreeSpec with Matchers with BeforeAnd
   private val persistenceId = PersistenceId("account-1")
 
   private final case class Fixture(adapter: InMemoryDdbAdapter, store: JournalRowStore)
+
+  /** Fails the first `failures` batch writes with the error the adapter raises for unprocessed items, then delegates.
+    */
+  private final class FlakyBatchAdapter(delegate: InMemoryDdbAdapter, failures: Int) extends DdbClientAdapter {
+    private var remaining: Int = failures
+
+    override val capabilities: CapabilityProfile = delegate.capabilities
+
+    override def run(operation: Operation): Source[OperationResult, NotUsed] = operation match {
+      case _: Operation.BatchWrite if remaining > 0 =>
+        remaining -= 1
+        Source.failed(new IllegalStateException("BatchWriteItem left 1 unprocessed items"))
+      case _ =>
+        delegate.run(operation)
+    }
+
+    override def queryAll(query: Operation.Query): Source[AttributeMap, NotUsed] = delegate.queryAll(query)
+
+    override def close(): Unit = delegate.close()
+  }
 
   private def newFixture(
       queryBatchSize: Int = 2,
@@ -177,6 +206,27 @@ final class JournalRowStoreSpec extends AnyFreeSpec with Matchers with BeforeAnd
     decoded.ordering shouldBe 9L
     decoded.deleted shouldBe true
     decoded.tags shouldBe Some("tag")
+  }
+
+  "retry an unprocessed batch until the adapter accepts it" in {
+    val fixture = newFixture()
+    val store = new JournalRowStore(
+      schema = schema,
+      partitionKeyResolver = new ShardedPartitionKeyResolver(4),
+      sortKeyResolver = sortKeyResolver,
+      adapter = new FlakyBatchAdapter(fixture.adapter, failures = 2),
+      queryBatchSize = 2,
+      consistentRead = false,
+      batchWriteLimit = 25,
+      readBackoffConfig = disabledBackoff,
+      writeBackoffConfig = disabledBackoff,
+      headConfig = None
+    )
+    val rows = (1L to 3L).map(sequenceNr => JournalTestSupport.row(persistenceId, sequenceNr, s"e$sequenceNr"))
+
+    run(store.write(rows)) shouldBe Vector(3L)
+    run(store.read(persistenceId, None, SequenceNumber(3), None, None))
+      .map(_.sequenceNumber.value) shouldBe Vector(1L, 2L, 3L)
   }
 
   "reject two rows that resolve to the same key" in {
