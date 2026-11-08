@@ -47,8 +47,6 @@ final class JournalRowStore(
   val rowCodec: JournalRowCodec = new JournalRowCodec(schema)
   val keyCodec: JournalKeyCodec = new JournalKeyCodec(schema)
 
-  private val maxBatchAttempts: Int = 3
-
   private val headTable: Option[HeadTable] = headConfig.filter(_.enabled).map { head =>
     val columns  = head.columnsDefConfig
     val idColumn = AttributeName(columns.persistenceIdColumnName)
@@ -265,22 +263,18 @@ final class JournalRowStore(
     }
 
   /** DynamoDB can leave a batch write partly unprocessed. The adapter reports that as a failed stream, so retry the
-    * whole batch, which is idempotent. When the write backoff is enabled it already retries; this immediate retry keeps
-    * the unprocessed-items behavior with the default configuration.
+    * whole batch, which is idempotent. The retry runs until DynamoDB accepts the batch, as the previous batch flow did;
+    * a batch has transient unprocessed items rather than a permanent rejection.
     */
   private def runBatch(operation: Operation.BatchWrite): Source[OperationResult, NotUsed] = {
-    if (writeBackoffConfig.enabled) {
-      run(operation, writeBackoffConfig)
-    } else {
-      def attempt(remaining: Int): Source[OperationResult, NotUsed] =
-        run(operation, writeBackoffConfig).recoverWithRetries(
-          if (remaining > 0) 1 else 0,
-          {
-            case _: IllegalStateException if remaining > 0 => attempt(remaining - 1)
-          }
-        )
-      attempt(maxBatchAttempts)
-    }
+    def attempt: Source[OperationResult, NotUsed] =
+      run(operation, writeBackoffConfig).recoverWithRetries(
+        1,
+        { case _: IllegalStateException =>
+          attempt
+        }
+      )
+    attempt
   }
 
   private def run(operation: Operation, backoffConfig: BackoffConfig): Source[OperationResult, NotUsed] = {
