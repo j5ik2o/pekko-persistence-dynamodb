@@ -94,7 +94,9 @@ final class V2ClientAdapter(
           val values = Option(response.items())
             .map(_.asScala.toVector.map(V2AttributeValues.fromItem))
             .getOrElse(Vector.empty)
-          OperationResult.Items(values, Option(response.lastEvaluatedKey()).map(V2AttributeValues.fromItem))
+          val lastEvaluatedKey =
+            Option(response.lastEvaluatedKey()).filter(_.asScala.nonEmpty).map(V2AttributeValues.fromItem)
+          OperationResult.Items(values, lastEvaluatedKey)
         }
 
     case V2RenderedOperation.BatchWrite(request) =>

@@ -3,7 +3,6 @@ package com.github.j5ik2o.pekko.persistence.dynamodb.schemacheck
 import java.nio.charset.StandardCharsets
 import java.nio.file.{ Files, Paths }
 
-/** Writes the public declaration surface of the published modules to a baseline file. */
 object ApiBaseline {
   def main(args: Array[String]): Unit = {
     val root = Paths.get(if (args.nonEmpty) args(0) else ".").toAbsolutePath.normalize()
