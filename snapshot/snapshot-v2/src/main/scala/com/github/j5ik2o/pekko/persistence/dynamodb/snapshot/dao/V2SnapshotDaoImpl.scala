@@ -35,7 +35,11 @@ import software.amazon.awssdk.services.dynamodb.{ DynamoDbAsyncClient, DynamoDbC
 
 import scala.concurrent.{ ExecutionContext, Future }
 
-private[dao] abstract class V2SnapshotDaoBase(
+@deprecated(
+  "Use com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.store.SnapshotStore; this DAO delegates to it.",
+  since = "1.2.0"
+)
+private[dao] final class V2SnapshotDaoImpl(
     pluginContext: SnapshotPluginContext,
     asyncClient: Option[DynamoDbAsyncClient],
     syncClient: Option[DynamoDbClient],
@@ -129,10 +133,3 @@ private[dao] abstract class V2SnapshotDaoBase(
       case None      => Future.successful(None)
     }
 }
-
-private[dao] final class V2NewSnapshotDaoImpl(
-    pluginContext: SnapshotPluginContext,
-    asyncClient: Option[DynamoDbAsyncClient],
-    syncClient: Option[DynamoDbClient],
-    serialization: Serialization
-) extends V2SnapshotDaoBase(pluginContext, asyncClient, syncClient, serialization)

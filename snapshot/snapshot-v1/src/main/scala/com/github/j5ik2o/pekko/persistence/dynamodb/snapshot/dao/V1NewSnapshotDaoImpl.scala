@@ -34,6 +34,10 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.store.SnapshotStore
 
 import scala.concurrent.{ ExecutionContext, Future }
 
+@deprecated(
+  "Use com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.store.SnapshotStore; this DAO delegates to it.",
+  since = "1.2.0"
+)
 private[dao] final class V1SnapshotDaoDelegate(
     pluginContext: SnapshotPluginContext,
     asyncClient: Option[AmazonDynamoDBAsync],
@@ -140,6 +144,10 @@ private[dao] final class V1SnapshotDaoDelegate(
     }
 }
 
+@deprecated(
+  "Use com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.store.SnapshotStore; this DAO delegates to it.",
+  since = "1.2.0"
+)
 final class V1NewSnapshotDaoImpl(
     pluginContext: SnapshotPluginContext,
     asyncClient: Option[AmazonDynamoDBAsync],

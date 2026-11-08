@@ -58,8 +58,7 @@ metrics/metrics-v2/src/main/scala/com/github/j5ik2o/akka/persistence/dynamodb/me
 metrics/metrics-v2/src/main/scala/com/github/j5ik2o/akka/persistence/dynamodb/metrics/AwsSDKMetricPublishersProvider.scala
 snapshot/snapshot-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/snapshot/dao/V1LegacySnapshotDaoImpl.scala
 snapshot/snapshot-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/snapshot/dao/V1NewSnapshotDaoImpl.scala
-snapshot/snapshot-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/snapshot/dao/V2LegacySnapshotDaoImpl.scala
-snapshot/snapshot-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/snapshot/dao/V2NewSnapshotDaoImpl.scala
+snapshot/snapshot-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/snapshot/dao/V2SnapshotDaoImpl.scala
 state/state-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/state/scaladsl/DynamoDBDurableStateStoreV1.scala
 state/state-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/state/scaladsl/DynamoDBDurableStateStoreV2.scala
 test/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/DynamoDBContainerHelper.scala

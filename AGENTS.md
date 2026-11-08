@@ -11,24 +11,26 @@ Every module is an sbt project in `build.sbt`. The `Depends on` column lists the
 | Module | Directory | It owns | Depends on |
 |:--|:--|:--|:--|
 | `test` | `test/` | The DynamoDB Local controller, table creation, and `ConfigHelper` for tests | none |
-| `schema-check` | `schema-check/` | Repository checks that read files instead of running the product code | none |
+| `schema-check` | `schema-check/` | Repository checks that read files instead of running the product code | `base`; `journal-base`, `snapshot-base`, and `state-base` (test only) |
 | `base` | `base/base/` | Configuration parsing, the model wrappers, metrics and trace interfaces, and the client-neutral `PluginContext` | `test` (test only) |
 | `base-v1` | `base/base-v1/` | AWS SDK v1 client builders and client factories, including DAX | `base` |
 | `base-v2` | `base/base-v2/` | AWS SDK v2 client builders and client factories, including DAX | `base` |
-| `journal-base` | `journal/journal-base/` | The journal plugin, its config, DAO, serializer, and the JournalHead types and validation | `base` |
-| `journal-v1` | `journal/journal-v1/` | The v1 journal row read and write drivers and their factories | `journal-base`, `base-v1`, `snapshot-base` (test only) |
-| `journal-v2` | `journal/journal-v2/` | The v2 journal row read and write drivers, their factories, and the JournalHead migration tool | `journal-base`, `base-v2`, `snapshot-base` and `snapshot-v2` (test only) |
-| `snapshot-base` | `snapshot/snapshot-base/` | The snapshot store, its config, and its key resolvers | `base` |
-| `snapshot-v1` | `snapshot/snapshot-v1/` | The v1 snapshot DAO and factory | `snapshot-base`, `base-v1` |
-| `snapshot-v2` | `snapshot/snapshot-v2/` | The v2 snapshot DAO and factory | `snapshot-base`, `base-v2` |
-| `state-base` | `state/state-base/` | The durable state store, its config, and its key resolvers | `base` |
-| `state-v1` | `state/state-v1/` | The v1 durable state store and factory | `state-base`, `base-v1` |
-| `state-v2` | `state/state-v2/` | The v2 durable state store and factory | `state-base`, `base-v2` |
+| `journal-base` | `journal/journal-base/` | The journal plugin, its config, the shared `JournalRowStore`, the row codec and schema, the serializer, and the JournalHead types and validation | `base` |
+| `journal-v1` | `journal/journal-v1/` | The v1 binding: the deprecated journal row drivers and their factories | `journal-base`, `base-v1`, `snapshot-base` (test only) |
+| `journal-v2` | `journal/journal-v2/` | The v2 binding: the deprecated journal row drivers and their factories, and the JournalHead migration tool | `journal-base`, `base-v2`, `snapshot-base` and `snapshot-v2` (test only) |
+| `snapshot-base` | `snapshot/snapshot-base/` | The shared `SnapshotStore`, the row codec and schema, the config, and the key resolvers | `base` |
+| `snapshot-v1` | `snapshot/snapshot-v1/` | The v1 binding: the deprecated snapshot DAO and factory | `snapshot-base`, `base-v1` |
+| `snapshot-v2` | `snapshot/snapshot-v2/` | The v2 binding: the deprecated snapshot DAO and factory | `snapshot-base`, `base-v2` |
+| `state-base` | `state/state-base/` | The shared `StateStore`, the row codec and schema, the config, and the key resolvers | `base` |
+| `state-v1` | `state/state-v1/` | The v1 binding: the deprecated durable state store and factory | `state-base`, `base-v1` |
+| `state-v2` | `state/state-v2/` | The v2 binding: the deprecated durable state store and factory | `state-base`, `base-v2` |
 | `benchmark` | `benchmark/` | JMH benchmarks; not published | `test`, the journal and snapshot modules |
 | `example` | `example/` | Usage examples; not published | `test`, the journal, snapshot, and state modules |
 | `root` | `.` | Aggregates every module so that `sbt test` covers all of them | all modules |
 
 The AWS SDK is confined to `base-v1`, `base-v2`, and the allowlisted files in `project/module-boundaries.allowlist`. The core modules use the neutral types in `base`, `journal-base`, `snapshot-base`, and `state-base`.
+
+The v1, v2, and DAX modules are bindings. They build the SDK client, choose the client adapter, and instantiate a deprecated facade that delegates to the shared store. `JournalRowStore`, `SnapshotStore`, and `StateStore` own the row encoding, the key derivation, and the DynamoDB operations, so new code uses them instead of the deprecated drivers and DAOs.
 
 ## Add a column
 
@@ -36,30 +38,29 @@ The column names of each plugin live in one config value. Add the column to that
 
 1. Edit the `columns-def` value of the plugin. Journal uses `journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/config/JournalColumnsDefConfig.scala`. Snapshot uses `snapshot/snapshot-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/snapshot/config/SnapshotColumnsDefConfig.scala`. State uses `state/state-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/state/config/StateColumnsDefConfig.scala`. Add the key constant, the case class field, and the `fromConfig` read.
 2. Add the key with its default value to the `columns-def` block of the module's `src/main/resources/reference.conf`.
-3. Write the attribute in both client versions. Journal writes in `journal/journal-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/dao/v1/V1JournalRowWriteDriver.scala` and `journal/journal-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/dao/v2/V2JournalRowWriteDriver.scala`. Snapshot writes in `snapshot/snapshot-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/snapshot/dao/V1LegacySnapshotDaoImpl.scala`, `V1NewSnapshotDaoImpl.scala`, and the v2 equivalents. State writes in `state/state-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/state/scaladsl/DynamoDBDurableStateStoreV1.scala` and the v2 equivalent.
-4. Read the attribute in the same two client versions, or in the shared row type when the read path is neutral.
-5. Add the attribute definition and key schema to `tools/dynamodb-setup/journal-table.json`, `snapshot-table.json`, or `state-table.json`. Update `tools/dynamodb-setup/legacy-journal-table.json` or `legacy-snapshot-table.json` only when the legacy table keeps the column.
-6. Add the attribute to `test/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/DynamoDBContainerHelper.scala`. The test tables are built by hand, so a missing column fails at runtime, not at compile time.
-7. Add the attribute to `journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/head/DynamoDBItemSizeCalculator.scala` when the column is part of the JournalHead write path. The head rejects a write that would exceed the item size, so an uncounted column rejects too late.
-8. Update `docs/src/sphinx/customize.md` for the column name and `docs/src/sphinx/table-format.md` for a key or index change.
-9. Run `sbt -batch "schema-check/test"`. `SchemaDriftSpec` compares `reference.conf`, the table JSON, the docs, and `DynamoDBContainerHelper`, and fails on a name that appears in one place only.
-10. Run the tests of the family you changed. Journal, snapshot, and state each have v1 and v2 suites under their module's `src/test`.
+3. Add the column to the plugin's schema value. Journal uses `journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/schema/JournalSchema.scala`, snapshot uses `snapshot/snapshot-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/snapshot/schema/SnapshotSchema.scala`, and state uses `state/state-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/state/schema/StateSchema.scala`. The row and its key then come from the same definition.
+4. Write and read the attribute in the shared row codec: `journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/schema/JournalRowCodec.scala`, `snapshot/snapshot-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/snapshot/schema/SnapshotRowCodec.scala`, or `state/state-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/state/schema/StateRowCodec.scala`. The v1 and v2 drivers and DAOs delegate to the shared stores, so there is one write path per plugin. Do not add the column to the deprecated classes.
+5. Do not edit the generated table JSON or fixture by hand. `tools/dynamodb-setup/*.json` and `test/src/main/resources/dynamodb-local-fixture.json` are rendered from the table specs. After changing the schema value or `columns-def`, regenerate them with `TABLE_SPEC_WRITE=1 sbt -batch "schema-check/testOnly *TableSpecArtifactSpec"`. The legacy table JSON files stay checked in.
+6. Add the attribute to `journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/head/DynamoDBItemSizeCalculator.scala` when the column is part of the JournalHead write path. The head rejects a write that would exceed the item size, so an uncounted column rejects too late.
+7. Update `docs/src/sphinx/customize.md` for the column name and `docs/src/sphinx/table-format.md` for a key or index change.
+8. Run `sbt -batch "schema-check/test"`. `SchemaDriftSpec` compares `reference.conf`, the table JSON, and the docs, and fails on a name that appears in one place only. `TableSpecArtifactSpec` fails when a generated table JSON or the fixture differs from the rendered specs.
+9. Run the tests of the family you changed. Journal, snapshot, and state each have v1 and v2 suites under their module's `src/test`.
 
 To find every code site that handles an existing column, search for `tagsColumnName`. To find the config and docs sites, search for `tags-column-name`.
 
 ## Change a write condition
 
-A write condition decides whether DynamoDB accepts a journal write. The v2 driver holds the conditions of the JournalHead path. The v1 driver has no condition expression on its put or batch put. The shared validation lives in `JournalHeadWriteRequest.of`, which returns `Either[JournalHeadException, JournalHeadWriteRequest]` and never throws for a rejected write.
+A write condition decides whether DynamoDB accepts a journal write. The v2 driver holds the DynamoDB condition expressions of the JournalHead path. The v1 driver has no condition expression on its put or batch put. The shared validation lives in `JournalWritePlan.plan`, which returns a `WriteRejection` value and never throws for a rejected write. `JournalHeadWriteRequest.of` is the compatibility adapter that maps a rejection to the public `JournalHeadException` family.
 
-1. Decide where the check belongs. A validation that both client versions must share goes into `JournalHeadWriteRequest.of` in `journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/head/JournalHeadRow.scala`, because it runs before either driver sends anything. A DynamoDB condition expression goes into the driver for the client version that needs it. The v1 driver sets no condition expression today.
-2. Edit the v2 condition in `createTransactWriteItemsRequest` in `journal/journal-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/dao/v2/V2JournalRowWriteDriver.scala`. The journal row condition is `attribute_not_exists(#pkey) AND attribute_not_exists(#skey)`. The head condition is `(attribute_not_exists(#seq) AND :first = :one) OR (#seq < :first)`.
+1. Decide where the check belongs. A validation that both client versions must share goes into `JournalWritePlan.plan` in `journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/write/JournalWritePlan.scala`, because it runs before either driver sends anything. Add a case to the sealed `WriteRejection` family in `journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/write/WriteRejection.scala`, and map it to a `JournalHeadException` there. A DynamoDB condition expression goes into the driver for the client version that needs it. The v1 driver sets no condition expression today.
+2. Edit the v2 condition in `createTransactWriteItemsRequest` in `journal/journal-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/dao/v2/V2JournalRowWriteDriver.scala`. That class is a deprecated facade, but the JournalHead transaction still lives there. The journal row condition is `attribute_not_exists(#pkey) AND attribute_not_exists(#skey)`. The head condition is `(attribute_not_exists(#seq) AND :first = :one) OR (#seq < :first)`.
 3. Edit the v1 path in `journal/journal-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/dao/v1/V1JournalRowWriteDriver.scala` when the condition applies to v1. `PutItemRequest` accepts a condition expression. `BatchWriteItem` does not, so a condition on the batch path needs a different call.
 4. Map a cancelled transaction to the existing family in `classifyTransactionCancellation`. Do not add a bare `RuntimeException`, because callers and operators tell the failures apart by the subclass.
 5. Add a case to `journal/journal-v2/src/test/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/JournalHeadSpec.scala` that fails before the change and passes after.
 6. Run `sbt -batch "journal-v2/testOnly *JournalHeadSpec"`. It starts DynamoDB Local, so start Docker first.
 7. Run `sbt -batch lint`.
 
-Do not validate inside a stream stage. A `throw` inside a `Flow` aborts the stream and every later write on that queue fails. Return the rejection from `JournalHeadWriteRequest.of`, and let `WriteJournalDaoImpl` and `DynamoDBJournal` turn it into a `Failure` that reaches `onPersistRejected`.
+Do not validate inside a stream stage. A `throw` inside a `Flow` aborts the stream and every later write on that queue fails. Return the rejection as a `WriteRejection` value from `JournalWritePlan.plan`, and let `WriteJournalDaoImpl` and `DynamoDBJournal` turn it into a `Failure` that reaches `onPersistRejected`.
 
 ## Add a client variant
 
@@ -149,7 +150,8 @@ Each row names a mistake that was made more than once, the rule that prevents it
 | Repeated mistake | Rule | Enforcement |
 |:--|:--|:--|
 | A factory class named in `reference.conf` or in a default does not exist, so startup fails on the client version that uses it. | Name every configurable factory by its fully qualified class name, and keep a class, object, or trait at that name. | test `schema-check/src/test/scala/com/github/j5ik2o/pekko/persistence/dynamodb/schemacheck/FactoryClassReferenceSpec.scala` |
-| A column or index name differs between `reference.conf`, the table JSON, the docs, and the test fixture. | Define each name once in the module's `columns-def` config, and use the same spelling in all four places. | test `schema-check/src/test/scala/com/github/j5ik2o/pekko/persistence/dynamodb/schemacheck/SchemaDriftSpec.scala` |
+| A column or index name differs between `reference.conf`, the table JSON, and the docs. | Define each name once in the module's `columns-def` config or schema value, and derive the table JSON and the fixture from it. | test `schema-check/src/test/scala/com/github/j5ik2o/pekko/persistence/dynamodb/schemacheck/SchemaDriftSpec.scala` |
+| The table JSON or the DynamoDB Local fixture is edited by hand, so it drifts from the table spec. | Regenerate the checked-in artifacts from the table specs instead of editing them. | test `schema-check/src/test/scala/com/github/j5ik2o/pekko/persistence/dynamodb/schemacheck/TableSpecArtifactSpec.scala` |
 | A new file imports an AWS SDK and couples the core to one client version. | Only allowlisted files import `com.amazonaws`, `software.amazon.awssdk`, or `software.amazon.dax`. The list only shrinks. | check `project/ModuleBoundaryPlugin.scala` |
 | A fixed problem stays in an allowlist and hides the next occurrence. | An allowlist entry must reproduce. Remove the entry when the problem is fixed. | check `schema-check/src/test/scala/com/github/j5ik2o/pekko/persistence/dynamodb/schemacheck/Allowlist.scala` |
 | A rejected JournalHead write is thrown from a stream stage, so the write queue stops. | Return the rejection as a `JournalHeadException` value, and let `onPersistRejected` handle it. | test `journal/journal-v2/src/test/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/JournalHeadSpec.scala` |

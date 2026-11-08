@@ -23,6 +23,10 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.utils.{ V2DaxAsyncClientFact
 import scala.collection.immutable
 import scala.util.{ Failure, Success }
 
+@deprecated(
+  "Use com.github.j5ik2o.pekko.persistence.dynamodb.state.store.StateStore; this factory is a compatibility binding.",
+  since = "1.2.0"
+)
 final class V2DaxScalaDurableStateUpdateStoreFactory(pluginContext: StatePluginContext)
     extends ScalaDurableStateUpdateStoreFactory {
   override def create[A]: ScalaDurableStateUpdateStore[A] = {
