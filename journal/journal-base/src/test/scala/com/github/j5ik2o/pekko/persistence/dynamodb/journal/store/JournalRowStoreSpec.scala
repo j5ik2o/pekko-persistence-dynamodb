@@ -31,6 +31,7 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.ddb.{
 }
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.config.{ JournalHeadColumnsDefConfig, JournalHeadConfig }
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.dao.PersistenceIdWithSeqNr
+import com.github.j5ik2o.pekko.persistence.dynamodb.journal.head.JournalHeadInvalidWriteException
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.schema.JournalTestSupport
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.{ PartitionKey, PartitionKeyResolver }
 import com.github.j5ik2o.pekko.persistence.dynamodb.model.{ PersistenceId, SequenceNumber }
@@ -252,7 +253,8 @@ final class JournalRowStoreSpec extends AnyFreeSpec with Matchers with BeforeAnd
       JournalTestSupport.row(PersistenceId("account-b"), 1L, "e2")
     )
 
-    an[IllegalArgumentException] should be thrownBy store.write(rows)
+    val failure = Await.result(store.write(rows).runWith(Sink.head).failed, 30.seconds)
+    failure shouldBe a[JournalHeadInvalidWriteException]
   }
 
   "headSequenceNr reads the last sequence number from the JournalHead item" in {

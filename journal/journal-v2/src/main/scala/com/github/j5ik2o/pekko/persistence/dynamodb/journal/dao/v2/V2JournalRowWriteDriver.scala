@@ -26,6 +26,7 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.journal._
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.dao.{ JournalRowWriteDriver, PersistenceIdWithSeqNr }
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.head._
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.store.JournalRowStore
+import com.github.j5ik2o.pekko.persistence.dynamodb.journal.write.WriteRejection
 import com.github.j5ik2o.pekko.persistence.dynamodb.model.{ PersistenceId, SequenceNumber }
 import software.amazon.awssdk.services.dynamodb.model.{ TransactWriteItemsRequest, TransactionCanceledException }
 import software.amazon.awssdk.services.dynamodb.{
@@ -121,28 +122,35 @@ final class V2JournalRowWriteDriver(
   override def putJournalRowsWithHeadFlow: Flow[JournalHeadWriteRequest, Long, NotUsed] =
     Flow[JournalHeadWriteRequest]
       .flatMapConcat { request =>
-        Source
-          .single(createTransactWriteItemsRequest(request))
-          .via(streamClient.transactWriteItemsFlow)
-          .flatMapConcat { response =>
-            if (response.sdkHttpResponse().isSuccessful) {
-              Source.single(request.rows.size.toLong)
-            } else {
-              val statusCode = response.sdkHttpResponse().statusCode()
-              val statusText = response.sdkHttpResponse().statusText()
-              Source.failed(new IOException(s"statusCode: $statusCode" + statusText.asScala.fold("")(s => s", $s")))
-            }
-          }.recoverWithRetries(
-            1,
-            {
-              case ex if findTransactionCanceledException(ex).isDefined =>
-                val canceled = findTransactionCanceledException(ex).get
-                Source.future(classifyTransactionCancellation(request, canceled)).flatMapConcat {
-                  case Some(journalHeadException) => Source.failed(journalHeadException)
-                  case None                       => Source.failed(ex)
+        // A failure to build the transaction is a rejected write, not a thrown exception: a throw here runs inside a
+        // stream stage and aborts every later write on the queue.
+        createTransactWriteItemsRequest(request) match {
+          case Left(rejection) =>
+            Source.failed(rejection.toJournalHeadException)
+          case Right(transactWriteItemsRequest) =>
+            Source
+              .single(transactWriteItemsRequest)
+              .via(streamClient.transactWriteItemsFlow)
+              .flatMapConcat { response =>
+                if (response.sdkHttpResponse().isSuccessful) {
+                  Source.single(request.rows.size.toLong)
+                } else {
+                  val statusCode = response.sdkHttpResponse().statusCode()
+                  val statusText = response.sdkHttpResponse().statusText()
+                  Source.failed(new IOException(s"statusCode: $statusCode" + statusText.asScala.fold("")(s => s", $s")))
                 }
-            }
-          )
+              }.recoverWithRetries(
+                1,
+                {
+                  case ex if findTransactionCanceledException(ex).isDefined =>
+                    val canceled = findTransactionCanceledException(ex).get
+                    Source.future(classifyTransactionCancellation(request, canceled)).flatMapConcat {
+                      case Some(journalHeadException) => Source.failed(journalHeadException)
+                      case None                       => Source.failed(ex)
+                    }
+                }
+              )
+        }
       }.withAttributes(logLevels)
 
   /** The async client fails the future with the SDK exception, sometimes wrapped in another exception. */
@@ -154,78 +162,93 @@ final class V2JournalRowWriteDriver(
       case _                                            => None
     }
 
-  private def createTransactWriteItemsRequest(request: JournalHeadWriteRequest): TransactWriteItemsRequest = {
-    val headConfig  = pluginConfig.headConfig
-    val headColumns = headConfig.columnsDefConfig
-    val journalWrites = request.rows.map { row =>
-      TransactItem.Put(
-        store.schema.table,
-        store.rowCodec.encode(row, keyOf(row)),
+  private def createTransactWriteItemsRequest(
+      request: JournalHeadWriteRequest
+  ): Either[WriteRejection, TransactWriteItemsRequest] = {
+    val headConfig    = pluginConfig.headConfig
+    val headColumns   = headConfig.columnsDefConfig
+    val persistenceId = request.head.persistenceId.asString
+    val keyedRows: Either[WriteRejection, Vector[(JournalRow, RowKey)]] =
+      request.rows.foldLeft[Either[WriteRejection, Vector[(JournalRow, RowKey)]]](Right(Vector.empty)) {
+        case (Right(acc), row) =>
+          keyOf(row).map(key => acc :+ (row -> key))
+        case (left @ Left(_), _) =>
+          left
+      }
+    keyedRows.flatMap { rows =>
+      val journalWrites = rows.map { case (row, key) =>
+        TransactItem.Put(
+          store.schema.table,
+          store.rowCodec.encode(row, key),
+          Some(
+            Condition.And(
+              Condition.AttributeNotExists(store.schema.partitionKey),
+              Condition.AttributeNotExists(store.schema.sortKey)
+            )
+          )
+        )
+      }
+      val headItem = AttributeMap.of(
+        AttributeName(headColumns.persistenceIdColumnName) -> DdbValue.Str(request.head.persistenceId.asString),
+        AttributeName(headColumns.sequenceNrColumnName) -> DdbValue.Num(BigDecimal(request.head.sequenceNumber.value)),
+        AttributeName(headColumns.eventsColumnName) -> DdbValue.L(
+          request.head.events.map { event =>
+            DdbValue.M(
+              Vector(
+                headColumns.eventSequenceNrColumnName -> DdbValue.Num(BigDecimal(event.sequenceNumber.value)),
+                headColumns.eventMessageColumnName    -> DdbValue.Bin(event.message.toVector)
+              )
+            )
+          }.toVector
+        )
+      )
+      // The head is written only if it is behind the first sequence number of this write, or if it does not exist
+      // and this write starts at sequence number 1. A head that is ahead (a rewind, or another writer that already
+      // wrote these sequence numbers) fails. The gap is allowed on purpose: Pekko does not rewind the sequence
+      // number of a rejected write, so the write after a rejection starts above the head by more than one.
+      //
+      // This is not optimistic locking. It checks that the assumption "there is only one writer per aggregate"
+      // (kept by Cluster Sharding and Split Brain Resolver) still holds.
+      val firstSequenceNr = request.rows.head.sequenceNumber.value
+      val first           = DdbValue.Num(BigDecimal(firstSequenceNr))
+      val sequenceNr      = AttributeName(headColumns.sequenceNrColumnName)
+      val headWrite = TransactItem.Put(
+        TableName(headConfig.tableName),
+        headItem,
         Some(
-          Condition.And(
-            Condition.AttributeNotExists(store.schema.partitionKey),
-            Condition.AttributeNotExists(store.schema.sortKey)
+          Condition.Or(
+            Condition.And(
+              Condition.AttributeNotExists(sequenceNr),
+              Condition.Compare(
+                Operand.Literal(first),
+                CompareOp.Eq,
+                Operand.Literal(DdbValue.Num(BigDecimal(1)))
+              )
+            ),
+            Condition.Compare(Operand.Column(sequenceNr), CompareOp.Lt, Operand.Literal(first))
           )
         )
       )
-    }
-    val headItem = AttributeMap.of(
-      AttributeName(headColumns.persistenceIdColumnName) -> DdbValue.Str(request.head.persistenceId.asString),
-      AttributeName(headColumns.sequenceNrColumnName)    -> DdbValue.Num(BigDecimal(request.head.sequenceNumber.value)),
-      AttributeName(headColumns.eventsColumnName) -> DdbValue.L(
-        request.head.events.map { event =>
-          DdbValue.M(
-            Vector(
-              headColumns.eventSequenceNrColumnName -> DdbValue.Num(BigDecimal(event.sequenceNumber.value)),
-              headColumns.eventMessageColumnName    -> DdbValue.Bin(event.message.toVector)
-            )
-          )
-        }.toVector
-      )
-    )
-    // The head is written only if it is behind the first sequence number of this write, or if it does not exist
-    // and this write starts at sequence number 1. A head that is ahead (a rewind, or another writer that already
-    // wrote these sequence numbers) fails. The gap is allowed on purpose: Pekko does not rewind the sequence
-    // number of a rejected write, so the write after a rejection starts above the head by more than one.
-    //
-    // This is not optimistic locking. It checks that the assumption "there is only one writer per aggregate"
-    // (kept by Cluster Sharding and Split Brain Resolver) still holds.
-    val firstSequenceNr = request.rows.head.sequenceNumber.value
-    val first           = DdbValue.Num(BigDecimal(firstSequenceNr))
-    val sequenceNr      = AttributeName(headColumns.sequenceNrColumnName)
-    val headWrite = TransactItem.Put(
-      TableName(headConfig.tableName),
-      headItem,
-      Some(
-        Condition.Or(
-          Condition.And(
-            Condition.AttributeNotExists(sequenceNr),
-            Condition.Compare(
-              Operand.Literal(first),
-              CompareOp.Eq,
-              Operand.Literal(DdbValue.Num(BigDecimal(1)))
-            )
-          ),
-          Condition.Compare(Operand.Column(sequenceNr), CompareOp.Lt, Operand.Literal(first))
-        )
-      )
-    )
-    V2OperationRenderer.render(Operation.TransactWrite(journalWrites.toVector :+ headWrite)) match {
-      case Right(V2RenderedOperation.TransactWrite(transactWriteItemsRequest)) =>
-        transactWriteItemsRequest
-      case Right(other) =>
-        throw new IllegalStateException(s"unexpected rendered operation: $other")
-      case Left(error) =>
-        throw new IllegalArgumentException(s"cannot render the JournalHead write: ${error.detail}")
+      V2OperationRenderer.render(Operation.TransactWrite(journalWrites.toVector :+ headWrite)) match {
+        case Right(V2RenderedOperation.TransactWrite(transactWriteItemsRequest)) =>
+          Right(transactWriteItemsRequest)
+        case Right(other) =>
+          Left(WriteRejection.UnrenderableWrite(persistenceId, s"unexpected rendered operation: $other"))
+        case Left(error) =>
+          Left(WriteRejection.UnrenderableWrite(persistenceId, s"cannot render the JournalHead write: ${error.detail}"))
+      }
     }
   }
 
-  private def keyOf(row: JournalRow): RowKey =
+  private def keyOf(row: JournalRow): Either[WriteRejection, RowKey] =
     store.keyCodec
       .keyOf(row.persistenceId, row.sequenceNumber, partitionKeyResolver, sortKeyResolver)
-      .fold(
-        error => throw new IllegalArgumentException(s"cannot build the journal row key: $error"),
-        identity
+      .left
+      .map(error =>
+        WriteRejection.UnkeyableRow(
+          row.persistenceId.asString,
+          s"cannot build the journal row key: $error"
+        )
       )
 
   /** Maps a cancelled transaction to the failure reason the actor should see. The JournalHead table is read back so
