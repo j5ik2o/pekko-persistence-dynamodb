@@ -20,7 +20,7 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.state.{ StateDynamicAccessor
 import com.github.j5ik2o.pekko.persistence.dynamodb.utils.{ V2AsyncClientFactory, V2SyncClientFactory }
 
 @deprecated(
-  "Use com.github.j5ik2o.pekko.persistence.dynamodb.state.store.StateStore; this factory is a compatibility binding.",
+  "StateStore owns the internal storage implementation; this factory stays as a client-version compatibility binding.",
   since = "1.2.0"
 )
 final class V2ScalaDurableStateUpdateStoreFactory(pluginContext: StatePluginContext)

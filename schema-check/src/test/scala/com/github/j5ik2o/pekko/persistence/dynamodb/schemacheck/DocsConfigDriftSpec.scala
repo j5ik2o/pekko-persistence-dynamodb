@@ -37,6 +37,45 @@ final class DocsConfigDriftSpec extends AnyFreeSpec with Matchers {
     tableFormat should not include "GetSnaphotRowsIndex"
   }
 
+  "a State sort key of '-' in table-format.md is a drift problem" in {
+    val stateTable =
+      """{"KeySchema":[{"AttributeName":"pkey","KeyType":"HASH"},{"AttributeName":"skey","KeyType":"RANGE"}]}"""
+    val tableFormat =
+      "| type | name | partition key | sort key | comments |\n" +
+      "|:--|:--|:--|:--|:--|\n" +
+      "|table | State | `pkey` (String) | `-` | Used for durable state. |\n"
+
+    val problem = SchemaDrift.stateSortKeyProblem(tableFormat, stateTable)
+
+    problem.map(_.id) shouldBe Some("state-sort-key-table-format")
+    problem.exists(_.detail.contains("skey")) shouldBe true
+  }
+
+  "a missing State sort key and a missing RANGE key are reported" in {
+    val stateTable =
+      """{"KeySchema":[{"AttributeName":"pkey","KeyType":"HASH"}]}"""
+    val tableFormat =
+      "| type | name | partition key | sort key | comments |\n" +
+      "|:--|:--|:--|:--|:--|\n" +
+      "|table | State | `pkey` (String) | - | Used for durable state. |\n"
+
+    val problem = SchemaDrift.stateSortKeyProblem(tableFormat, stateTable)
+
+    problem.map(_.id) shouldBe Some("state-sort-key-table-format")
+    problem.exists(_.detail.contains("<missing>")) shouldBe true
+  }
+
+  "the State sort key in table-format.md matches the generated table JSON" in {
+    val stateTable =
+      """{"KeySchema":[{"AttributeName":"pkey","KeyType":"HASH"},{"AttributeName":"skey","KeyType":"RANGE"}]}"""
+    val tableFormat =
+      "| type | name | partition key | sort key | comments |\n" +
+      "|:--|:--|:--|:--|:--|\n" +
+      "|table | State | `pkey` (String) | `skey` (String) | Used for durable state. |\n"
+
+    SchemaDrift.stateSortKeyProblem(tableFormat, stateTable) shouldBe None
+  }
+
   "the state docs document the sort key and its resolver" in {
     val repo      = Repo.locate()
     val customize = repo.read(repo.root.resolve("docs/src/sphinx/customize.md"))
