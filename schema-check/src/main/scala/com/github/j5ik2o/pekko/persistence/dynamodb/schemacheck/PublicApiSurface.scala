@@ -74,7 +74,7 @@ object PublicApiSurface {
 
   def render(declarations: Vector[ApiDeclaration]): String = {
     val header =
-      "# Public declarations of the published modules at the baseline commit.\n" +
+      "# Public declarations of the published modules. The compatibility check fails when one of these disappears.\n" +
       "# Format: module<TAB>path<TAB>owner<TAB>declaration\n" +
       "# Regenerate with: sbt \"schema-check/runMain com.github.j5ik2o.pekko.persistence.dynamodb.schemacheck.ApiBaseline <repo-root> schema-check/public-api-baseline.txt\"\n"
     header + declarations.map(_.render).mkString("\n") + "\n"
