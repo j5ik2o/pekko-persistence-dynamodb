@@ -89,12 +89,23 @@ object SchemaDrift {
   private def checkReferenceIndexes(repo: Repo): Seq[KnownProblem] = {
     Seq("journal" -> "journal-table.json", "snapshot" -> "snapshot-table.json").flatMap { case (system, jsonFile) =>
       val referenceKey = if (system == "journal") "get-journal-rows-index-name" else "get-snapshot-rows-index-name"
-      val pattern      = ("(?m)^\\s*" + java.util.regex.Pattern.quote(referenceKey) + "\\s*=\\s*\"([^\"]+)\"").r
+      val quotedKey    = java.util.regex.Pattern.quote(referenceKey)
+      val pattern      = ("(?m)^\\s*" + quotedKey + "\\s*[=:]\\s*(?:\"([^\"]+)\"|([^\\s#]+))").r
+      val keyPattern   = ("(?m)^\\s*" + quotedKey + "\\s*[=:]").r
       val path         = repo.root.resolve(s"$system/$system-base/src/main/resources/reference.conf")
-      val reference    = pattern.findAllMatchIn(repo.read(path)).map(_.group(1)).toSet
+      val text         = repo.read(path)
+      val matches      = pattern.findAllMatchIn(text).toVector
+      val keyPresent   = keyPattern.findFirstIn(text).isDefined
+      val reference    = matches.map(matched => Option(matched.group(1)).getOrElse(matched.group(2))).toSet
       val table        = indexNamesIn(repo.read(repo.root.resolve(s"tools/dynamodb-setup/$jsonFile")))
-      if (reference.isEmpty) {
-        Seq(KnownProblem(s"index-reference-missing-key:$system", s"$system reference.conf has no $referenceKey"))
+      if (matches.isEmpty) {
+        Seq(
+          KnownProblem(
+            if (keyPresent) s"index-reference-unparsed:$system" else s"index-reference-missing-key:$system",
+            if (keyPresent) s"$system reference.conf has $referenceKey but its value could not be read"
+            else s"$system reference.conf has no $referenceKey"
+          )
+        )
       } else {
         (reference -- table).toSeq.sorted.map { name =>
           KnownProblem(
