@@ -81,9 +81,7 @@ final class V1ClientAdapter(
 
     case V1RenderedOperation.Get(request) =>
       call(client => client.getItemAsync(request), client => client.getItem(request))
-        .map(response =>
-          OperationResult.Item(Option(response.getItem).filter(_.asScala.nonEmpty).map(V1AttributeValues.fromItem))
-        )
+        .map(response => V1Responses.item(response.getItem))
 
     case V1RenderedOperation.Delete(request) =>
       call(client => client.deleteItemAsync(request), client => client.deleteItem(request))
@@ -97,27 +95,11 @@ final class V1ClientAdapter(
 
     case V1RenderedOperation.Query(request) =>
       call(client => client.queryAsync(request), client => client.query(request))
-        .map { response =>
-          val values = Option(response.getItems)
-            .map(_.asScala.toVector.map(V1AttributeValues.fromItem))
-            .getOrElse(Vector.empty)
-          val lastEvaluatedKey =
-            Option(response.getLastEvaluatedKey).filter(_.asScala.nonEmpty).map(V1AttributeValues.fromItem)
-          OperationResult.Items(values, lastEvaluatedKey)
-        }
+        .map(V1Responses.items)
 
     case V1RenderedOperation.BatchWrite(request) =>
       call(client => client.batchWriteItemAsync(request), client => client.batchWriteItem(request))
-        .flatMap { response =>
-          val unprocessed =
-            Option(response.getUnprocessedItems).map(_.asScala.values.map(_.size).sum).getOrElse(0)
-          if (unprocessed > 0) {
-            Future.failed(new IllegalStateException(s"BatchWriteItem left $unprocessed unprocessed items"))
-          } else {
-            val count = Option(request.getRequestItems).map(_.asScala.values.map(_.size).sum).getOrElse(0)
-            Future.successful(OperationResult.Written(count))
-          }
-        }
+        .flatMap(response => V1Responses.batch(request, response).fold(Future.failed, Future.successful))
 
     case V1RenderedOperation.TransactWrite(request) =>
       call(client => client.transactWriteItemsAsync(request), client => client.transactWriteItems(request))

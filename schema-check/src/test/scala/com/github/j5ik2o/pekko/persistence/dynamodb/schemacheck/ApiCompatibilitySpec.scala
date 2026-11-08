@@ -13,9 +13,12 @@ final class ApiCompatibilitySpec extends AnyFreeSpec with Matchers {
     val repo         = Repo.locate()
     val baselinePath = repo.root.resolve("schema-check/public-api-baseline.txt")
     if (!Files.isRegularFile(baselinePath)) {
-      sys.error(
-        s"public API baseline not found: $baselinePath. Generate it with sbt \"schema-check/runMain com.github.j5ik2o.pekko.persistence.dynamodb.schemacheck.ApiBaseline ${repo.root} $baselinePath\""
-      )
+      val command =
+        "sbt \"" +
+        "schema-check/runMain com.github.j5ik2o.pekko.persistence.dynamodb.schemacheck.ApiBaseline " +
+        repo.root.toString + " " + baselinePath.toString +
+        "\""
+      sys.error(s"public API baseline not found at $baselinePath. Regenerate it with $command")
     }
     val baseline = PublicApiSurface.parse(
       Files.readAllLines(baselinePath, StandardCharsets.UTF_8).asScala.iterator
