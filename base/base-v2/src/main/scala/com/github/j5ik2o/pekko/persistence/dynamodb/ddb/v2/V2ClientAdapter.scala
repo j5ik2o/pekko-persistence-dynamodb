@@ -76,9 +76,7 @@ final class V2ClientAdapter(
 
     case V2RenderedOperation.Get(request) =>
       call(client => client.getItem(request), client => client.getItem(request))
-        .map(response =>
-          OperationResult.Item(Option(response.item()).filter(_.asScala.nonEmpty).map(V2AttributeValues.fromItem))
-        )
+        .map(response => V2Responses.item(response.item()))
 
     case V2RenderedOperation.Delete(request) =>
       call(client => client.deleteItem(request), client => client.deleteItem(request))
@@ -92,26 +90,11 @@ final class V2ClientAdapter(
 
     case V2RenderedOperation.Query(request) =>
       call(client => client.query(request), client => client.query(request))
-        .map { response =>
-          val values = Option(response.items())
-            .map(_.asScala.toVector.map(V2AttributeValues.fromItem))
-            .getOrElse(Vector.empty)
-          val lastEvaluatedKey =
-            Option(response.lastEvaluatedKey()).filter(_.asScala.nonEmpty).map(V2AttributeValues.fromItem)
-          OperationResult.Items(values, lastEvaluatedKey)
-        }
+        .map(V2Responses.items)
 
     case V2RenderedOperation.BatchWrite(request) =>
       call(client => client.batchWriteItem(request), client => client.batchWriteItem(request))
-        .flatMap { response =>
-          val unprocessed = Option(response.unprocessedItems()).map(_.asScala.values.map(_.size).sum).getOrElse(0)
-          if (unprocessed > 0) {
-            Future.failed(new IllegalStateException(s"BatchWriteItem left $unprocessed unprocessed items"))
-          } else {
-            val count = Option(request.requestItems()).map(_.asScala.values.map(_.size).sum).getOrElse(0)
-            Future.successful(OperationResult.Written(count))
-          }
-        }
+        .flatMap(response => V2Responses.batch(request, response).fold(Future.failed, Future.successful))
 
     case V2RenderedOperation.TransactWrite(request) =>
       call(client => client.transactWriteItems(request), client => client.transactWriteItems(request))
