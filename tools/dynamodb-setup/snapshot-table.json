@@ -20,14 +20,18 @@
   ],
   "KeySchema": [
     {
-      "KeyType": "HASH",
-      "AttributeName": "pkey"
+      "AttributeName": "pkey",
+      "KeyType": "HASH"
     },
     {
-      "KeyType": "RANGE",
-      "AttributeName": "skey"
+      "AttributeName": "skey",
+      "KeyType": "RANGE"
     }
   ],
+  "ProvisionedThroughput": {
+    "ReadCapacityUnits": 10,
+    "WriteCapacityUnits": 10
+  },
   "GlobalSecondaryIndexes": [
     {
       "IndexName": "GetSnapshotRowsIndex",
@@ -49,9 +53,5 @@
         "WriteCapacityUnits": 10
       }
     }
-  ],
-  "ProvisionedThroughput": {
-    "WriteCapacityUnits": 10,
-    "ReadCapacityUnits": 10
-  }
+  ]
 }

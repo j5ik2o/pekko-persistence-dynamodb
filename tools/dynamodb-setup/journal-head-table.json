@@ -8,13 +8,13 @@
   ],
   "KeySchema": [
     {
-      "KeyType": "HASH",
-      "AttributeName": "persistence-id"
+      "AttributeName": "persistence-id",
+      "KeyType": "HASH"
     }
   ],
   "ProvisionedThroughput": {
-    "WriteCapacityUnits": 10,
-    "ReadCapacityUnits": 10
+    "ReadCapacityUnits": 10,
+    "WriteCapacityUnits": 10
   },
   "StreamSpecification": {
     "StreamEnabled": true,

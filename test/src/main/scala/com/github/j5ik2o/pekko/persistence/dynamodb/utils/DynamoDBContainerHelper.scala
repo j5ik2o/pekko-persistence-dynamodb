@@ -29,6 +29,7 @@ import com.github.j5ik2o.dockerController.{
   DockerControllerSpecSupport,
   WaitPredicates
 }
+import com.typesafe.config.Config
 import org.scalatest.TestSuite
 
 import scala.concurrent.duration._
@@ -196,42 +197,7 @@ trait DockerControllerHelperUtil extends DockerControllerHelper {
   }
 
   def createSnapshotTable(): Unit = {
-    val listTablesResult = dynamoDBClient.listTables(100)
-    if (!listTablesResult.getTableNames.asScala.exists(_ == snapshotTableName)) {
-      val createRequest = new CreateTableRequest()
-        .withTableName(snapshotTableName).withAttributeDefinitions(
-          Seq(
-            new AttributeDefinition().withAttributeName("pkey").withAttributeType(ScalarAttributeType.S),
-            new AttributeDefinition().withAttributeName("skey").withAttributeType(ScalarAttributeType.S),
-            new AttributeDefinition().withAttributeName("persistence-id").withAttributeType(ScalarAttributeType.S),
-            new AttributeDefinition().withAttributeName("sequence-nr").withAttributeType(ScalarAttributeType.N)
-          ).asJava
-        ).withKeySchema(
-          Seq(
-            new KeySchemaElement().withAttributeName("pkey").withKeyType(KeyType.HASH),
-            new KeySchemaElement().withAttributeName("skey").withKeyType(KeyType.RANGE)
-          ).asJava
-        )
-        .withGlobalSecondaryIndexes(
-          Seq(
-            new GlobalSecondaryIndex()
-              .withIndexName("GetSnapshotRowsIndex").withKeySchema(
-                Seq(
-                  new KeySchemaElement().withAttributeName("persistence-id").withKeyType(KeyType.HASH),
-                  new KeySchemaElement().withAttributeName("sequence-nr").withKeyType(KeyType.RANGE)
-                ).asJava
-              ).withProjection(new Projection().withProjectionType(ProjectionType.ALL))
-              .withProvisionedThroughput(
-                new ProvisionedThroughput().withReadCapacityUnits(10L).withWriteCapacityUnits(10L)
-              )
-          ).asJava
-        )
-        .withProvisionedThroughput(
-          new ProvisionedThroughput().withReadCapacityUnits(10L).withWriteCapacityUnits(10L)
-        )
-      val createResponse = dynamoDBClient.createTable(createRequest)
-      require(createResponse.getSdkHttpMetadata.getHttpStatusCode == 200)
-    }
+    createTableIfMissing(snapshotTableName)
   }
 
   private def createLegacyJournalTable(): Unit = {
@@ -277,113 +243,86 @@ trait DockerControllerHelperUtil extends DockerControllerHelper {
   val GetJournalRowsIndexName = "GetJournalRowsIndex"
 
   protected def createJournalTable(): Unit = {
-    val listTablesResult = dynamoDBClient.listTables(100)
-    if (!listTablesResult.getTableNames.asScala.exists(_ == journalTableName)) {
-      val createRequest = new CreateTableRequest()
-        .withTableName(journalTableName)
-        .withAttributeDefinitions(
-          Seq(
-            new AttributeDefinition().withAttributeName("pkey").withAttributeType(ScalarAttributeType.S),
-            new AttributeDefinition().withAttributeName("skey").withAttributeType(ScalarAttributeType.S),
-            new AttributeDefinition().withAttributeName("persistence-id").withAttributeType(ScalarAttributeType.S),
-            new AttributeDefinition().withAttributeName("sequence-nr").withAttributeType(ScalarAttributeType.N),
-            new AttributeDefinition().withAttributeName("tags").withAttributeType(ScalarAttributeType.S)
-          ).asJava
-        ).withKeySchema(
-          Seq(
-            new KeySchemaElement().withAttributeName("pkey").withKeyType(KeyType.HASH),
-            new KeySchemaElement().withAttributeName("skey").withKeyType(KeyType.RANGE)
-          ).asJava
-        ).withProvisionedThroughput(
-          new ProvisionedThroughput().withReadCapacityUnits(10L).withWriteCapacityUnits(10L)
-        ).withGlobalSecondaryIndexes(
-          Seq(
-            new GlobalSecondaryIndex()
-              .withIndexName("TagsIndex").withKeySchema(
-                Seq(
-                  new KeySchemaElement().withAttributeName("tags").withKeyType(KeyType.HASH)
-                ).asJava
-              ).withProjection(new Projection().withProjectionType(ProjectionType.ALL))
-              .withProvisionedThroughput(
-                new ProvisionedThroughput().withReadCapacityUnits(10L).withWriteCapacityUnits(10L)
-              ),
-            new GlobalSecondaryIndex()
-              .withIndexName("GetJournalRowsIndex").withKeySchema(
-                Seq(
-                  new KeySchemaElement().withAttributeName("persistence-id").withKeyType(KeyType.HASH),
-                  new KeySchemaElement().withAttributeName("sequence-nr").withKeyType(KeyType.RANGE)
-                ).asJava
-              ).withProjection(new Projection().withProjectionType(ProjectionType.ALL))
-              .withProvisionedThroughput(
-                new ProvisionedThroughput().withReadCapacityUnits(10L).withWriteCapacityUnits(10L)
-              )
-          ).asJava
-        ).withStreamSpecification(
-          new StreamSpecification().withStreamEnabled(true).withStreamViewType(StreamViewType.NEW_IMAGE)
-        )
-      val createResponse = dynamoDBClient.createTable(createRequest)
-      require(createResponse.getSdkHttpMetadata.getHttpStatusCode == 200)
-    }
+    createTableIfMissing(journalTableName)
   }
 
   def createJournalHeadTable(): Unit = {
-    val listTablesResult = dynamoDBClient.listTables(100)
-    if (!listTablesResult.getTableNames.asScala.exists(_ == journalHeadTableName)) {
-      val createRequest = new CreateTableRequest()
-        .withTableName(journalHeadTableName)
-        .withAttributeDefinitions(
-          Seq(
-            new AttributeDefinition().withAttributeName("persistence-id").withAttributeType(ScalarAttributeType.S)
-          ).asJava
-        ).withKeySchema(
-          Seq(
-            new KeySchemaElement().withAttributeName("persistence-id").withKeyType(KeyType.HASH)
-          ).asJava
-        ).withProvisionedThroughput(
-          new ProvisionedThroughput().withReadCapacityUnits(10L).withWriteCapacityUnits(10L)
-        ).withStreamSpecification(
-          new StreamSpecification().withStreamEnabled(true).withStreamViewType(StreamViewType.NEW_IMAGE)
-        )
-      val createResponse = dynamoDBClient.createTable(createRequest)
-      require(createResponse.getSdkHttpMetadata.getHttpStatusCode == 200)
-    }
+    createTableIfMissing(journalHeadTableName)
   }
 
   def createStateTable(): Unit = {
-    val listTablesResult = dynamoDBClient.listTables(100)
-    if (!listTablesResult.getTableNames.asScala.exists(_ == stateTableName)) {
-      val createRequest = new CreateTableRequest()
-        .withTableName(stateTableName).withAttributeDefinitions(
-          Seq(
-            new AttributeDefinition().withAttributeName("pkey").withAttributeType(ScalarAttributeType.S),
-            new AttributeDefinition().withAttributeName("skey").withAttributeType(ScalarAttributeType.S),
-            new AttributeDefinition().withAttributeName("persistence-id").withAttributeType(ScalarAttributeType.S)
-          ).asJava
-        ).withKeySchema(
-          Seq(
-            new KeySchemaElement().withAttributeName("pkey").withKeyType(KeyType.HASH),
-            new KeySchemaElement().withAttributeName("skey").withKeyType(KeyType.RANGE)
-          ).asJava
-        ).withGlobalSecondaryIndexes(
-          Seq(
-            new GlobalSecondaryIndex()
-              .withIndexName("PersistenceIdIndex").withKeySchema(
-                Seq(
-                  new KeySchemaElement().withAttributeName("persistence-id").withKeyType(KeyType.HASH)
-                ).asJava
-              ).withProjection(new Projection().withProjectionType(ProjectionType.ALL))
-              .withProvisionedThroughput(
-                new ProvisionedThroughput().withReadCapacityUnits(10L).withWriteCapacityUnits(10L)
-              )
-          ).asJava
-        )
-        .withProvisionedThroughput(
-          new ProvisionedThroughput().withReadCapacityUnits(10L).withWriteCapacityUnits(10L)
-        )
-      val createResponse = dynamoDBClient.createTable(createRequest)
-      require(createResponse.getSdkHttpMetadata.getHttpStatusCode == 200)
+    createTableIfMissing(stateTableName)
+  }
+
+  private def createTableIfMissing(tableName: String): Unit = {
+    val tableNames = dynamoDBClient.listTables(100).getTableNames.asScala
+    if (!tableNames.exists(_ == tableName)) {
+      val response = dynamoDBClient.createTable(createTableRequest(DynamoDBLocalFixture.table(tableName)))
+      require(
+        response.getSdkHttpMetadata.getHttpStatusCode == 200,
+        s"failed to create the $tableName table: ${response.getSdkHttpMetadata.getHttpStatusCode}"
+      )
     }
   }
+
+  private def createTableRequest(config: Config): CreateTableRequest = {
+    val request = new CreateTableRequest()
+      .withTableName(config.getString("TableName"))
+      .withAttributeDefinitions(
+        config
+          .getConfigList("AttributeDefinitions").asScala.map { attribute =>
+            new AttributeDefinition()
+              .withAttributeName(attribute.getString("AttributeName"))
+              .withAttributeType(ScalarAttributeType.valueOf(attribute.getString("AttributeType")))
+          }.asJava
+      )
+      .withKeySchema(keySchema(config.getConfigList("KeySchema").asScala))
+      .withProvisionedThroughput(provisionedThroughput(config.getConfig("ProvisionedThroughput")))
+    if (config.hasPath("GlobalSecondaryIndexes")) {
+      request.withGlobalSecondaryIndexes(
+        config.getConfigList("GlobalSecondaryIndexes").asScala.map(toIndex).asJava
+      )
+    }
+    if (config.hasPath("StreamSpecification")) {
+      val stream = config.getConfig("StreamSpecification")
+      request.withStreamSpecification(
+        new StreamSpecification()
+          .withStreamEnabled(stream.getBoolean("StreamEnabled"))
+          .withStreamViewType(StreamViewType.valueOf(stream.getString("StreamViewType")))
+      )
+    }
+    request
+  }
+
+  private def toIndex(config: Config): GlobalSecondaryIndex =
+    new GlobalSecondaryIndex()
+      .withIndexName(config.getString("IndexName"))
+      .withKeySchema(keySchema(config.getConfigList("KeySchema").asScala))
+      .withProjection(projection(config.getConfig("Projection")))
+      .withProvisionedThroughput(provisionedThroughput(config.getConfig("ProvisionedThroughput")))
+
+  private def keySchema(entries: Iterable[Config]): java.util.List[KeySchemaElement] =
+    entries
+      .map { entry =>
+        new KeySchemaElement()
+          .withAttributeName(entry.getString("AttributeName"))
+          .withKeyType(KeyType.valueOf(entry.getString("KeyType")))
+      }
+      .toSeq
+      .asJava
+
+  private def projection(config: Config): Projection = {
+    val projection = new Projection().withProjectionType(ProjectionType.valueOf(config.getString("ProjectionType")))
+    if (config.hasPath("NonKeyAttributes")) {
+      projection.withNonKeyAttributes(config.getStringList("NonKeyAttributes"))
+    }
+    projection
+  }
+
+  private def provisionedThroughput(config: Config): ProvisionedThroughput =
+    new ProvisionedThroughput()
+      .withReadCapacityUnits(config.getLong("ReadCapacityUnits"))
+      .withWriteCapacityUnits(config.getLong("WriteCapacityUnits"))
 
 }
 

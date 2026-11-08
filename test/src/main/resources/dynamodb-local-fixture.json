@@ -1,0 +1,172 @@
+{
+  "tables": [
+    {
+      "TableName": "Journal",
+      "AttributeDefinitions": [
+        {
+          "AttributeName": "pkey",
+          "AttributeType": "S"
+        },
+        {
+          "AttributeName": "skey",
+          "AttributeType": "S"
+        },
+        {
+          "AttributeName": "persistence-id",
+          "AttributeType": "S"
+        },
+        {
+          "AttributeName": "sequence-nr",
+          "AttributeType": "N"
+        }
+      ],
+      "KeySchema": [
+        {
+          "AttributeName": "pkey",
+          "KeyType": "HASH"
+        },
+        {
+          "AttributeName": "skey",
+          "KeyType": "RANGE"
+        }
+      ],
+      "ProvisionedThroughput": {
+        "ReadCapacityUnits": 10,
+        "WriteCapacityUnits": 10
+      },
+      "GlobalSecondaryIndexes": [
+        {
+          "IndexName": "GetJournalRowsIndex",
+          "KeySchema": [
+            {
+              "AttributeName": "persistence-id",
+              "KeyType": "HASH"
+            },
+            {
+              "AttributeName": "sequence-nr",
+              "KeyType": "RANGE"
+            }
+          ],
+          "Projection": {
+            "ProjectionType": "ALL"
+          },
+          "ProvisionedThroughput": {
+            "ReadCapacityUnits": 10,
+            "WriteCapacityUnits": 10
+          }
+        }
+      ],
+      "StreamSpecification": {
+        "StreamEnabled": true,
+        "StreamViewType": "NEW_IMAGE"
+      }
+    },
+    {
+      "TableName": "JournalHead",
+      "AttributeDefinitions": [
+        {
+          "AttributeName": "persistence-id",
+          "AttributeType": "S"
+        }
+      ],
+      "KeySchema": [
+        {
+          "AttributeName": "persistence-id",
+          "KeyType": "HASH"
+        }
+      ],
+      "ProvisionedThroughput": {
+        "ReadCapacityUnits": 10,
+        "WriteCapacityUnits": 10
+      },
+      "StreamSpecification": {
+        "StreamEnabled": true,
+        "StreamViewType": "NEW_IMAGE"
+      }
+    },
+    {
+      "TableName": "Snapshot",
+      "AttributeDefinitions": [
+        {
+          "AttributeName": "pkey",
+          "AttributeType": "S"
+        },
+        {
+          "AttributeName": "skey",
+          "AttributeType": "S"
+        },
+        {
+          "AttributeName": "persistence-id",
+          "AttributeType": "S"
+        },
+        {
+          "AttributeName": "sequence-nr",
+          "AttributeType": "N"
+        }
+      ],
+      "KeySchema": [
+        {
+          "AttributeName": "pkey",
+          "KeyType": "HASH"
+        },
+        {
+          "AttributeName": "skey",
+          "KeyType": "RANGE"
+        }
+      ],
+      "ProvisionedThroughput": {
+        "ReadCapacityUnits": 10,
+        "WriteCapacityUnits": 10
+      },
+      "GlobalSecondaryIndexes": [
+        {
+          "IndexName": "GetSnapshotRowsIndex",
+          "KeySchema": [
+            {
+              "AttributeName": "persistence-id",
+              "KeyType": "HASH"
+            },
+            {
+              "AttributeName": "sequence-nr",
+              "KeyType": "RANGE"
+            }
+          ],
+          "Projection": {
+            "ProjectionType": "ALL"
+          },
+          "ProvisionedThroughput": {
+            "ReadCapacityUnits": 10,
+            "WriteCapacityUnits": 10
+          }
+        }
+      ]
+    },
+    {
+      "TableName": "State",
+      "AttributeDefinitions": [
+        {
+          "AttributeName": "pkey",
+          "AttributeType": "S"
+        },
+        {
+          "AttributeName": "skey",
+          "AttributeType": "S"
+        }
+      ],
+      "KeySchema": [
+        {
+          "AttributeName": "pkey",
+          "KeyType": "HASH"
+        },
+        {
+          "AttributeName": "skey",
+          "KeyType": "RANGE"
+        }
+      ],
+      "ProvisionedThroughput": {
+        "ReadCapacityUnits": 10,
+        "WriteCapacityUnits": 10
+      }
+    }
+  ]
+}

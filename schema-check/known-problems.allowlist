@@ -1,5 +1,1 @@
 snapshot-v1-dax-factory-missing | factory-class | DynamoDBSnapshotStore uses V1DaxSnapshotDaoFactory, but the class is V1LegacyDaxSnapshotDaoFactory | 2027-06-30 | https://github.com/j5ik2o/pekko-persistence-dynamodb/issues/855
-state-revision-column-name | schema-drift | state reference.conf uses revision-nr-column-name while customize.md documents sequence-nr-column-name | 2027-06-30 | https://github.com/j5ik2o/pekko-persistence-dynamodb/issues/854
-snapshot-get-rows-index-typo | schema-drift | table-format.md spells GetSnaphotRowsIndex while the JSON and reference.conf use GetSnapshotRowsIndex | 2027-06-30 | https://github.com/j5ik2o/pekko-persistence-dynamodb/issues/854
-snapshot-tags-column-name-missing | schema-drift | customize.md omits the snapshot tags-column-name that snapshot reference.conf defines | 2027-06-30 | https://github.com/j5ik2o/pekko-persistence-dynamodb/issues/854
-journal-tags-index-removed | schema-drift | table-format.md still lists TagsIndex, which the current journal table JSON no longer creates | 2027-06-30 | https://github.com/j5ik2o/pekko-persistence-dynamodb/issues/854
