@@ -147,6 +147,8 @@ sbt -batch "state-v1/testOnly *DynamoDBStateV1SyncSpec"
 
 Before you merge, run `tools/check-review-threads.sh <owner/repo> <pr>` and make the `review-gate` CI job green. Reply to every review thread with the fix, the reason for dismissal, or a follow-up issue, then resolve the thread. An unresolved thread means a real finding can ship.
 
+Resolving a thread does not trigger the workflow, so rerun the gate after you resolve threads with `gh workflow run review-gate.yml -f pr=<n>` or by rerunning the failed `unresolved-review-threads` job. Enable "Require conversation resolution before merging" in branch protection as the final guarantee.
+
 ## Rule table
 
 Each row names a mistake that was made more than once, the rule that prevents it, and the file that enforces the rule. `RuleTableSpec` reads this table and fails when an enforcement path no longer exists. The known problems and their owner issues are in `schema-check/known-problems.allowlist`.

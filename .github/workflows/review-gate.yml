@@ -1,6 +1,12 @@
 name: Review gate
 
 on:
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number
+        required: true
+        type: string
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
   pull_request_review:
@@ -20,4 +26,4 @@ jobs:
       - name: Check unresolved review threads
         env:
           GH_TOKEN: ${{ github.token }}
-        run: tools/check-review-threads.sh "${{ github.repository }}" "${{ github.event.pull_request.number }}"
+        run: tools/check-review-threads.sh "${{ github.repository }}" "${{ inputs.pr || github.event.pull_request.number }}"
