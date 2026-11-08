@@ -294,30 +294,45 @@ object JournalHeadMigration {
     }
   }
 
-  /** Reads the snapshot table from the `j5ik2o.dynamo-db-snapshot` config when it is present, and applies the command
-    * line overrides. `--without-snapshots` skips the snapshot table entirely.
+  /** Reads the snapshot table from the `j5ik2o.dynamo-db-snapshot` config or from `--snapshot-table`, and applies the
+    * command line overrides. `--without-snapshots` skips the snapshot table entirely.
+    *
+    * With neither the config nor `--snapshot-table` the tool refuses to guess a table. Falling back to `Snapshot` hid a
+    * missing snapshot source and scanned a table that a custom deployment does not have.
     */
-  private def resolveSnapshotTable(args: Array[String], config: Config): Option[SnapshotTable] =
+  private[journal] def resolveSnapshotTable(args: Array[String], config: Config): Option[SnapshotTable] =
     if (args.contains("--without-snapshots")) {
       None
     } else {
-      val configured = Try(config.getConfig("j5ik2o.dynamo-db-snapshot")).toOption
-        .map(SnapshotTable.fromConfig)
-        .getOrElse(SnapshotTable.default)
+      val configured = Try(config.getConfig("j5ik2o.dynamo-db-snapshot")).toOption.map(SnapshotTable.fromConfig)
+      val tableName  = optionValue(args, "--snapshot-table")
+      if (configured.isEmpty && tableName.isEmpty) {
+        throw new IllegalArgumentException(
+          "no snapshot source is configured: add j5ik2o.dynamo-db-snapshot to the config, pass --snapshot-table, or pass --without-snapshots"
+        )
+      }
+      val base = configured.getOrElse(SnapshotTable.default)
       Some(
-        configured.copy(
-          tableName = optionValue(args, "--snapshot-table").getOrElse(configured.tableName),
+        base.copy(
+          tableName = tableName.getOrElse(base.tableName),
           persistenceIdColumnName =
-            optionValue(args, "--snapshot-persistence-id-column").getOrElse(configured.persistenceIdColumnName),
-          sequenceNrColumnName =
-            optionValue(args, "--snapshot-sequence-nr-column").getOrElse(configured.sequenceNrColumnName)
+            optionValue(args, "--snapshot-persistence-id-column").getOrElse(base.persistenceIdColumnName),
+          sequenceNrColumnName = optionValue(args, "--snapshot-sequence-nr-column").getOrElse(base.sequenceNrColumnName)
         )
       )
     }
 
   private def optionValue(args: Array[String], name: String): Option[String] = {
     val index = args.indexOf(name)
-    if (index >= 0 && index + 1 < args.length) Some(args(index + 1)) else None
+    if (index < 0) {
+      None
+    } else {
+      // A following flag is not the value of this option. Reading it as one silently skipped the option.
+      args.lift(index + 1).filterNot(_.startsWith("--")) match {
+        case Some(value) => Some(value)
+        case None        => throw new IllegalArgumentException(s"$name requires a value")
+      }
+    }
   }
 
   def main(args: Array[String]): Unit = {
@@ -358,7 +373,7 @@ object JournalHeadMigration {
         )
         if (!result.snapshotTableScanned) {
           println(
-            s"${prefix}the snapshot table was not scanned (not configured, not found, or --without-snapshots);" +
+            s"${prefix}the snapshot table was not scanned (not found, or --without-snapshots);" +
             " aggregates whose journal events were all hard deleted were not migrated"
           )
         }

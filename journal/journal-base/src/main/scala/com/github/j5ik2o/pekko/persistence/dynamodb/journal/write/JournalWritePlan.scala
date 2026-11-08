@@ -36,7 +36,8 @@ object JournalWritePlan {
   /** Validates one write and builds the rows and the head to send.
     *
     * The order of the checks is the order an operator reads a rejection in: the shape of the write first, then the
-    * sequence numbers, the keys, the item count, and the two DynamoDB size limits.
+    * sequence numbers, the keys, the item count, the JournalHead item size, the size of each journal row, and the
+    * transaction size.
     */
   def plan(
       rows: Seq[JournalRow],
@@ -81,11 +82,14 @@ object JournalWritePlan {
               sortedRows.map(row => JournalHeadEvent(row.sequenceNumber, row.message))
             )
             val headSize = DynamoDBItemSizeCalculator.journalHeadItemSize(head, headConfig.columnsDefConfig)
-            val transactionSize = headSize.toLong + sortedRows.map { row =>
+            val rowSizes = sortedRows.map { row =>
               val partitionKey = partitionKeyResolver.resolve(row.persistenceId, row.sequenceNumber).asString
               val sortKey      = sortKeyResolver.resolve(row.persistenceId, row.sequenceNumber).asString
-              DynamoDBItemSizeCalculator.journalItemSize(row, journalColumnsDefConfig, partitionKey, sortKey).toLong
-            }.sum
+              val itemSize =
+                DynamoDBItemSizeCalculator.journalItemSize(row, journalColumnsDefConfig, partitionKey, sortKey)
+              (row, itemSize)
+            }
+            val transactionSize = headSize.toLong + rowSizes.map(_._2.toLong).sum
             if (headSize > JournalHeadLimits.MaxItemSizeBytes) {
               Left(
                 WriteRejection.HeadItemTooLarge(
@@ -94,16 +98,29 @@ object JournalWritePlan {
                   JournalHeadLimits.MaxItemSizeBytes
                 )
               )
-            } else if (transactionSize > JournalHeadLimits.MaxTransactionSizeBytes) {
-              Left(
-                WriteRejection.TransactionTooLarge(
-                  persistenceId.asString,
-                  transactionSize,
-                  JournalHeadLimits.MaxTransactionSizeBytes
-                )
-              )
             } else {
-              Right(JournalWritePlan(sortedRows, head))
+              rowSizes.collectFirst {
+                case (row, itemSize) if itemSize > JournalHeadLimits.MaxItemSizeBytes =>
+                  WriteRejection.JournalRowTooLarge(
+                    persistenceId.asString,
+                    row.sequenceNumber.value,
+                    itemSize,
+                    JournalHeadLimits.MaxItemSizeBytes
+                  )
+              } match {
+                case Some(rejection) =>
+                  Left(rejection)
+                case None if transactionSize > JournalHeadLimits.MaxTransactionSizeBytes =>
+                  Left(
+                    WriteRejection.TransactionTooLarge(
+                      persistenceId.asString,
+                      transactionSize,
+                      JournalHeadLimits.MaxTransactionSizeBytes
+                    )
+                  )
+                case None =>
+                  Right(JournalWritePlan(sortedRows, head))
+              }
             }
           }
         }

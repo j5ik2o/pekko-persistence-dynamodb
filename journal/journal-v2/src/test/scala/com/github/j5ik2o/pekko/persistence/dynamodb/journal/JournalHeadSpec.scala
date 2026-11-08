@@ -15,7 +15,8 @@
  */
 package com.github.j5ik2o.pekko.persistence.dynamodb.journal
 
-import org.apache.pekko.actor.{ ActorRef, ActorSystem, Props }
+import org.apache.pekko.Done
+import org.apache.pekko.actor.{ ActorRef, ActorSystem, Props, Status }
 import org.apache.pekko.persistence.journal.Tagged
 import org.apache.pekko.persistence.{ PersistentActor, PersistentRepr }
 import org.apache.pekko.serialization.SerializationExtension
@@ -62,6 +63,9 @@ import scala.jdk.CollectionConverters._
 object JournalHeadSpec {
   val dynamoDBHost: String = "localhost"
   val dynamoDBPort: Int    = RandomPortUtil.temporaryServerPort()
+
+  /** The writes the plugin rejected before DynamoDB was called. The perf probe reports this count with the duration. */
+  val localRejections: AtomicInteger = new AtomicInteger(0)
 
   final case class Persist(payload: String)
   final case class PersistAllPayloads(payloads: immutable.Seq[String])
@@ -121,6 +125,7 @@ object JournalHeadSpec {
     }
 
     override protected def onPersistRejected(cause: Throwable, event: Any, seqNr: Long): Unit = {
+      localRejections.incrementAndGet()
       failureProbe ! PersistRejected(cause)
       super.onPersistRejected(cause, event, seqNr)
     }
@@ -191,6 +196,7 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
   }
 
   override def beforeStopContainers(): Unit = {
+    info(s"PERF localRejections=${localRejections.get()}")
     Seq(headDisabledSystem, headEnabledSystem, headEnabledHardDeleteSystem).foreach { system =>
       if (system != null) Await.result(system.terminate(), 60.seconds)
     }
@@ -202,6 +208,13 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
   }
 
   private def newTestProbe(system: ActorSystem): TestProbe = TestProbe()(system)
+
+  /** The plugin actor Pekko creates under `/system` from `pekko.persistence.journal.plugin`. */
+  private def journalActor(system: ActorSystem): ActorRef =
+    Await.result(
+      system.actorSelection("/system/j5ik2o.dynamo-db-journal").resolveOne(30.seconds),
+      30.seconds
+    )
 
   private def newActor(system: ActorSystem, persistenceId: String, failureProbe: ActorRef): ActorRef =
     system.actorOf(
@@ -619,6 +632,56 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
       headSequenceNr(pid) shouldBe Some(1L)
     }
 
+    "reject a journal row over 400 KB locally and keep the actor alive" in {
+      val pid = "head-row-size-over-1"
+      persistOk(headEnabledSystem, pid, "e1")
+
+      withActor(headEnabledSystem, pid) { (actor, probe) =>
+        // The tag makes the journal row exceed 400 KB while the JournalHead item, which does not carry tags, stays
+        // small. The rejection must happen before DynamoDB is called.
+        actor.tell(PersistTaggedAll(1, 410000), probe.ref)
+        val rejected = probe.expectMsgType[PersistRejected](120.seconds)
+        rejected.cause shouldBe a[JournalHeadJournalRowTooLargeException]
+        rejected.cause.asInstanceOf[JournalHeadJournalRowTooLargeException].limitBytes shouldBe
+        JournalHeadLimits.MaxItemSizeBytes
+
+        // Pekko does not take the rejected sequence number back, so the next write starts at 3 and is accepted.
+        actor.tell(Persist("e3"), probe.ref)
+        probe.expectMsg(60.seconds, Persisted("e3"))
+      }
+
+      journalSequenceNrs(pid) shouldBe Seq(1L, 3L)
+      headSequenceNr(pid) shouldBe Some(3L)
+    }
+
+    "reject an in-place event update when head mode is enabled" in {
+      val pid = "head-in-place-update-1"
+      persistOk(headEnabledSystem, pid, "e1")
+
+      val journal = journalActor(headEnabledSystem)
+      val probe   = newTestProbe(headEnabledSystem)
+      journal.tell(DynamoDBJournal.InPlaceUpdateEvent(pid, 1L, "updated"), probe.ref)
+
+      val failure = probe.expectMsgType[Status.Failure](60.seconds)
+      failure.cause shouldBe a[JournalHeadAsyncUpdateEventUnsupportedException]
+
+      // The refused update wrote nothing, so the journal and the head still agree.
+      journalSequenceNrs(pid) shouldBe Seq(1L)
+      headSequenceNr(pid) shouldBe Some(1L)
+    }
+
+    "allow an in-place event update when head mode is disabled" in {
+      val pid = "head-disabled-in-place-update-1"
+      persistOk(headDisabledSystem, pid, "e1")
+
+      val journal = journalActor(headDisabledSystem)
+      val probe   = newTestProbe(headDisabledSystem)
+      journal.tell(DynamoDBJournal.InPlaceUpdateEvent(pid, 1L, "updated"), probe.ref)
+
+      probe.expectMsg(60.seconds, Done)
+      journalSequenceNrs(pid) shouldBe Seq(1L)
+    }
+
     "reject a write whose transaction would exceed 4 MB" in {
       val pid = "head-4mb-1"
       withActor(headEnabledSystem, pid) { (actor, probe) =>
@@ -966,6 +1029,85 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
         rerun.existingJournalHeads shouldBe rerun.scannedPersistenceIds
         rerun.raisedPersistenceIds shouldBe Seq.empty
       } finally client.close()
+    }
+
+    "resolve the snapshot source from the config or the command line, and fail when neither is given" in {
+      val configured = ConfigFactory.parseString(
+        """
+          |j5ik2o.dynamo-db-snapshot {
+          |  table-name = "ConfiguredSnapshot"
+          |  columns-def {
+          |    persistence-id-column-name = "pid"
+          |    sequence-nr-column-name = "seq"
+          |  }
+          |}
+          |""".stripMargin
+      )
+
+      JournalHeadMigration.resolveSnapshotTable(Array.empty, configured) shouldBe
+      Some(JournalHeadMigration.SnapshotTable("ConfiguredSnapshot", "pid", "seq"))
+
+      JournalHeadMigration.resolveSnapshotTable(
+        Array(
+          "--snapshot-table",
+          "CustomSnapshot",
+          "--snapshot-persistence-id-column",
+          "p",
+          "--snapshot-sequence-nr-column",
+          "s"
+        ),
+        configured
+      ) shouldBe Some(JournalHeadMigration.SnapshotTable("CustomSnapshot", "p", "s"))
+
+      JournalHeadMigration.resolveSnapshotTable(Array("--without-snapshots"), configured) shouldBe None
+
+      // Without the config and without a named table the tool must not silently scan the default `Snapshot` table.
+      val missingSource = intercept[IllegalArgumentException] {
+        JournalHeadMigration.resolveSnapshotTable(Array.empty, ConfigFactory.empty())
+      }
+      missingSource.getMessage should include("--snapshot-table")
+      missingSource.getMessage should include("--without-snapshots")
+
+      // A named table is a source on its own, so a deployment without the snapshot plugin can name the table.
+      JournalHeadMigration.resolveSnapshotTable(
+        Array("--snapshot-table", "CustomSnapshot"),
+        ConfigFactory.empty()
+      ) shouldBe
+      Some(JournalHeadMigration.SnapshotTable("CustomSnapshot", "persistence-id", "sequence-nr"))
+
+      Seq(
+        "--snapshot-table",
+        "--snapshot-persistence-id-column",
+        "--snapshot-sequence-nr-column"
+      ).foreach { option =>
+        val failure = intercept[IllegalArgumentException] {
+          JournalHeadMigration.resolveSnapshotTable(Array(option), configured)
+        }
+        failure.getMessage should include(option)
+      }
+    }
+
+    "report a missing snapshot table and still migrate from the journal" in {
+      val pid = "head-missing-snapshot-1"
+      persistAllOk(headDisabledSystem, pid, immutable.Seq("e1", "e2", "e3"))
+
+      val client = newV2Client()
+      try {
+        val result = JournalHeadMigration.run(
+          client,
+          journalTableName,
+          journalColumnsDefConfig,
+          headConfig,
+          execute = true,
+          snapshotTable = Some(
+            JournalHeadMigration.SnapshotTable("MissingSnapshotTable", "persistence-id", "sequence-nr")
+          )
+        )
+        result.snapshotTableScanned shouldBe false
+        result.createdJournalHeads should be >= 1
+      } finally client.close()
+
+      headSequenceNr(pid) shouldBe Some(3L)
     }
 
     "report the planner timing and reads for the perf probe" in {

@@ -157,7 +157,7 @@ final class DynamoDBDurableStateStoreV2[A](
       akkaSerialization.serialize(persistenceId, value).flatMap { serialized =>
         val row = StateRow(
           persistenceId = persistenceId,
-          revision = revision + 1,
+          revision = revision,
           payload = serialized.payload,
           serializerId = serialized.serializerId,
           serializerManifest = serialized.serializerManifest,

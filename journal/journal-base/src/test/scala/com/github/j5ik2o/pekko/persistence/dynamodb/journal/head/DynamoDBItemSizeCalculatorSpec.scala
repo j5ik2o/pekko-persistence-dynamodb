@@ -75,18 +75,28 @@ final class DynamoDBItemSizeCalculatorSpec extends AnyWordSpec with Matchers {
   private def event(sequenceNr: Long, messageLength: Int): JournalHeadEvent =
     JournalHeadEvent(SequenceNumber(sequenceNr), Array.fill(messageLength)(0x41.toByte))
 
-  private def journalRow(messageLength: Int): JournalRow =
+  private def journalRow(sequenceNr: Long, messageLength: Int, tags: Option[String] = None): JournalRow =
     JournalRow(
       persistenceId = persistenceId,
-      sequenceNumber = SequenceNumber(1),
+      sequenceNumber = SequenceNumber(sequenceNr),
       deleted = false,
       message = Array.fill(messageLength)(0x41.toByte),
-      ordering = 1L
+      ordering = sequenceNr,
+      tags = tags
     )
 
-  private def headItemSize(messageLength: Int): Int =
+  private def journalRowSize(row: JournalRow): Int = {
+    val key = s"${persistenceId.asString}-${row.sequenceNumber.value}"
+    DynamoDBItemSizeCalculator.journalItemSize(row, journalColumns, key, key)
+  }
+
+  private def headItemSize(messageLengths: Int*): Int =
     DynamoDBItemSizeCalculator.journalHeadItemSize(
-      JournalHeadRow(persistenceId, SequenceNumber(1), Seq(event(1, messageLength))),
+      JournalHeadRow(
+        persistenceId,
+        SequenceNumber(messageLengths.size.toLong),
+        messageLengths.zipWithIndex.map { case (messageLength, index) => event(index + 1L, messageLength) }
+      ),
       headColumns
     )
 
@@ -122,13 +132,18 @@ final class DynamoDBItemSizeCalculatorSpec extends AnyWordSpec with Matchers {
       DynamoDBItemSizeCalculator.journalHeadItemSize(head, headColumns) shouldBe expected
     }
 
-    "accept a write exactly at the item size limit and reject one byte more" in {
-      val messageLengthAtLimit = JournalHeadLimits.MaxItemSizeBytes - headItemSize(0)
-      headItemSize(messageLengthAtLimit) shouldBe JournalHeadLimits.MaxItemSizeBytes
-      headItemSize(messageLengthAtLimit + 1) shouldBe JournalHeadLimits.MaxItemSizeBytes + 1
+    "accept a JournalHead item exactly at the item size limit and reject one byte more" in {
+      // Two events keep each journal row under 400 KB while the head item reaches the exact item size limit. One event
+      // at the head limit would put the journal row itself over the limit, and the row check would reject it first.
+      val available         = JournalHeadLimits.MaxItemSizeBytes - headItemSize(0, 0)
+      val firstMessageSize  = available / 2
+      val secondMessageSize = available - firstMessageSize
+
+      headItemSize(firstMessageSize, secondMessageSize) shouldBe JournalHeadLimits.MaxItemSizeBytes
+      headItemSize(firstMessageSize, secondMessageSize + 1) shouldBe JournalHeadLimits.MaxItemSizeBytes + 1
 
       val accepted = JournalHeadWriteRequest.of(
-        Seq(journalRow(messageLengthAtLimit)),
+        Seq(journalRow(1L, firstMessageSize), journalRow(2L, secondMessageSize)),
         headConfig,
         journalColumns,
         partitionKeyResolver,
@@ -137,7 +152,7 @@ final class DynamoDBItemSizeCalculatorSpec extends AnyWordSpec with Matchers {
       accepted.isRight shouldBe true
 
       val rejected = JournalHeadWriteRequest.of(
-        Seq(journalRow(messageLengthAtLimit + 1)),
+        Seq(journalRow(1L, firstMessageSize), journalRow(2L, secondMessageSize + 1)),
         headConfig,
         journalColumns,
         partitionKeyResolver,
@@ -149,6 +164,41 @@ final class DynamoDBItemSizeCalculatorSpec extends AnyWordSpec with Matchers {
           exception.limitBytes shouldBe JournalHeadLimits.MaxItemSizeBytes
         case other =>
           fail(s"expected Left(JournalHeadItemTooLargeException) but got $other")
+      }
+    }
+
+    "reject a journal row exactly one byte over the item size limit while the head item is small" in {
+      // The journal row carries its tags and the JournalHead item does not.
+      val rowWithoutTags = journalRow(1L, messageLength = 1)
+      val tagsAtLimit =
+        "t" * (JournalHeadLimits.MaxItemSizeBytes - journalRowSize(rowWithoutTags) -
+        DynamoDBItemSizeCalculator.stringSize(journalColumns.tagsColumnName))
+
+      val accepted = JournalHeadWriteRequest.of(
+        Seq(journalRow(1L, messageLength = 1, tags = Some(tagsAtLimit))),
+        headConfig,
+        journalColumns,
+        partitionKeyResolver,
+        sortKeyResolver
+      )
+      accepted.isRight shouldBe true
+
+      val rejected = JournalHeadWriteRequest.of(
+        Seq(journalRow(1L, messageLength = 1, tags = Some(tagsAtLimit + "t"))),
+        headConfig,
+        journalColumns,
+        partitionKeyResolver,
+        sortKeyResolver
+      )
+      rejected match {
+        case Left(exception: JournalHeadJournalRowTooLargeException) =>
+          exception.sequenceNr shouldBe 1L
+          exception.itemSizeBytes shouldBe JournalHeadLimits.MaxItemSizeBytes + 1
+          exception.limitBytes shouldBe JournalHeadLimits.MaxItemSizeBytes
+        case Left(other) =>
+          fail(s"expected Left(JournalHeadJournalRowTooLargeException) but got $other")
+        case Right(_) =>
+          fail("expected Left(JournalHeadJournalRowTooLargeException) but got an accepted write")
       }
     }
   }

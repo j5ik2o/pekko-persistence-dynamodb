@@ -190,11 +190,11 @@ node runs with `head.enabled = true`.
    $ sbt -batch "journal-v2/runMain com.github.j5ik2o.pekko.persistence.dynamodb.journal.head.JournalHeadMigration --execute"
    ```
 
-   The tool reads the snapshot table from `j5ik2o.dynamo-db-snapshot` when that config is present, and otherwise uses
-   the table name `Snapshot` with the columns `persistence-id` and `sequence-nr`. Override them with
-   `--snapshot-table`, `--snapshot-persistence-id-column` and `--snapshot-sequence-nr-column`, or pass
-   `--without-snapshots` when the deployment has no snapshot table. A snapshot table that does not exist is skipped
-   and reported.
+   The tool reads the snapshot table from `j5ik2o.dynamo-db-snapshot` when that config is present. Without that config,
+   pass `--snapshot-table` with the table name; the tool exits with an error instead of guessing the default `Snapshot`
+   table. Override the columns with `--snapshot-persistence-id-column` and `--snapshot-sequence-nr-column`, or pass
+   `--without-snapshots` when the deployment has no snapshot table. Each of these options requires a value, and a
+   missing value is an error. A snapshot table that does not exist is skipped and reported.
 
    Scanning the snapshot table matters: an aggregate whose journal events were all hard deleted has no journal row
    left, and its snapshot is the only record of its last sequence number. Without a migrated `JournalHead` item, the
@@ -270,6 +270,8 @@ A single write is rejected, before anything is sent to DynamoDB, when:
 - it carries more than 99 events (the transaction would contain more than 100 items, the DynamoDB limit), with
   `JournalHeadTooManyEventsException`;
 - the `JournalHead` item would exceed 400 KB, with `JournalHeadItemTooLargeException`;
+- a journal row would exceed 400 KB, with `JournalHeadJournalRowTooLargeException` (a journal row carries the encoded
+  event and its tags, so it can exceed the limit while the `JournalHead` item stays below it);
 - the whole transaction would exceed 4 MB, with `JournalHeadTransactionTooLargeException`.
 
 A rejected write is neither split into several transactions nor written without a transaction.
@@ -298,8 +300,17 @@ at most 400 KB for the `JournalHead` item) after the restart.
 | `DuplicateJournalEventsException`            | the journal already contains some of the written events          |
 | `JournalHeadTooManyEventsException`          | more than 99 events in one write                                 |
 | `JournalHeadItemTooLargeException`           | the `JournalHead` item would exceed 400 KB                       |
+| `JournalHeadJournalRowTooLargeException`     | a journal row would exceed 400 KB (the encoded event and tags)   |
 | `JournalHeadTransactionTooLargeException`    | the transaction would exceed 4 MB                                |
 | `JournalHeadInvalidWriteException`           | the rows of one write are empty, span several persistence ids, or are not contiguous |
+
+## In-place event updates
+
+`DynamoDBJournal.InPlaceUpdateEvent` rewrites the `message` column of one journal row and does not touch the
+`JournalHead` item. When `head.enabled` is true, the plugin refuses the update and the caller receives a
+`JournalHeadAsyncUpdateEventUnsupportedException`. The refusal keeps the journal and the head from disagreeing, so a
+consumer of the head stream never applies the old event after an update. Disable head mode for the journal, or persist a
+new event, instead of updating an event in place. Updating the head in the same transaction is a future change.
 
 ## Deleting events
 

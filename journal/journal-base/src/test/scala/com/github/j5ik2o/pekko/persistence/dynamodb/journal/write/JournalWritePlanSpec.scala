@@ -89,14 +89,24 @@ final class JournalWritePlanSpec extends AnyWordSpec with Matchers {
       tags = tags
     )
 
-  private def headItemSize(persistenceId: PersistenceId, messageLength: Int): Int =
+  private def headItemSize(persistenceId: PersistenceId, messageLengths: Int*): Int =
     DynamoDBItemSizeCalculator.journalHeadItemSize(
       JournalHeadRow(
         persistenceId,
-        SequenceNumber(1),
-        Seq(JournalHeadEvent(SequenceNumber(1), Array.fill(messageLength)(0x41.toByte)))
+        SequenceNumber(messageLengths.size.toLong),
+        messageLengths.zipWithIndex.map { case (messageLength, index) =>
+          JournalHeadEvent(SequenceNumber(index + 1L), Array.fill(messageLength)(0x41.toByte))
+        }
       ),
       headConfig.columnsDefConfig
+    )
+
+  private def journalRowSize(persistenceId: PersistenceId, row: JournalRow): Int =
+    DynamoDBItemSizeCalculator.journalItemSize(
+      row,
+      journalColumns,
+      partitionKeyResolver.resolve(persistenceId, row.sequenceNumber).asString,
+      sortKeyResolver.resolve(persistenceId, row.sequenceNumber).asString
     )
 
   private def plan(
@@ -193,25 +203,72 @@ final class JournalWritePlanSpec extends AnyWordSpec with Matchers {
     }
 
     "accept a JournalHead item of exactly 409600 bytes and reject 409601 bytes" in {
-      val persistenceId  = PersistenceId("plan-size-boundary-1")
-      val messageAtLimit = JournalHeadLimits.MaxItemSizeBytes - headItemSize(persistenceId, 0)
+      // Two events keep each journal row under 400 KB while the head item reaches the exact item size limit. One event
+      // at the head limit would put the journal row itself over the limit, and the row check would reject it first.
+      val persistenceId     = PersistenceId("plan-size-boundary-1")
+      val available         = JournalHeadLimits.MaxItemSizeBytes - headItemSize(persistenceId, 0, 0)
+      val firstMessageSize  = available / 2
+      val secondMessageSize = available - firstMessageSize
 
-      headItemSize(persistenceId, messageAtLimit) shouldBe JournalHeadLimits.MaxItemSizeBytes
-      headItemSize(persistenceId, messageAtLimit + 1) shouldBe JournalHeadLimits.MaxItemSizeBytes + 1
+      headItemSize(persistenceId, firstMessageSize, secondMessageSize) shouldBe JournalHeadLimits.MaxItemSizeBytes
 
-      plan(Seq(journalRow(persistenceId, 1L, messageAtLimit))) match {
+      plan(
+        Seq(
+          journalRow(persistenceId, 1L, firstMessageSize),
+          journalRow(persistenceId, 2L, secondMessageSize)
+        )
+      ) match {
         case Right(_) => ()
         case Left(rejection) =>
           fail(s"expected an accepted write but got $rejection")
       }
 
-      plan(Seq(journalRow(persistenceId, 1L, messageAtLimit + 1))) match {
+      headItemSize(persistenceId, firstMessageSize, secondMessageSize + 1) shouldBe
+      JournalHeadLimits.MaxItemSizeBytes + 1
+      plan(
+        Seq(
+          journalRow(persistenceId, 1L, firstMessageSize),
+          journalRow(persistenceId, 2L, secondMessageSize + 1)
+        )
+      ) match {
         case Left(WriteRejection.HeadItemTooLarge(rejectedId, itemSizeBytes, limitBytes)) =>
           rejectedId shouldBe persistenceId.asString
           itemSizeBytes shouldBe JournalHeadLimits.MaxItemSizeBytes + 1
           limitBytes shouldBe JournalHeadLimits.MaxItemSizeBytes
         case other =>
           fail(s"expected HeadItemTooLarge but got $other")
+      }
+    }
+
+    "reject a journal row of more than 400 KB even when the JournalHead item is small" in {
+      // The row carries its tags and the JournalHead item does not, so a large tag makes the row larger than the head.
+      val persistenceId  = PersistenceId("plan-row-size-boundary-1")
+      val rowWithoutTags = journalRow(persistenceId, 1L, messageLength = 1)
+      val tagsAtLimit =
+        "t" * (JournalHeadLimits.MaxItemSizeBytes - journalRowSize(persistenceId, rowWithoutTags) -
+        DynamoDBItemSizeCalculator.stringSize(journalColumns.tagsColumnName))
+      val rowAtLimit   = journalRow(persistenceId, 1L, messageLength = 1, tags = Some(tagsAtLimit))
+      val rowOverLimit = journalRow(persistenceId, 1L, messageLength = 1, tags = Some(tagsAtLimit + "t"))
+
+      journalRowSize(persistenceId, rowAtLimit) shouldBe JournalHeadLimits.MaxItemSizeBytes
+      journalRowSize(persistenceId, rowOverLimit) shouldBe JournalHeadLimits.MaxItemSizeBytes + 1
+
+      plan(Seq(rowAtLimit)) match {
+        case Right(_) => ()
+        case Left(rejection) =>
+          fail(s"expected an accepted write but got $rejection")
+      }
+
+      plan(Seq(rowOverLimit)) match {
+        case Left(WriteRejection.JournalRowTooLarge(rejectedId, sequenceNr, itemSizeBytes, limitBytes)) =>
+          rejectedId shouldBe persistenceId.asString
+          sequenceNr shouldBe 1L
+          itemSizeBytes shouldBe JournalHeadLimits.MaxItemSizeBytes + 1
+          limitBytes shouldBe JournalHeadLimits.MaxItemSizeBytes
+        case Left(rejection) =>
+          fail(s"expected JournalRowTooLarge but got $rejection")
+        case Right(_) =>
+          fail("expected JournalRowTooLarge but got an accepted write")
       }
     }
 
