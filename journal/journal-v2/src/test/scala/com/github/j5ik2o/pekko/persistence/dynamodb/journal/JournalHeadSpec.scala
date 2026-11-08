@@ -328,18 +328,24 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
       ordering = sequenceNr
     )
 
-  private def headItemSize(persistenceId: String, messageLength: Int): Int =
+  /** Two events keep each journal row under 400 KB while the head item reaches the exact item size limit. */
+  private def headItemSize(persistenceId: String, firstMessageLength: Int, secondMessageLength: Int): Int =
     DynamoDBItemSizeCalculator.journalHeadItemSize(
       JournalHeadRow(
         PersistenceId(persistenceId),
-        SequenceNumber(1),
-        Seq(JournalHeadEvent(SequenceNumber(1), Array.fill(messageLength)(0x41.toByte)))
+        SequenceNumber(2),
+        Seq(
+          JournalHeadEvent(SequenceNumber(1), Array.fill(firstMessageLength)(0x41.toByte)),
+          JournalHeadEvent(SequenceNumber(2), Array.fill(secondMessageLength)(0x41.toByte))
+        )
       ),
       headConfig.columnsDefConfig
     )
 
-  private def messageLengthAtItemSize(persistenceId: String, itemSizeBytes: Int): Int =
-    itemSizeBytes - headItemSize(persistenceId, 0)
+  private def messageLengthsAtItemSize(persistenceId: String, itemSizeBytes: Int): (Int, Int) = {
+    val available = itemSizeBytes - headItemSize(persistenceId, 0, 0)
+    (available / 2, available / 2 + available % 2)
+  }
 
   private def failedWith(dao: WriteJournalDaoImpl, rows: Seq[JournalRow]): Throwable = {
     implicit val mat: Materializer = SystemMaterializer(headEnabledSystem).materializer
@@ -701,25 +707,40 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
     }
 
     "accept a JournalHead item of exactly 409600 bytes and reject 409601 bytes on the same queue" in {
-      val acceptedPid           = "head-size-boundary-accepted-1"
-      val rejectedPid           = "head-size-boundary-rejected-1"
-      val acceptedMessageLength = messageLengthAtItemSize(acceptedPid, JournalHeadLimits.MaxItemSizeBytes)
-      val rejectedMessageLength = messageLengthAtItemSize(rejectedPid, JournalHeadLimits.MaxItemSizeBytes + 1)
+      // Two events keep each journal row under 400 KB while the head item reaches the exact item size limit. One
+      // event at the head limit would put the journal row itself over the limit, and DynamoDB would refuse it first.
+      val acceptedPid                     = "head-size-boundary-accepted-1"
+      val rejectedPid                     = "head-size-boundary-rejected-1"
+      val (acceptedFirst, acceptedSecond) = messageLengthsAtItemSize(acceptedPid, JournalHeadLimits.MaxItemSizeBytes)
+      val (rejectedFirst, rejectedSecond) =
+        messageLengthsAtItemSize(rejectedPid, JournalHeadLimits.MaxItemSizeBytes + 1)
 
-      headItemSize(acceptedPid, acceptedMessageLength) shouldBe JournalHeadLimits.MaxItemSizeBytes
-      headItemSize(rejectedPid, rejectedMessageLength) shouldBe JournalHeadLimits.MaxItemSizeBytes + 1
+      headItemSize(acceptedPid, acceptedFirst, acceptedSecond) shouldBe JournalHeadLimits.MaxItemSizeBytes
+      headItemSize(rejectedPid, rejectedFirst, rejectedSecond) shouldBe JournalHeadLimits.MaxItemSizeBytes + 1
 
       val dao = newWriteJournalDao(headEnabledSystem)
       try {
         implicit val mat: Materializer = SystemMaterializer(headEnabledSystem).materializer
         Await.result(
-          dao.putMessages(Seq(journalRowWithMessage(acceptedPid, 1L, acceptedMessageLength))).runWith(Sink.head),
+          dao
+            .putMessages(
+              Seq(
+                journalRowWithMessage(acceptedPid, 1L, acceptedFirst),
+                journalRowWithMessage(acceptedPid, 2L, acceptedSecond)
+              )
+            ).runWith(Sink.head),
           120.seconds
-        ) shouldBe 1L
-        journalSequenceNrs(acceptedPid) shouldBe Seq(1L)
-        headSequenceNr(acceptedPid) shouldBe Some(1L)
+        ) shouldBe 2L
+        journalSequenceNrs(acceptedPid) shouldBe Seq(1L, 2L)
+        headSequenceNr(acceptedPid) shouldBe Some(2L)
 
-        val exception = failedWith(dao, Seq(journalRowWithMessage(rejectedPid, 1L, rejectedMessageLength)))
+        val exception = failedWith(
+          dao,
+          Seq(
+            journalRowWithMessage(rejectedPid, 1L, rejectedFirst),
+            journalRowWithMessage(rejectedPid, 2L, rejectedSecond)
+          )
+        )
         exception shouldBe a[JournalHeadItemTooLargeException]
         exception.asInstanceOf[JournalHeadItemTooLargeException].itemSizeBytes shouldBe
         JournalHeadLimits.MaxItemSizeBytes + 1
