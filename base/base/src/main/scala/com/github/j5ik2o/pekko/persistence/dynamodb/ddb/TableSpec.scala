@@ -92,15 +92,15 @@ final case class TableSpec(
     }
   }
 
-  private def keyValue(name: AttributeName, values: AttributeMap): Either[KeyError, DdbValue] = {
-    values.get(name).toRight(KeyError.Missing(name)).flatMap { value =>
-      column(name) match {
-        case None                                   => Left(KeyError.Missing(name))
-        case Some(column) if matches(column, value) => Right(value)
-        case Some(column)                           => Left(KeyError.WrongType(name, column.kind))
-      }
+  private def keyValue(name: AttributeName, values: AttributeMap): Either[KeyError, DdbValue] =
+    column(name) match {
+      case None => Left(KeyError.UndefinedColumn(name))
+      case Some(column) =>
+        values.get(name).toRight(KeyError.Missing(name)).flatMap { value =>
+          if (matches(column, value)) Right(value)
+          else Left(KeyError.WrongType(name, column.kind))
+        }
     }
-  }
 
   private def matches(column: Column, value: DdbValue): Boolean = (column.kind, value) match {
     case (AttributeKind.S, DdbValue.Str(_)) => true

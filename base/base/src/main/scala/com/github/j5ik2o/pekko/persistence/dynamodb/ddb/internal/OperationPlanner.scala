@@ -22,7 +22,10 @@ import scala.collection.mutable
 
 private[dynamodb] object OperationPlanner {
 
-  def plan(operation: Operation): Either[EncodeError, RenderedOperation] = operation match {
+  def plan(operation: Operation): Either[EncodeError, RenderedOperation] =
+    OperationKeys.validate(operation).flatMap(_ => planValidated(operation))
+
+  private def planValidated(operation: Operation): Either[EncodeError, RenderedOperation] = operation match {
     case Operation.Put(table, item, condition) =>
       Right(RenderedOperation.Put(table, item, condition.map(renderCondition)))
 

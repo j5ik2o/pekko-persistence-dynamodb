@@ -162,6 +162,23 @@ final class OperationPlannerSpec extends AnyFreeSpec with Matchers {
       .isLeft shouldBe true
   }
 
+  "OperationPlanner rejects a key from another table" in {
+    val otherSpec = spec.copy(table = TableName("Other"))
+    val otherKey  = otherSpec.keyOf(rowKey.values).toOption.get
+    val updates   = Vector(AttributeUpdate.Remove(AttributeName("a")))
+
+    val operations = Vector[Operation](
+      Operation.Get(table, otherKey),
+      Operation.Delete(table, otherKey),
+      Operation.Update(table, otherKey, updates),
+      Operation.BatchWrite(table, Vector.empty, Vector(otherKey)),
+      Operation.TransactWrite(Vector(TransactItem.Delete(table, otherKey))),
+      Operation.TransactWrite(Vector(TransactItem.Update(table, otherKey, updates)))
+    )
+
+    operations.foreach(operation => withClue(operation.toString)(OperationPlanner.plan(operation).isLeft shouldBe true))
+  }
+
   "OperationPlanner renders every operation case" in {
     val operations = Vector[Operation](
       Operation.Put(table, AttributeMap.empty),

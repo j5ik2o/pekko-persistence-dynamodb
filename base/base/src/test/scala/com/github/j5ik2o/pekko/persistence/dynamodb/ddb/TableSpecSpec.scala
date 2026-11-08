@@ -85,6 +85,13 @@ final class TableSpecSpec extends AnyFreeSpec with Matchers {
     result shouldBe Left(KeyError.WrongType(AttributeName("skey"), AttributeKind.S))
   }
 
+  "TableSpec.keyOf reports an undefined key column before a missing attribute" in {
+    val broken = journal.copy(primaryKey = PrimaryKey(AttributeName("pkey"), Some(AttributeName("undefined"))))
+
+    broken.keyOf(AttributeMap.of(AttributeName("pkey") -> DdbValue.Str("partition"))) shouldBe
+    Left(KeyError.UndefinedColumn(AttributeName("undefined")))
+  }
+
   "AttributeMap keeps the last value for a name and merges in order" in {
     val first = AttributeMap.of(
       AttributeName("a") -> DdbValue.Str("1"),
@@ -95,5 +102,19 @@ final class TableSpecSpec extends AnyFreeSpec with Matchers {
     merged.get(AttributeName("a")) shouldBe Some(DdbValue.Str("3"))
     merged.names shouldBe Vector(AttributeName("b"), AttributeName("a"))
     merged.removed(AttributeName("b")).names shouldBe Vector(AttributeName("a"))
+  }
+
+  "AttributeMap keeps one value per name when constructed from duplicates" in {
+    val map = AttributeMap(
+      Vector(
+        AttributeName("a") -> DdbValue.Str("1"),
+        AttributeName("b") -> DdbValue.Str("2"),
+        AttributeName("a") -> DdbValue.Str("3")
+      )
+    )
+
+    map.size shouldBe 2
+    map.get(AttributeName("a")) shouldBe Some(DdbValue.Str("3"))
+    map.entries shouldBe Vector(AttributeName("b") -> DdbValue.Str("2"), AttributeName("a") -> DdbValue.Str("3"))
   }
 }
