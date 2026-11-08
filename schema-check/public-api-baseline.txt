@@ -1,4 +1,4 @@
-# Public declarations of the published modules at the baseline commit.
+# Public declarations of the published modules. The compatibility check fails when one of these disappears.
 # Format: module<TAB>path<TAB>owner<TAB>declaration
 # Regenerate with: sbt "schema-check/runMain com.github.j5ik2o.pekko.persistence.dynamodb.schemacheck.ApiBaseline <repo-root> schema-check/public-api-baseline.txt"
 base	base/base/src/main/scala-2.11/org/apache/pekko/stream/scaladsl/SourceUtils.scala		object SourceUtils
@@ -246,6 +246,198 @@ base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/conte
 base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/context/PluginContext.scala	PluginContext	def system: ActorSystem
 base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/context/PluginContext.scala	PluginContext	type This <: PluginContext
 base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/context/PluginContext.scala	PluginContext	val pluginConfig: PluginConfig
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/AttributeMap.scala		final case class AttributeMap(entries: Vector[(AttributeName, DdbValue)])
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/AttributeMap.scala		object AttributeMap
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/AttributeMap.scala	AttributeMap	def contains(name: AttributeName): Boolean
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/AttributeMap.scala	AttributeMap	def get(name: AttributeName): Option[DdbValue]
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/AttributeMap.scala	AttributeMap	def isEmpty: Boolean
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/AttributeMap.scala	AttributeMap	def merge(other: AttributeMap): AttributeMap
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/AttributeMap.scala	AttributeMap	def names: Vector[AttributeName]
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/AttributeMap.scala	AttributeMap	def nonEmpty: Boolean
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/AttributeMap.scala	AttributeMap	def of(entries: (AttributeName, DdbValue)*): AttributeMap
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/AttributeMap.scala	AttributeMap	def removed(name: AttributeName): AttributeMap
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/AttributeMap.scala	AttributeMap	def size: Int
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/AttributeMap.scala	AttributeMap	def sorted: AttributeMap
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/AttributeMap.scala	AttributeMap	def updated(name: AttributeName, value: DdbValue): AttributeMap
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/AttributeMap.scala	AttributeMap	val empty: AttributeMap
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/AttributeUpdate.scala		object AttributeUpdate
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/AttributeUpdate.scala		sealed trait AttributeUpdate
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/AttributeUpdate.scala	AttributeUpdate	final case class Remove(name: AttributeName) extends AttributeUpdate
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/AttributeUpdate.scala	AttributeUpdate	final case class Set(name: AttributeName, value: DdbValue) extends AttributeUpdate
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/ClientVariant.scala		final case class CapabilityProfile( sync: Boolean, async: Boolean, dax: Boolean, transactWrite: Boolean, streams: Boolean, batchWriteLimit: Int, transactItemLimit: Int, itemSizeLimitBytes: Int, transactionSizeLimitBytes: Long )
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/ClientVariant.scala		object CapabilityProfile
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/ClientVariant.scala		object ClientVariant
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/ClientVariant.scala		sealed trait ClientVariant
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/ClientVariant.scala	CapabilityProfile	val V1: CapabilityProfile
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/ClientVariant.scala	CapabilityProfile	val V1Dax: CapabilityProfile
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/ClientVariant.scala	CapabilityProfile	val V2: CapabilityProfile
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/ClientVariant.scala	CapabilityProfile	val V2Dax: CapabilityProfile
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/ClientVariant.scala	ClientVariant	case object V1 extends ClientVariant
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/ClientVariant.scala	ClientVariant	case object V1Dax extends ClientVariant
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/ClientVariant.scala	ClientVariant	case object V2 extends ClientVariant
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/ClientVariant.scala	ClientVariant	case object V2Dax extends ClientVariant
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/ClientVariant.scala	ClientVariant	def capabilities: CapabilityProfile
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/ClientVariant.scala	ClientVariant	def clientVersion: ClientVersion.Value
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/ClientVariant.scala	ClientVariant	def fromClientVersion(version: ClientVersion.Value): Option[ClientVariant]
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/ClientVariant.scala	ClientVariant	val all: Vector[ClientVariant]
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/ClientVariant.scala	ClientVariant.V1	override val capabilities: CapabilityProfile
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/ClientVariant.scala	ClientVariant.V1	override val clientVersion: ClientVersion.Value
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/ClientVariant.scala	ClientVariant.V1Dax	override val capabilities: CapabilityProfile
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/ClientVariant.scala	ClientVariant.V1Dax	override val clientVersion: ClientVersion.Value
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/ClientVariant.scala	ClientVariant.V2	override val capabilities: CapabilityProfile
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/ClientVariant.scala	ClientVariant.V2	override val clientVersion: ClientVersion.Value
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/ClientVariant.scala	ClientVariant.V2Dax	override val capabilities: CapabilityProfile
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/ClientVariant.scala	ClientVariant.V2Dax	override val clientVersion: ClientVersion.Value
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Condition.scala		object CompareOp
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Condition.scala		object Condition
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Condition.scala		object Operand
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Condition.scala		object SortKeyCondition
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Condition.scala		sealed trait CompareOp
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Condition.scala		sealed trait Condition
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Condition.scala		sealed trait Operand
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Condition.scala		sealed trait SortKeyCondition
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Condition.scala	CompareOp	case object BeginsWith extends CompareOp
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Condition.scala	CompareOp	case object Eq extends CompareOp
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Condition.scala	CompareOp	case object Ge extends CompareOp
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Condition.scala	CompareOp	case object Gt extends CompareOp
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Condition.scala	CompareOp	case object Le extends CompareOp
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Condition.scala	CompareOp	case object Lt extends CompareOp
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Condition.scala	Condition	final case class And(left: Condition, right: Condition) extends Condition
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Condition.scala	Condition	final case class AttributeExists(name: AttributeName) extends Condition
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Condition.scala	Condition	final case class AttributeNotExists(name: AttributeName) extends Condition
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Condition.scala	Condition	final case class Compare(left: Operand, op: CompareOp, right: Operand) extends Condition
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Condition.scala	Condition	final case class Not(condition: Condition) extends Condition
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Condition.scala	Condition	final case class Or(left: Condition, right: Condition) extends Condition
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Condition.scala	Operand	final case class Column(name: AttributeName) extends Operand
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Condition.scala	Operand	final case class Literal(value: DdbValue) extends Operand
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Condition.scala	SortKeyCondition	final case class BeginsWith(value: DdbValue) extends SortKeyCondition
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Condition.scala	SortKeyCondition	final case class Between(lower: DdbValue, upper: DdbValue) extends SortKeyCondition
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Condition.scala	SortKeyCondition	final case class Eq(value: DdbValue) extends SortKeyCondition
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Condition.scala	SortKeyCondition	final case class Ge(value: DdbValue) extends SortKeyCondition
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Condition.scala	SortKeyCondition	final case class Gt(value: DdbValue) extends SortKeyCondition
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Condition.scala	SortKeyCondition	final case class Le(value: DdbValue) extends SortKeyCondition
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Condition.scala	SortKeyCondition	final case class Lt(value: DdbValue) extends SortKeyCondition
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/DdbClientAdapter.scala		trait DdbClientAdapter
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/DdbClientAdapter.scala	DdbClientAdapter	def capabilities: CapabilityProfile
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/DdbClientAdapter.scala	DdbClientAdapter	def close(): Unit
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/DdbClientAdapter.scala	DdbClientAdapter	def queryAll(query: Operation.Query): Source[AttributeMap, NotUsed]
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/DdbClientAdapter.scala	DdbClientAdapter	def run(operation: Operation): Source[OperationResult, NotUsed]
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/DdbValue.scala		object DdbValue
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/DdbValue.scala		sealed trait DdbValue
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/DdbValue.scala	DdbValue	case object Null extends DdbValue
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/DdbValue.scala	DdbValue	final case class Bin(value: Vector[Byte]) extends DdbValue
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/DdbValue.scala	DdbValue	final case class BinSet(value: Set[Vector[Byte]]) extends DdbValue
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/DdbValue.scala	DdbValue	final case class Bool(value: Boolean) extends DdbValue
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/DdbValue.scala	DdbValue	final case class L(value: Vector[DdbValue]) extends DdbValue
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/DdbValue.scala	DdbValue	final case class M(value: Vector[(String, DdbValue)]) extends DdbValue
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/DdbValue.scala	DdbValue	final case class Num(value: BigDecimal) extends DdbValue
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/DdbValue.scala	DdbValue	final case class NumSet(value: Set[BigDecimal]) extends DdbValue
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/DdbValue.scala	DdbValue	final case class Str(value: String) extends DdbValue
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/DdbValue.scala	DdbValue	final case class StrSet(value: Set[String]) extends DdbValue
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Errors.scala		final case class EncodeError(detail: String)
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Errors.scala		object DecodeError
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Errors.scala		object KeyError
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Errors.scala		sealed trait DecodeError
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Errors.scala		sealed trait KeyError
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Errors.scala	DecodeError	final case class InvalidValue(name: AttributeName, detail: String) extends DecodeError
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Errors.scala	DecodeError	final case class Missing(name: AttributeName) extends DecodeError
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Errors.scala	DecodeError	final case class WrongType(name: AttributeName, expected: AttributeKind) extends DecodeError
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Errors.scala	KeyError	final case class Missing(name: AttributeName) extends KeyError
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Errors.scala	KeyError	final case class WrongType(name: AttributeName, expected: AttributeKind) extends KeyError
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/ItemSize.scala		object ItemSize
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/ItemSize.scala	ItemSize	def numberSize(value: BigDecimal): Int
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/ItemSize.scala	ItemSize	def of(values: AttributeMap): Int
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/ItemSize.scala	ItemSize	def stringSize(value: String): Int
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/ItemSize.scala	ItemSize	val MaxItemSizeBytes: Int
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/ItemSize.scala	ItemSize	val MaxItemsPerTransaction: Int
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/ItemSize.scala	ItemSize	val MaxTransactionSizeBytes: Long
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Names.scala		final case class AttributeName(value: String) extends AnyVal
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Names.scala		final case class IndexName(value: String) extends AnyVal
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Names.scala		final case class TableName(value: String) extends AnyVal
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Names.scala	AttributeName	override def toString: String
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Names.scala	IndexName	override def toString: String
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Names.scala	TableName	override def toString: String
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Operation.scala		object Operation
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Operation.scala		object TransactItem
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Operation.scala		sealed trait Operation
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Operation.scala		sealed trait TransactItem
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Operation.scala	Operation	final case class BatchWrite(table: TableName, puts: Vector[AttributeMap], deletes: Vector[RowKey]) extends Operation
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Operation.scala	Operation	final case class Delete(table: TableName, key: RowKey, condition: Option[Condition] = None) extends Operation
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Operation.scala	Operation	final case class Get(table: TableName, key: RowKey, consistentRead: Boolean = false) extends Operation
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Operation.scala	Operation	final case class Put(table: TableName, item: AttributeMap, condition: Option[Condition] = None) extends Operation
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Operation.scala	Operation	final case class Query( table: TableName, index: Option[IndexName], hashKey: (AttributeName, DdbValue), rangeKey: Option[(AttributeName, SortKeyCondition)] = None, filter: Option[Condition] = None, limit: Option[Int] = None, consistentRead: Boolean = false, scanForward: Boolean = true, exclusiveStartKey: Option[AttributeMap] = None ) extends Operation
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Operation.scala	Operation	final case class TransactWrite(items: Vector[TransactItem]) extends Operation
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Operation.scala	Operation	final case class Update( table: TableName, key: RowKey, updates: Vector[AttributeUpdate], condition: Option[Condition] = None ) extends Operation
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Operation.scala	TransactItem	final case class Delete(table: TableName, key: RowKey, condition: Option[Condition] = None) extends TransactItem
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Operation.scala	TransactItem	final case class Put(table: TableName, item: AttributeMap, condition: Option[Condition] = None) extends TransactItem
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/Operation.scala	TransactItem	final case class Update( table: TableName, key: RowKey, updates: Vector[AttributeUpdate], condition: Option[Condition] = None ) extends TransactItem
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/OperationResult.scala		final case class ConditionFailure(index: Int, code: String)
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/OperationResult.scala		object OperationResult
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/OperationResult.scala		sealed trait OperationResult
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/OperationResult.scala	OperationResult	final case class ConditionRejected(reasons: Vector[ConditionFailure]) extends OperationResult
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/OperationResult.scala	OperationResult	final case class Item(value: Option[AttributeMap]) extends OperationResult
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/OperationResult.scala	OperationResult	final case class Items(values: Vector[AttributeMap], lastEvaluatedKey: Option[AttributeMap]) extends OperationResult
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/OperationResult.scala	OperationResult	final case class TransactionCommitted(count: Int) extends OperationResult
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/OperationResult.scala	OperationResult	final case class TransactionRejected(reasons: Vector[ConditionFailure]) extends OperationResult
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/OperationResult.scala	OperationResult	final case class Written(count: Int) extends OperationResult
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/RowKey.scala		final class RowKey private[dynamodb] (val table: TableName, val values: AttributeMap)
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/RowKey.scala		object RowKey
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/RowKey.scala	RowKey	def get(name: AttributeName): Option[DdbValue]
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/RowKey.scala	RowKey	override def equals(other: Any): Boolean
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/RowKey.scala	RowKey	override def hashCode(): Int
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/RowKey.scala	RowKey	override def toString: String
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/TableSpec.scala		final case class Column(name: AttributeName, kind: AttributeKind, presence: Presence)
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/TableSpec.scala		final case class IndexSpec( name: IndexName, hash: AttributeName, range: Option[AttributeName], projection: Projection )
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/TableSpec.scala		final case class PrimaryKey(hash: AttributeName, range: Option[AttributeName])
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/TableSpec.scala		final case class TableSpec( table: TableName, columns: Vector[Column], primaryKey: PrimaryKey, indexes: Vector[IndexSpec], stream: Option[StreamView] )
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/TableSpec.scala		object AttributeKind
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/TableSpec.scala		object Presence
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/TableSpec.scala		object Projection
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/TableSpec.scala		object StreamView
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/TableSpec.scala		sealed trait AttributeKind
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/TableSpec.scala		sealed trait Presence
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/TableSpec.scala		sealed trait Projection
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/TableSpec.scala		sealed trait StreamView
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/TableSpec.scala	AttributeKind	case object B extends AttributeKind
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/TableSpec.scala	AttributeKind	case object N extends AttributeKind
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/TableSpec.scala	AttributeKind	case object S extends AttributeKind
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/TableSpec.scala	Presence	case object Optional extends Presence
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/TableSpec.scala	Presence	case object Required extends Presence
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/TableSpec.scala	Projection	case object All extends Projection
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/TableSpec.scala	Projection	case object KeysOnly extends Projection
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/TableSpec.scala	Projection	final case class Include(columns: Vector[AttributeName]) extends Projection
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/TableSpec.scala	StreamView	case object KeysOnly extends StreamView
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/TableSpec.scala	StreamView	case object NewAndOldImages extends StreamView
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/TableSpec.scala	StreamView	case object NewImage extends StreamView
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/TableSpec.scala	StreamView	case object OldImage extends StreamView
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/TableSpec.scala	TableSpec	def column(name: AttributeName): Option[Column]
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/TableSpec.scala	TableSpec	def keyOf(values: AttributeMap): Either[KeyError, RowKey]
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/TableSpec.scala	TableSpec	def withColumns(columns: Vector[Column]): TableSpec
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala		final case class RenderedExpression( expression: String, names: Vector[(String, AttributeName)], values: Vector[(String, DdbValue)] )
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala		object RenderedOperation
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala		object RenderedTransactItem
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala		sealed trait RenderedOperation
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala		sealed trait RenderedTransactItem
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala	RenderedExpression	def normalized: RenderedExpression
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala	RenderedOperation	def normalized: RenderedOperation
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala	RenderedOperation	final case class BatchWrite(table: TableName, puts: Vector[AttributeMap], deletes: Vector[AttributeMap])
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala	RenderedOperation	final case class Delete(table: TableName, key: AttributeMap, condition: Option[RenderedExpression])
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala	RenderedOperation	final case class Get(table: TableName, key: AttributeMap, consistentRead: Boolean) extends RenderedOperation
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala	RenderedOperation	final case class Put(table: TableName, item: AttributeMap, condition: Option[RenderedExpression])
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala	RenderedOperation	final case class Query( table: TableName, index: Option[IndexName], keyCondition: RenderedExpression, filter: Option[RenderedExpression], limit: Option[Int], consistentRead: Boolean, scanForward: Boolean, exclusiveStartKey: Option[AttributeMap] ) extends RenderedOperation
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala	RenderedOperation	final case class TransactWrite(items: Vector[RenderedTransactItem]) extends RenderedOperation
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala	RenderedOperation	final case class Update( table: TableName, key: AttributeMap, update: RenderedExpression, condition: Option[RenderedExpression] ) extends RenderedOperation
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala	RenderedOperation	override def normalized: RenderedOperation
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala	RenderedOperation.Get	override def normalized: RenderedOperation
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala	RenderedOperation.Query	override def normalized: RenderedOperation
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala	RenderedOperation.TransactWrite	override def normalized: RenderedOperation
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala	RenderedOperation.Update	override def normalized: RenderedOperation
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala	RenderedTransactItem	def normalized: RenderedTransactItem
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala	RenderedTransactItem	final case class Delete(table: TableName, key: AttributeMap, condition: Option[RenderedExpression])
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala	RenderedTransactItem	final case class Put(table: TableName, item: AttributeMap, condition: Option[RenderedExpression])
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala	RenderedTransactItem	final case class Update( table: TableName, key: AttributeMap, update: RenderedExpression, condition: Option[RenderedExpression] ) extends RenderedTransactItem
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala	RenderedTransactItem	override def normalized: RenderedTransactItem
+base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala	RenderedTransactItem.Update	override def normalized: RenderedTransactItem
 base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/exception/PluginException.scala		final class PluginException(message: String, cause: Option[Throwable] = None) extends Exception(message, cause.orNull)
 base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/metrics/MetricsReporter.scala		object MetricsReporter
 base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/metrics/MetricsReporter.scala		object MetricsReporterProvider
@@ -481,6 +673,22 @@ base-v1	base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb
 base-v1	base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/client/v1/StreamWriteClient.scala	StreamWriteClient	def putItemFlow: Flow[PutItemRequest, PutItemResult, NotUsed]
 base-v1	base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/client/v1/StreamWriteClient.scala	StreamWriteClient	def recursiveBatchWriteItemFlow: Flow[BatchWriteItemRequest, BatchWriteItemResult, NotUsed]
 base-v1	base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/client/v1/StreamWriteClient.scala	StreamWriteClient	def updateItemFlow: Flow[UpdateItemRequest, UpdateItemResult, NotUsed]
+base-v1	base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v1/V1ClientAdapter.scala		final class V1ClientAdapter( val variant: ClientVariant, asyncClient: Option[AmazonDynamoDBAsync], syncClient: Option[AmazonDynamoDB], executionContext: ExecutionContext ) extends DdbClientAdapter
+base-v1	base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v1/V1ClientAdapter.scala	V1ClientAdapter	override def capabilities: CapabilityProfile
+base-v1	base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v1/V1ClientAdapter.scala	V1ClientAdapter	override def close(): Unit
+base-v1	base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v1/V1ClientAdapter.scala	V1ClientAdapter	override def queryAll(query: Operation.Query): Source[AttributeMap, NotUsed]
+base-v1	base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v1/V1ClientAdapter.scala	V1ClientAdapter	override def run(operation: Operation): Source[OperationResult, NotUsed]
+base-v1	base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v1/V1OperationRenderer.scala		object V1OperationRenderer
+base-v1	base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v1/V1OperationRenderer.scala	V1OperationRenderer	def render(operation: Operation): Either[EncodeError, V1RenderedOperation]
+base-v1	base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v1/V1RenderedOperation.scala		object V1RenderedOperation
+base-v1	base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v1/V1RenderedOperation.scala		sealed trait V1RenderedOperation
+base-v1	base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v1/V1RenderedOperation.scala	V1RenderedOperation	final case class BatchWrite(request: BatchWriteItemRequest) extends V1RenderedOperation
+base-v1	base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v1/V1RenderedOperation.scala	V1RenderedOperation	final case class Delete(request: DeleteItemRequest) extends V1RenderedOperation
+base-v1	base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v1/V1RenderedOperation.scala	V1RenderedOperation	final case class Get(request: GetItemRequest) extends V1RenderedOperation
+base-v1	base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v1/V1RenderedOperation.scala	V1RenderedOperation	final case class Put(request: PutItemRequest) extends V1RenderedOperation
+base-v1	base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v1/V1RenderedOperation.scala	V1RenderedOperation	final case class Query(request: QueryRequest) extends V1RenderedOperation
+base-v1	base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v1/V1RenderedOperation.scala	V1RenderedOperation	final case class TransactWrite(request: TransactWriteItemsRequest) extends V1RenderedOperation
+base-v1	base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v1/V1RenderedOperation.scala	V1RenderedOperation	final case class Update(request: UpdateItemRequest) extends V1RenderedOperation
 base-v1	base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V1AsyncClientFactory.scala		object V1AsyncClientFactory
 base-v1	base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V1AsyncClientFactory.scala		trait V1AsyncClientFactory
 base-v1	base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V1AsyncClientFactory.scala	V1AsyncClientFactory	def create: AmazonDynamoDBAsync
@@ -553,6 +761,22 @@ base-v2	base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb
 base-v2	base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/client/v2/StreamWriteClient.scala	StreamWriteClient	def recursiveBatchWriteItemFlow: Flow[BatchWriteItemRequest, BatchWriteItemResponse, NotUsed]
 base-v2	base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/client/v2/StreamWriteClient.scala	StreamWriteClient	def transactWriteItemsFlow: Flow[TransactWriteItemsRequest, TransactWriteItemsResponse, NotUsed]
 base-v2	base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/client/v2/StreamWriteClient.scala	StreamWriteClient	def updateItemFlow: Flow[UpdateItemRequest, UpdateItemResponse, NotUsed]
+base-v2	base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v2/V2ClientAdapter.scala		final class V2ClientAdapter( val variant: ClientVariant, asyncClient: Option[DynamoDbAsyncClient], syncClient: Option[DynamoDbClient], executionContext: ExecutionContext ) extends DdbClientAdapter
+base-v2	base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v2/V2ClientAdapter.scala	V2ClientAdapter	override def capabilities: CapabilityProfile
+base-v2	base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v2/V2ClientAdapter.scala	V2ClientAdapter	override def close(): Unit
+base-v2	base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v2/V2ClientAdapter.scala	V2ClientAdapter	override def queryAll(query: Operation.Query): Source[AttributeMap, NotUsed]
+base-v2	base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v2/V2ClientAdapter.scala	V2ClientAdapter	override def run(operation: Operation): Source[OperationResult, NotUsed]
+base-v2	base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v2/V2OperationRenderer.scala		object V2OperationRenderer
+base-v2	base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v2/V2OperationRenderer.scala	V2OperationRenderer	def render(operation: Operation): Either[EncodeError, V2RenderedOperation]
+base-v2	base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v2/V2RenderedOperation.scala		object V2RenderedOperation
+base-v2	base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v2/V2RenderedOperation.scala		sealed trait V2RenderedOperation
+base-v2	base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v2/V2RenderedOperation.scala	V2RenderedOperation	final case class BatchWrite(request: BatchWriteItemRequest) extends V2RenderedOperation
+base-v2	base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v2/V2RenderedOperation.scala	V2RenderedOperation	final case class Delete(request: DeleteItemRequest) extends V2RenderedOperation
+base-v2	base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v2/V2RenderedOperation.scala	V2RenderedOperation	final case class Get(request: GetItemRequest) extends V2RenderedOperation
+base-v2	base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v2/V2RenderedOperation.scala	V2RenderedOperation	final case class Put(request: PutItemRequest) extends V2RenderedOperation
+base-v2	base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v2/V2RenderedOperation.scala	V2RenderedOperation	final case class Query(request: QueryRequest) extends V2RenderedOperation
+base-v2	base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v2/V2RenderedOperation.scala	V2RenderedOperation	final case class TransactWrite(request: TransactWriteItemsRequest) extends V2RenderedOperation
+base-v2	base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v2/V2RenderedOperation.scala	V2RenderedOperation	final case class Update(request: UpdateItemRequest) extends V2RenderedOperation
 base-v2	base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V2AsyncClientFactory.scala		object V2AsyncClientFactory
 base-v2	base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V2AsyncClientFactory.scala		trait V2AsyncClientFactory
 base-v2	base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V2AsyncClientFactory.scala	V2AsyncClientFactory	class Default(pluginContext: PluginContext) extends V2AsyncClientFactory
