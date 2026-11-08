@@ -1,6 +1,9 @@
 name: Review gate
 
 on:
+  # A dispatch records its run against the dispatched branch SHA. It may not
+  # update the pull request's required check when that SHA differs from the PR
+  # head, so treat the dispatch as an auxiliary re-run.
   workflow_dispatch:
     inputs:
       pr:
