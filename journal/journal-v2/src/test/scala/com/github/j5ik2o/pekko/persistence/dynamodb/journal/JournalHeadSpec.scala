@@ -53,6 +53,7 @@ import software.amazon.awssdk.services.dynamodb.streams.DynamoDbStreamsClient
 import software.amazon.awssdk.services.dynamodb.{ DynamoDbClient => V2DynamoDbClient }
 
 import java.net.URI
+import java.util.concurrent.atomic.AtomicInteger
 import scala.collection.immutable
 import scala.concurrent.duration._
 import scala.concurrent.{ Await, ExecutionContext }
@@ -278,6 +279,20 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
   private def headSequenceNr(persistenceId: String): Option[Long] =
     headItem(persistenceId).map(_("sequence-nr").getN.toLong)
 
+  private def putJournalRow(persistenceId: String, sequenceNr: Long): Unit = {
+    val request = new PutItemRequest()
+      .withTableName(journalTableName)
+      .withItem(
+        Map(
+          "pkey"           -> new AttributeValue().withS(persistenceId),
+          "skey"           -> new AttributeValue().withS(sequenceNr.toString),
+          "persistence-id" -> new AttributeValue().withS(persistenceId),
+          "sequence-nr"    -> new AttributeValue().withN(sequenceNr.toString)
+        ).asJava
+      )
+    dynamoDBClient.putItem(request)
+  }
+
   private def putSnapshotRow(persistenceId: String, sequenceNr: Long): Unit = {
     val request = new PutItemRequest()
       .withTableName(snapshotTableName)
@@ -359,6 +374,34 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
       .region(Region.AP_NORTHEAST_1)
       .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create("x", "x")))
       .build()
+
+  /** Counts the read calls the migration makes without changing any of them, so the perf probe reports a measured
+    * reads-per-persistence-id instead of a number read off the source.
+    */
+  private def countingClient(
+      delegate: V2DynamoDbClient,
+      getItems: AtomicInteger,
+      scans: AtomicInteger
+  ): V2DynamoDbClient =
+    java.lang.reflect.Proxy
+      .newProxyInstance(
+        classOf[V2DynamoDbClient].getClassLoader,
+        Array(classOf[V2DynamoDbClient]),
+        new java.lang.reflect.InvocationHandler {
+          override def invoke(proxy: Any, method: java.lang.reflect.Method, args: Array[AnyRef]): AnyRef = {
+            method.getName match {
+              case "getItem" => getItems.incrementAndGet()
+              case "scan"    => scans.incrementAndGet()
+              case _         =>
+            }
+            try method.invoke(delegate, Option(args).getOrElse(Array.empty[AnyRef]): _*)
+            catch {
+              case error: java.lang.reflect.InvocationTargetException => throw error.getCause
+            }
+          }
+        }
+      )
+      .asInstanceOf[V2DynamoDbClient]
 
   private def newV2StreamsClient(): DynamoDbStreamsClient =
     DynamoDbStreamsClient
@@ -885,6 +928,101 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
 
       journalSequenceNrs(pid) shouldBe Seq(4L)
       headSequenceNr(pid) shouldBe Some(4L)
+    }
+
+    "report the same counts in dry-run and execute and converge on a rerun" in {
+      val journalOnlyPid  = "head-plan-journal-only-1"
+      val snapshotOnlyPid = "head-plan-snapshot-only-1"
+      val bothPid         = "head-plan-both-1"
+      persistAllOk(headDisabledSystem, journalOnlyPid, immutable.Seq("e1", "e2"))
+      persistAllOk(headDisabledSystem, bothPid, immutable.Seq("e1", "e2", "e3"))
+      putSnapshotRow(snapshotOnlyPid, 5L)
+      putSnapshotRow(bothPid, 7L)
+
+      val client = newV2Client()
+      try {
+        // The target of an aggregate is the higher of its journal version and its snapshot version.
+        val dryRun =
+          JournalHeadMigration.run(client, journalTableName, journalColumnsDefConfig, headConfig, execute = false)
+        dryRun.createdJournalHeads should be >= 3
+        dryRun.updatedJournalHeads shouldBe 0
+
+        val executed =
+          JournalHeadMigration.run(client, journalTableName, journalColumnsDefConfig, headConfig, execute = true)
+        executed.scannedPersistenceIds shouldBe dryRun.scannedPersistenceIds
+        executed.createdJournalHeads shouldBe dryRun.createdJournalHeads
+        executed.updatedJournalHeads shouldBe dryRun.updatedJournalHeads
+        executed.existingJournalHeads shouldBe dryRun.existingJournalHeads
+        executed.raisedPersistenceIds shouldBe dryRun.raisedPersistenceIds
+
+        headSequenceNr(journalOnlyPid) shouldBe Some(2L)
+        headSequenceNr(snapshotOnlyPid) shouldBe Some(5L)
+        headSequenceNr(bothPid) shouldBe Some(7L)
+
+        val rerun =
+          JournalHeadMigration.run(client, journalTableName, journalColumnsDefConfig, headConfig, execute = true)
+        rerun.createdJournalHeads shouldBe 0
+        rerun.updatedJournalHeads shouldBe 0
+        rerun.existingJournalHeads shouldBe rerun.scannedPersistenceIds
+        rerun.raisedPersistenceIds shouldBe Seq.empty
+      } finally client.close()
+    }
+
+    "report the planner timing and reads for the perf probe" in {
+      assume(sys.env.get("C4_PERF").contains("1"), "set C4_PERF=1 to run the perf probe")
+
+      val journalPids  = (1 to 150).map(index => s"head-perf-journal-$index")
+      val snapshotPids = (1 to 30).map(index => s"head-perf-snapshot-$index")
+      val bothPids     = (1 to 20).map(index => s"head-perf-both-$index")
+      journalPids.foreach(persistenceId => putJournalRow(persistenceId, 3L))
+      bothPids.foreach { persistenceId =>
+        putJournalRow(persistenceId, 3L)
+        putSnapshotRow(persistenceId, 5L)
+      }
+      snapshotPids.foreach(persistenceId => putSnapshotRow(persistenceId, 7L))
+
+      val client   = newV2Client()
+      val getItems = new AtomicInteger()
+      val scans    = new AtomicInteger()
+      val counted  = countingClient(client, getItems, scans)
+      try {
+        def measure(): (Long, JournalHeadMigration.Result) = {
+          val started = System.nanoTime()
+          val result =
+            JournalHeadMigration.run(counted, journalTableName, journalColumnsDefConfig, headConfig, execute = false)
+          (System.nanoTime() - started, result)
+        }
+
+        measure() // warmup, discarded
+        val runs            = (1 to 3).map(_ => measure())
+        val durationsMillis = runs.map(_._1 / 1000000L).sorted
+        val medianMillis    = durationsMillis(durationsMillis.size / 2)
+        val result          = runs.head._2
+        val readsPerRun     = getItems.get() / 4
+        val readsPerPid     = readsPerRun.toDouble / result.scannedPersistenceIds
+        val scansPerRun     = scans.get() / 4
+
+        info(
+          s"PERF fixturePersistenceIds=${result.scannedPersistenceIds} dryRunMs=${durationsMillis.mkString(",")}" +
+          s" medianMs=$medianMillis readsPerPersistenceId=$readsPerPid scansPerRun=$scansPerRun"
+        )
+
+        val firstExecute =
+          JournalHeadMigration.run(counted, journalTableName, journalColumnsDefConfig, headConfig, execute = true)
+        val secondExecute =
+          JournalHeadMigration.run(counted, journalTableName, journalColumnsDefConfig, headConfig, execute = true)
+        info(
+          s"PERF executeCreated=${firstExecute.createdJournalHeads}" +
+          s" secondExecuteCreated=${secondExecute.createdJournalHeads}" +
+          s" secondExecuteUpdated=${secondExecute.updatedJournalHeads}" +
+          s" secondExecuteExisting=${secondExecute.existingJournalHeads}"
+        )
+
+        firstExecute.createdJournalHeads should be >= 200
+        secondExecute.createdJournalHeads shouldBe 0
+        secondExecute.updatedJournalHeads shouldBe 0
+        secondExecute.existingJournalHeads shouldBe secondExecute.scannedPersistenceIds
+      } finally client.close()
     }
 
     "deliver the JournalHead stream records in sequence number order" in {

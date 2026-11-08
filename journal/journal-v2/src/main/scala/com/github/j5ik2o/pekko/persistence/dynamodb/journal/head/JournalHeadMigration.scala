@@ -21,6 +21,7 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.journal.config.{
   JournalHeadConfig,
   JournalPluginConfig
 }
+import com.github.j5ik2o.pekko.persistence.dynamodb.model.{ PersistenceId, SequenceNumber }
 import com.github.j5ik2o.pekko.persistence.dynamodb.utils.V2SyncClientFactory
 import com.typesafe.config.{ Config, ConfigFactory }
 import org.apache.pekko.actor.ActorSystem
@@ -101,50 +102,50 @@ object JournalHeadMigration {
       execute: Boolean,
       snapshotTable: Option[SnapshotTable] = Some(SnapshotTable.default)
   ): Result = {
-    val journalHighestSequenceNrs = scanHighestSequenceNrs(
+    val journalVersions = scanHighestSequenceNrs(
       syncClient,
       journalTableName,
       journalColumnsDefConfig.persistenceIdColumnName,
       journalColumnsDefConfig.sequenceNrColumnName
     )
-    val snapshotHighestSequenceNrs = snapshotTable.flatMap(table => scanSnapshotHighestSequenceNrs(syncClient, table))
-    val highestSequenceNrs =
-      mergeHighestSequenceNrs(journalHighestSequenceNrs, snapshotHighestSequenceNrs.getOrElse(Map.empty))
-    var created  = 0
-    var updated  = 0
-    var existing = 0
-    val raised   = Vector.newBuilder[String]
-    highestSequenceNrs.foreach { case (persistenceId, lastSequenceNr) =>
-      if (!execute) {
-        readHeadSequenceNr(syncClient, headConfig, persistenceId) match {
-          case None => created += 1
-          case Some(current) if current < lastSequenceNr =>
-            updated += 1
-            raised += persistenceId
-          case Some(_) => existing += 1
-        }
-      } else if (putJournalHeadIfAbsent(syncClient, headConfig, persistenceId, lastSequenceNr)) {
-        created += 1
-      } else if (raiseJournalHeadIfBehind(syncClient, headConfig, persistenceId, lastSequenceNr)) {
-        updated += 1
-        raised += persistenceId
-      } else {
-        existing += 1
-      }
+    val snapshotVersions = snapshotTable.flatMap(table => scanSnapshotHighestSequenceNrs(syncClient, table))
+    val persistenceIds =
+      journalVersions.keySet ++ snapshotVersions.getOrElse(Map.empty[PersistenceId, SequenceNumber]).keySet
+    val currentHeads = persistenceIds.iterator
+      .flatMap(persistenceId => readHeadSequenceNr(syncClient, headConfig, persistenceId).map(persistenceId -> _))
+      .toMap
+    val plan = MigrationPlanner.plan(journalVersions, snapshotVersions, currentHeads)
+    if (execute) {
+      val result = MigrationExecutor.execute(plan, headWriter(syncClient, headConfig))
+      Result(
+        plan.scannedPersistenceIds,
+        result.createdJournalHeads,
+        result.updatedJournalHeads,
+        result.existingJournalHeads,
+        result.raisedPersistenceIds.map(_.asString),
+        plan.snapshotTableScanned
+      )
+    } else {
+      Result(
+        plan.scannedPersistenceIds,
+        plan.createdJournalHeads,
+        plan.updatedJournalHeads,
+        plan.existingJournalHeads,
+        plan.raisedPersistenceIds.map(_.asString),
+        plan.snapshotTableScanned
+      )
     }
-    Result(
-      highestSequenceNrs.size,
-      created,
-      updated,
-      existing,
-      raised.result().sorted,
-      snapshotTableScanned = snapshotTable.isDefined && snapshotHighestSequenceNrs.isDefined
-    )
   }
 
-  private def mergeHighestSequenceNrs(left: Map[String, Long], right: Map[String, Long]): Map[String, Long] =
-    right.foldLeft(left) { case (acc, (persistenceId, sequenceNr)) =>
-      acc.updated(persistenceId, Math.max(acc.getOrElse(persistenceId, 0L), sequenceNr))
+  private def headWriter(
+      syncClient: JavaDynamoDbSyncClient,
+      headConfig: JournalHeadConfig
+  ): MigrationExecutor.HeadWriter =
+    new MigrationExecutor.HeadWriter {
+      override def putIfAbsent(persistenceId: PersistenceId, target: SequenceNumber): Boolean =
+        putJournalHeadIfAbsent(syncClient, headConfig, persistenceId, target)
+      override def raiseIfBehind(persistenceId: PersistenceId, target: SequenceNumber): Boolean =
+        raiseJournalHeadIfBehind(syncClient, headConfig, persistenceId, target)
     }
 
   /** Reads the highest sequence number of every persistence id in a table. A missing snapshot table is not an error:
@@ -153,7 +154,7 @@ object JournalHeadMigration {
   private def scanSnapshotHighestSequenceNrs(
       syncClient: JavaDynamoDbSyncClient,
       snapshotTable: SnapshotTable
-  ): Option[Map[String, Long]] =
+  ): Option[Map[PersistenceId, SequenceNumber]] =
     try {
       Some(
         scanHighestSequenceNrs(
@@ -172,8 +173,8 @@ object JournalHeadMigration {
       tableName: String,
       persistenceIdColumnName: String,
       sequenceNrColumnName: String
-  ): Map[String, Long] = {
-    val result             = mutable.Map.empty[String, Long]
+  ): Map[PersistenceId, SequenceNumber] = {
+    val result             = mutable.Map.empty[PersistenceId, SequenceNumber]
     var exclusiveStartKey  = Option.empty[java.util.Map[String, AttributeValue]]
     var hasMoreItemsToRead = true
     while (hasMoreItemsToRead) {
@@ -191,9 +192,9 @@ object JournalHeadMigration {
       exclusiveStartKey.foreach(key => requestBuilder.exclusiveStartKey(key))
       val response = syncClient.scan(requestBuilder.build())
       response.items().asScala.foreach { item =>
-        val persistenceId  = item.get(persistenceIdColumnName).s()
-        val sequenceNr     = item.get(sequenceNrColumnName).n().toLong
-        val currentHighest = result.getOrElse(persistenceId, 0L)
+        val persistenceId  = PersistenceId(item.get(persistenceIdColumnName).s())
+        val sequenceNr     = SequenceNumber(item.get(sequenceNrColumnName).n().toLong)
+        val currentHighest = result.getOrElse(persistenceId, SequenceNumber.MinValue)
         if (sequenceNr > currentHighest) result.update(persistenceId, sequenceNr)
       }
       exclusiveStartKey = Option(response.lastEvaluatedKey()).filterNot(_.isEmpty)
@@ -205,20 +206,22 @@ object JournalHeadMigration {
   private def readHeadSequenceNr(
       syncClient: JavaDynamoDbSyncClient,
       headConfig: JournalHeadConfig,
-      persistenceId: String
-  ): Option[Long] = {
+      persistenceId: PersistenceId
+  ): Option[SequenceNumber] = {
     val headColumnsDefConfig = headConfig.columnsDefConfig
     val request = GetItemRequest
       .builder()
       .tableName(headConfig.tableName)
       .key(
-        Map(headColumnsDefConfig.persistenceIdColumnName -> AttributeValue.builder().s(persistenceId).build()).asJava
+        Map(
+          headColumnsDefConfig.persistenceIdColumnName -> AttributeValue.builder().s(persistenceId.asString).build()
+        ).asJava
       )
       .consistentRead(true)
       .build()
     Option(syncClient.getItem(request).item())
       .flatMap(item => Option(item.get(headColumnsDefConfig.sequenceNrColumnName)))
-      .map(_.n().toLong)
+      .map(attributeValue => SequenceNumber(attributeValue.n().toLong))
   }
 
   /** Raises an existing JournalHead item to the last sequence number of the journal, if the head is behind. The event
@@ -228,15 +231,17 @@ object JournalHeadMigration {
   private def raiseJournalHeadIfBehind(
       syncClient: JavaDynamoDbSyncClient,
       headConfig: JournalHeadConfig,
-      persistenceId: String,
-      lastSequenceNr: Long
+      persistenceId: PersistenceId,
+      target: SequenceNumber
   ): Boolean = {
     val headColumnsDefConfig = headConfig.columnsDefConfig
     val request = UpdateItemRequest
       .builder()
       .tableName(headConfig.tableName)
       .key(
-        Map(headColumnsDefConfig.persistenceIdColumnName -> AttributeValue.builder().s(persistenceId).build()).asJava
+        Map(
+          headColumnsDefConfig.persistenceIdColumnName -> AttributeValue.builder().s(persistenceId.asString).build()
+        ).asJava
       )
       .updateExpression("SET #sequenceNr = :latest, #events = :emptyEvents")
       .conditionExpression("#sequenceNr < :latest")
@@ -248,7 +253,7 @@ object JournalHeadMigration {
       )
       .expressionAttributeValues(
         Map(
-          ":latest"      -> AttributeValue.builder().n(lastSequenceNr.toString).build(),
+          ":latest"      -> AttributeValue.builder().n(target.value.toString).build(),
           ":emptyEvents" -> AttributeValue.builder().l(List.empty[AttributeValue].asJava).build()
         ).asJava
       )
@@ -264,8 +269,8 @@ object JournalHeadMigration {
   private def putJournalHeadIfAbsent(
       syncClient: JavaDynamoDbSyncClient,
       headConfig: JournalHeadConfig,
-      persistenceId: String,
-      lastSequenceNr: Long
+      persistenceId: PersistenceId,
+      target: SequenceNumber
   ): Boolean = {
     val headColumnsDefConfig = headConfig.columnsDefConfig
     val request = PutItemRequest
@@ -273,8 +278,8 @@ object JournalHeadMigration {
       .tableName(headConfig.tableName)
       .item(
         Map(
-          headColumnsDefConfig.persistenceIdColumnName -> AttributeValue.builder().s(persistenceId).build(),
-          headColumnsDefConfig.sequenceNrColumnName    -> AttributeValue.builder().n(lastSequenceNr.toString).build(),
+          headColumnsDefConfig.persistenceIdColumnName -> AttributeValue.builder().s(persistenceId.asString).build(),
+          headColumnsDefConfig.sequenceNrColumnName    -> AttributeValue.builder().n(target.value.toString).build(),
           headColumnsDefConfig.eventsColumnName -> AttributeValue.builder().l(List.empty[AttributeValue].asJava).build()
         ).asJava
       )
