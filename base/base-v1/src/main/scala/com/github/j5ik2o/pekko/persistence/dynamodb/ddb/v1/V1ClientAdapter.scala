@@ -99,7 +99,9 @@ final class V1ClientAdapter(
           val values = Option(response.getItems)
             .map(_.asScala.toVector.map(V1AttributeValues.fromItem))
             .getOrElse(Vector.empty)
-          OperationResult.Items(values, Option(response.getLastEvaluatedKey).map(V1AttributeValues.fromItem))
+          val lastEvaluatedKey =
+            Option(response.getLastEvaluatedKey).filter(_.asScala.nonEmpty).map(V1AttributeValues.fromItem)
+          OperationResult.Items(values, lastEvaluatedKey)
         }
 
     case V1RenderedOperation.BatchWrite(request) =>
