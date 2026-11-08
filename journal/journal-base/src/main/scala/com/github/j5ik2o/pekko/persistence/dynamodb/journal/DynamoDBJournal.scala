@@ -28,7 +28,10 @@ import org.apache.pekko.stream.{ Materializer, SystemMaterializer }
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.aggregate.JournalAggregateStore
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.config.JournalPluginConfig
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.dao._
-import com.github.j5ik2o.pekko.persistence.dynamodb.journal.head.JournalHeadWriteRequest
+import com.github.j5ik2o.pekko.persistence.dynamodb.journal.head.{
+  JournalHeadAsyncUpdateEventUnsupportedException,
+  JournalHeadWriteRequest
+}
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.serialization.{
   ByteArrayJournalSerializer,
   FlowPersistentReprSerializer
@@ -325,33 +328,39 @@ final class DynamoDBJournal(config: Config) extends AsyncWriteJournal with Actor
   private def asyncUpdateEvent(persistenceId: String, sequenceNumber: Long, message: AnyRef): Future[Done] = {
     implicit val ec: ExecutionContext = pluginExecutor
 
-    val pid        = PersistenceId(persistenceId)
-    val context    = Context.newContext(UUID.randomUUID(), pid)
-    val newContext = metricsReporter.fold(context)(_.beforeJournalAsyncUpdateEvent(context))
+    // An in-place update rewrites one journal row and cannot also rewrite the JournalHead item, so head mode would
+    // leave the head stream with the old event. Refuse the update instead of making the two tables disagree.
+    if (journalPluginConfig.headConfig.enabled) {
+      Future.failed(new JournalHeadAsyncUpdateEventUnsupportedException(persistenceId, sequenceNumber))
+    } else {
+      val pid        = PersistenceId(persistenceId)
+      val context    = Context.newContext(UUID.randomUUID(), pid)
+      val newContext = metricsReporter.fold(context)(_.beforeJournalAsyncUpdateEvent(context))
 
-    def future = {
-      val write = PersistentRepr(message, sequenceNumber, persistenceId)
-      serializer
-        .serialize(write).flatMap { serializedRow =>
-          journalDao.updateMessage(serializedRow).runWith(Sink.ignore)
-        }.recoverWith { case _ =>
-          Future.failed(
-            new IllegalArgumentException(
-              s"Failed to serialize ${write.getClass} for update of [$persistenceId] @ [$sequenceNumber]"
+      def future = {
+        val write = PersistentRepr(message, sequenceNumber, persistenceId)
+        serializer
+          .serialize(write).flatMap { serializedRow =>
+            journalDao.updateMessage(serializedRow).runWith(Sink.ignore)
+          }.recoverWith { case _ =>
+            Future.failed(
+              new IllegalArgumentException(
+                s"Failed to serialize ${write.getClass} for update of [$persistenceId] @ [$sequenceNumber]"
+              )
             )
-          )
-        }
+          }
+      }
+
+      val traced = traceReporter.fold(future)(_.traceJournalAsyncUpdateEvent(context)(future))
+
+      traced.onComplete {
+        case Success(_) =>
+          metricsReporter.foreach(_.afterJournalAsyncUpdateEvent(newContext))
+        case Failure(ex) =>
+          metricsReporter.foreach(_.errorJournalAsyncUpdateEvent(newContext, ex))
+      }
+
+      traced
     }
-
-    val traced = traceReporter.fold(future)(_.traceJournalAsyncUpdateEvent(context)(future))
-
-    traced.onComplete {
-      case Success(_) =>
-        metricsReporter.foreach(_.afterJournalAsyncUpdateEvent(newContext))
-      case Failure(ex) =>
-        metricsReporter.foreach(_.errorJournalAsyncUpdateEvent(newContext, ex))
-    }
-
-    traced
   }
 }
