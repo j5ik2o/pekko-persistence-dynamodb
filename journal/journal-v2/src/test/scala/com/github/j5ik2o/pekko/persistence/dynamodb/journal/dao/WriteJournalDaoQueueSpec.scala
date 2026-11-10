@@ -18,6 +18,7 @@ package com.github.j5ik2o.pekko.persistence.dynamodb.journal.dao
 import org.apache.pekko.NotUsed
 import org.apache.pekko.actor.ActorSystem
 import org.apache.pekko.serialization.SerializationExtension
+import org.apache.pekko.stream.{ BufferOverflowException, StreamDetachedException }
 import org.apache.pekko.stream.scaladsl.{ Flow, Sink, Source }
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.{
   JournalPluginContext,
@@ -37,8 +38,11 @@ import scala.concurrent.duration._
 import scala.concurrent.{ Await, ExecutionContext, Future, Promise, TimeoutException }
 import scala.util.{ Failure, Try }
 
-/** Exercises the two ways the bounded write queue can refuse a write without reaching a row driver: a full buffer and a
-  * closed queue. The driver doubles keep the spec local to the plugin, so it starts no DynamoDB container.
+/** Exercises the ways the bounded write queue can refuse a write without reaching a row driver: a full buffer and a
+  * queue that has stopped.
+  *
+  * The spec lives in journal-v2 because a v2 client configuration resolves provider classes from base-v2, which the
+  * journal-base test classpath does not contain. The queue under test is in journal-base.
   */
 object WriteJournalDaoQueueSpec {
 
@@ -122,7 +126,8 @@ final class WriteJournalDaoQueueSpec extends AnyFreeSpec with Matchers with Befo
     if (system != null) Await.result(system.terminate(), 30.seconds)
   }
 
-  private def pluginConfig(bufferSize: Int, overflowStrategy: String): JournalPluginConfig = {
+  private def pluginConfig(bufferSize: Int, overflowStrategy: Option[String]): JournalPluginConfig = {
+    val overflowSetting = overflowStrategy.map(strategy => s"""queue-overflow-strategy = "$strategy"""").getOrElse("")
     val config = ConfigFactory
       .parseString(
         s"""
@@ -133,7 +138,7 @@ final class WriteJournalDaoQueueSpec extends AnyFreeSpec with Matchers with Befo
            |  }
            |  queue-enable = true
            |  queue-buffer-size = $bufferSize
-           |  queue-overflow-strategy = "$overflowStrategy"
+           |  $overflowSetting
            |  queue-parallelism = 1
            |  write-parallelism = 1
            |  v1-journal-row-write-driver-factory-class-name = "$testFactoryClassName"
@@ -151,7 +156,7 @@ final class WriteJournalDaoQueueSpec extends AnyFreeSpec with Matchers with Befo
   private def newDao(
       driver: JournalRowWriteDriver,
       bufferSize: Int,
-      overflowStrategy: String
+      overflowStrategy: Option[String]
   ): WriteJournalDaoImpl = {
     val config        = pluginConfig(bufferSize, overflowStrategy)
     val pluginContext = JournalPluginContext(system, config)
@@ -179,9 +184,28 @@ final class WriteJournalDaoQueueSpec extends AnyFreeSpec with Matchers with Befo
     loop()
   }
 
+  /** Waits until one of the concurrent offers reports a full queue. The fail strategy also stops the queue, so the
+    * other offers may never complete.
+    */
+  private def awaitQueueFullFailure(writes: Seq[Future[Long]]): JournalWriteQueueFullException = {
+    val deadline = 10.seconds.fromNow
+    @tailrec
+    def loop(): JournalWriteQueueFullException = {
+      val found = writes.flatMap(_.value).collectFirst {
+        case Failure(e: JournalWriteQueueFullException) => e
+      }
+      found match {
+        case Some(e)                        => e
+        case None if deadline.hasTimeLeft() => Thread.sleep(10); loop()
+        case None                           => fail("no write was refused with JournalWriteQueueFullException")
+      }
+    }
+    loop()
+  }
+
   "a full write queue fails the write with a recoverable, typed failure" in {
     val driver = new BlockingJournalRowWriteDriver(system)
-    val dao    = newDao(driver, bufferSize = 1, overflowStrategy = "dropnew")
+    val dao    = newDao(driver, bufferSize = 1, overflowStrategy = Some("dropnew"))
     try {
       // The first write holds the single mapAsync slot, so the buffer is the only place the queue can put a write.
       val first = dao.putMessages(Seq(row)).runWith(Sink.head)
@@ -201,14 +225,42 @@ final class WriteJournalDaoQueueSpec extends AnyFreeSpec with Matchers with Befo
     }
   }
 
-  "a closed write queue fails the write with a recoverable, typed failure" in {
-    val dao = newDao(new NoopJournalRowWriteDriver(system), bufferSize = 1, overflowStrategy = "fail")
+  "the default fail strategy reports a full queue as a typed failure with the overflow cause" in {
+    val driver = new BlockingJournalRowWriteDriver(system)
+    val dao    = newDao(driver, bufferSize = 1, overflowStrategy = None)
     try {
+      val _ = dao.putMessages(Seq(row)).runWith(Sink.head)
+      Await.result(driver.started, 10.seconds)
+
+      val overflow = Vector.fill(10)(dao.putMessages(Seq(row)).runWith(Sink.head))
+      val failure  = awaitQueueFullFailure(overflow)
+
+      failure shouldBe a[JournalWriteQueueFullException]
+      failure.getCause should not be null
+      failure.getCause shouldBe a[BufferOverflowException]
+
+      // failStage stops the queue, so the write after the overflow is refused as closed.
+      val next = awaitClosedQueueFailure(dao)
+      next shouldBe a[JournalWriteQueueClosedException]
+      next.getCause should not be null
+      next.getCause shouldBe a[StreamDetachedException]
+    } finally {
+      driver.release()
+      dao.dispose()
+    }
+  }
+
+  "a detached write queue fails the write with a typed failure that keeps its cause" in {
+    val dao = newDao(new NoopJournalRowWriteDriver(system), bufferSize = 1, overflowStrategy = Some("fail"))
+    try {
+      // dispose() shuts the kill switch down, which detaches the queue instead of completing it.
       dao.dispose()
 
       val failure = awaitClosedQueueFailure(dao)
 
       failure shouldBe a[JournalWriteQueueClosedException]
+      failure.getCause should not be null
+      failure.getCause shouldBe a[StreamDetachedException]
     } finally dao.dispose()
   }
 
