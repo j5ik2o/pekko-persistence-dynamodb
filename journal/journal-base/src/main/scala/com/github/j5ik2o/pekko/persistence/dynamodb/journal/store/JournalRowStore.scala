@@ -16,8 +16,8 @@
 package com.github.j5ik2o.pekko.persistence.dynamodb.journal.store
 
 import org.apache.pekko.NotUsed
-import org.apache.pekko.stream.RestartSettings
 import org.apache.pekko.stream.scaladsl.{ RestartSource, Source }
+import com.github.j5ik2o.pekko.persistence.dynamodb.client.Backoff
 import com.github.j5ik2o.pekko.persistence.dynamodb.config.BackoffConfig
 import com.github.j5ik2o.pekko.persistence.dynamodb.ddb._
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.config.{
@@ -48,7 +48,6 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.journal.{
 import com.github.j5ik2o.pekko.persistence.dynamodb.model.{ PersistenceId, SequenceNumber }
 import com.typesafe.config.ConfigFactory
 
-import java.util.concurrent.{ ThreadLocalRandom, TimeUnit }
 import scala.concurrent.duration._
 
 final class JournalRowStore(
@@ -65,11 +64,6 @@ final class JournalRowStore(
 ) {
 
   private val UpdateAttempts: Int = 3
-
-  /** The restart window of a batch write. It is far longer than any attempt, so a slow attempt cannot reset the count
-    * of `write-backoff.max-restarts` and the batch stops after `max-restarts + 1` attempts.
-    */
-  private val BatchRestartWindow: FiniteDuration = 365.days
 
   private val journalColumns: JournalColumnsDefConfig = JournalColumnsDefConfig(
     sourceConfig = ConfigFactory.empty(),
@@ -370,8 +364,7 @@ final class JournalRowStore(
       case other => throw new IllegalStateException(s"unexpected result for a journal row read: $other")
     }
 
-  private def backoffDelay(attempt: Int): FiniteDuration =
-    JournalRowStore.backoffDelay(writeBackoffConfig, attempt)
+  private def backoffDelay(attempt: Int): FiniteDuration = Backoff.backoffDelay(writeBackoffConfig, attempt)
 
   /** The condition that the head is still the one that was read, and the head item with the event of the row replaced
     * and its revision raised by one.
@@ -551,35 +544,21 @@ final class JournalRowStore(
         )
 
     if (writeBackoffConfig.enabled) {
-      run(operation, writeBackoffConfig, BatchRestartWindow).mapError {
-        case cause: BatchWriteUnprocessedItemsException =>
-          exhausted(cause)
+      run(operation, writeBackoffConfig).mapError { case cause: BatchWriteUnprocessedItemsException =>
+        exhausted(cause)
       }
     } else {
       attempt(1)
     }
   }
 
-  private def run(operation: Operation, backoffConfig: BackoffConfig): Source[OperationResult, NotUsed] =
-    run(operation, backoffConfig, backoffConfig.minBackoff)
-
-  /** `restartWindow` is the period in which `max-restarts` counts. A restart count resets when an attempt runs longer
-    * than the window before it fails, so a caller that needs a hard bound passes a window longer than any attempt.
+  /** With `write-backoff` enabled the operation restarts after any failure, at most `max-restarts` times in total
+    * however long each attempt takes.
     */
-  private def run(
-      operation: Operation,
-      backoffConfig: BackoffConfig,
-      restartWindow: FiniteDuration
-  ): Source[OperationResult, NotUsed] = {
+  private def run(operation: Operation, backoffConfig: BackoffConfig): Source[OperationResult, NotUsed] = {
     def source: Source[OperationResult, NotUsed] = adapter.run(operation)
     if (backoffConfig.enabled) {
-      RestartSource.onFailuresWithBackoff(
-        RestartSettings(
-          backoffConfig.minBackoff,
-          backoffConfig.maxBackoff,
-          backoffConfig.randomFactor
-        ).withMaxRestarts(backoffConfig.maxRestarts, restartWindow)
-      )(() => source)
+      RestartSource.onFailuresWithBackoff(Backoff.restartSettings(backoffConfig))(() => source)
     } else {
       source
     }
@@ -600,18 +579,6 @@ final class JournalRowStore(
 }
 
 object JournalRowStore {
-
-  /** The wait before the attempt after `attempt`: `min-backoff` doubled for each earlier attempt, never above
-    * `max-backoff`, and spread by `random-factor`. The doubling is done in floating point and capped, so a large
-    * attempt number cannot overflow into a negative or zero wait.
-    */
-  private[store] def backoffDelay(config: BackoffConfig, attempt: Int): FiniteDuration = {
-    val maxMillis = config.maxBackoff.toMillis
-    val doubled   = config.minBackoff.toMillis.toDouble * math.pow(2.0, math.min(math.max(attempt - 1, 0), 62).toDouble)
-    val base      = math.min(maxMillis.toDouble, doubled)
-    val jitter    = 1.0 + ThreadLocalRandom.current().nextDouble() * config.randomFactor
-    FiniteDuration(math.min(maxMillis, (base * jitter).toLong), TimeUnit.MILLISECONDS)
-  }
 
   def fromPluginContext(pluginContext: JournalPluginContext, adapter: DdbClientAdapter): JournalRowStore = {
     val config = pluginContext.pluginConfig

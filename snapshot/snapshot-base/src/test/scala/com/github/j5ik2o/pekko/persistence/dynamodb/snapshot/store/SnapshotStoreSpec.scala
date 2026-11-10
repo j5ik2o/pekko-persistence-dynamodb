@@ -327,6 +327,44 @@ final class SnapshotStoreSpec extends AnyFreeSpec with Matchers with ScalaFuture
       adapter.batchAttempts shouldBe 4
     }
 
+    "sends an unprocessed batch delete again at once when the backoff is disabled" in {
+      val adapter = new FailingBatchAdapter(Vector(legacyItem), failures = 3, unprocessedBatchFailure)
+      val store =
+        new SnapshotStore(
+          adapter,
+          new SnapshotRowCodec(schema, legacy),
+          consistentRead = false,
+          25,
+          writeBackoff.copy(enabled = false, minBackoff = 2.seconds, maxBackoff = 2.seconds)
+        )
+
+      val started = System.nanoTime()
+      store.deleteAll(PersistenceId("sample")).runWith(Sink.ignore).futureValue
+      val elapsedMillis = (System.nanoTime() - started) / 1000000
+
+      adapter.batchAttempts shouldBe 4
+      elapsedMillis should be < 1500L
+    }
+
+    "waits for the backoff before it sends an unprocessed batch delete again when the backoff is enabled" in {
+      val adapter = new FailingBatchAdapter(Vector(legacyItem), failures = 2, unprocessedBatchFailure)
+      val store =
+        new SnapshotStore(
+          adapter,
+          new SnapshotRowCodec(schema, legacy),
+          consistentRead = false,
+          25,
+          writeBackoff.copy(enabled = true, minBackoff = 200.millis, maxBackoff = 400.millis)
+        )
+
+      val started = System.nanoTime()
+      store.deleteAll(PersistenceId("sample")).runWith(Sink.ignore).futureValue
+      val elapsedMillis = (System.nanoTime() - started) / 1000000
+
+      adapter.batchAttempts shouldBe 3
+      elapsedMillis should be >= 550L
+    }
+
     "does not retry a permanent batch delete failure" in {
       val permanent = new IllegalArgumentException("permanent")
       val adapter =
