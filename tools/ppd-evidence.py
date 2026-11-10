@@ -74,9 +74,10 @@ def collect(repo, number, reviewed, required):
         external = {}
         for page in pages:
             for check in page['check_runs']:
-                if check['app']['slug'] == 'github-actions':
+                app = check.get('app') or {}
+                if app.get('slug') == 'github-actions':
                     continue
-                key = (check['app']['id'], check['name'])
+                key = (app.get('id'), check['name'])
                 if key not in external or check['id'] > external[key]['id']:
                     external[key] = check
         for check in external.values():
@@ -124,9 +125,15 @@ def assess_pr(data):
     if not head:
         unknown = True
         reasons.append('current head unknown')
-    if not data.get('reviewed_head') or head != data['reviewed_head']:
+    if not data.get('reviewed_head'):
+        unknown = True
+        reasons.append('reviewed head unknown')
+    elif head and head != data['reviewed_head']:
         reasons.append('reviewed head does not match current head')
-    if data.get('state') != 'open':
+    if data.get('state') not in ('open', 'closed'):
+        unknown = True
+        reasons.append('PR state unknown')
+    elif data['state'] == 'closed':
         reasons.append('PR is not open')
     thread = data.get('review_threads', {})
     code = thread.get('exit_code')
@@ -177,7 +184,7 @@ def assess_progress(data):
                 continue
             command = (event.get('text') or '').split('\n', 1)[0]
             if re.search(r'\b(cat|sed|tail|head)\s', command):
-                reads.update(set(re.findall(r'/?(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+\.(?:md|txt|scala|json|py)', command)))
+                reads.update(set(re.findall(r'/?(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.(?:md|txt|scala|json|py)', command)))
         compactions = sum(e['type'] == 'compaction' for e in events)
         verification = [e for e in events if e['type'] == 'verification' and
                         e.get('kind') == 'observed' and e.get('exit_code') is not None and

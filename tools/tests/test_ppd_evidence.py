@@ -49,7 +49,7 @@ class PrEvidenceTest(unittest.TestCase):
         value['errors'] = ['API unavailable']
         self.assertEqual(evidence.assess_pr(value)['assessment'], 'unknown')
 
-    def collect(self, runs, jobs, thread_exit=0, after='abc'):
+    def collect(self, runs, jobs, thread_exit=0, after='abc', external_checks=None):
         def run(argv):
             endpoint = argv[2] if argv[0] == 'gh' else ''
             if '/pulls/' in endpoint and '/reviews?' not in endpoint:
@@ -63,7 +63,7 @@ class PrEvidenceTest(unittest.TestCase):
             elif '/actions/runs?' in endpoint:
                 body = [{'workflow_runs': runs}]
             elif '/check-runs?' in endpoint:
-                body = [{'check_runs': []}]
+                body = [{'check_runs': external_checks or []}]
             elif '/statuses?' in endpoint:
                 body = [[]]
             else:
@@ -107,6 +107,28 @@ class PrEvidenceTest(unittest.TestCase):
         self.assertEqual(snapshot['records'][0]['exit_code'], 1)
         self.assertEqual(evidence.assess_pr(snapshot)['assessment'], 'unknown')
 
+    def test_nullable_check_app_preserves_external_check_and_thread_capture(self):
+        check = dict(app=None, id=123, name='build', head_sha='abc',
+                     status='completed', conclusion='success', html_url='external-job')
+        snapshot = self.collect([], [], external_checks=[check])
+        self.assertEqual(snapshot['errors'], [])
+        self.assertEqual(snapshot['checks'][0]['source'], 'external-job')
+        self.assertEqual(snapshot['review_threads']['exit_code'], 0)
+        self.assertEqual(evidence.assess_pr(snapshot)['assessment'], 'evidence_satisfied')
+
+    def test_missing_observations_do_not_claim_closed_or_mismatched_pr(self):
+        report = evidence.assess_pr(dict(errors=['GitHub collection failed'],
+                                         reviewed_head='abc', required_checks=['build']))
+        self.assertEqual(report['assessment'], 'unknown')
+        self.assertNotIn('PR is not open', report['reasons'])
+        self.assertNotIn('reviewed head does not match current head', report['reasons'])
+        closed = good()
+        closed['state'] = 'closed'
+        self.assertIn('PR is not open', evidence.assess_pr(closed)['reasons'])
+        mismatch = good()
+        mismatch['head'] = 'other'
+        self.assertIn('reviewed head does not match current head', evidence.assess_pr(mismatch)['reasons'])
+
     def test_capture_preserves_process_exit(self):
         record = evidence.capture([sys.executable, '-c', 'print("unresolved"); raise SystemExit(1)'])
         self.assertEqual(record['exit_code'], 1)
@@ -147,6 +169,17 @@ class ProgressTest(unittest.TestCase):
         self.assertEqual(report['assessment'], 'investigate_repeated_preparation')
         self.assertEqual(report['compactions'], 14)
         self.assertEqual(report['repeated_reads']['/repo/SKILL.md'], 14)
+
+    def test_bare_filename_reads_trigger_the_same_diagnostic(self):
+        for command, filename in [('cat AGENTS.md', 'AGENTS.md'),
+                                  ("sed -n '1,200p' SKILL.md", 'SKILL.md')]:
+            with self.subTest(command=command):
+                task = self.task()
+                task['events'] = [dict(type='command_execution', text=command),
+                                  dict(type='compaction')] * 3
+                report = self.assess(task)
+                self.assertEqual(report['assessment'], 'investigate_repeated_preparation')
+                self.assertEqual(report['repeated_reads'][filename], 3)
 
     def test_commit_diff_and_observed_verification_are_visible(self):
         for field, value in [('current_head', 'new'), ('git_status', ' M tools/file.py')]:
