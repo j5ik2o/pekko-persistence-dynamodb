@@ -328,30 +328,47 @@ neither does, so the head stream delivers the updated event and never disagrees 
 
 The `JournalHead` item holds only the events of its latest write, and its stream has already delivered every older
 event. The plugin therefore refuses an update of an event outside the latest write with a
-`JournalHeadAsyncUpdateEventUnsupportedException` and changes nothing. The other failures also leave both tables
-unchanged:
+`JournalHeadAsyncUpdateEventUnsupportedException` and changes nothing. Every other outcome that is not a success is one
+of the failures below, and none of them changes the journal or the head.
 
-| Failure                                   | Meaning                                                                                  |
-|:------------------------------------------|:-----------------------------------------------------------------------------------------|
-| `JournalHeadMissingException`             | the aggregate has no `JournalHead` item — run the migration                              |
-| `JournalHeadItemTooLargeException`        | the `JournalHead` item would exceed 400 KB with the new event                            |
-| `IllegalStateException`                   | the journal row does not exist or is deleted although the head holds the event, or the head changed during three attempts |
+| Failure                                       | Meaning                                                                                  | Recoverable by the caller |
+|:----------------------------------------------|:-----------------------------------------------------------------------------------------|:--------------------------|
+| `JournalHeadAsyncUpdateEventUnsupportedException` | the event is not in the latest write of the head                                     | no, refused               |
+| `JournalHeadRowUpdateRejectedException`       | the journal row does not exist (for example after a hard delete) or is soft deleted; `reason` is `RowDoesNotExist` or `RowDeleted` | no, refused |
+| `JournalHeadMissingException`                 | the aggregate has no `JournalHead` item — run the migration                              | no, refused               |
+| `JournalHeadItemTooLargeException`            | the `JournalHead` item would exceed 400 KB with the new event                            | no, refused               |
+| `JournalHeadJournalRowTooLargeException`      | the journal row would exceed 400 KB; measured before anything is read or sent            | no, refused               |
+| `JournalHeadConcurrentUpdateException`        | the head kept changing, DynamoDB reported a transaction conflict, or it throttled the request, for three attempts | yes, send the update again |
+| `IllegalStateException`                       | a state that cannot happen: the head went backwards between two reads, the head item is malformed, DynamoDB cancelled the transaction for a reason the plugin does not handle, or it returned an unexpected result | no, a bug or a damaged table |
 
-An update keeps the `deleted` flag of the journal row and does not update a deleted row. An event removed with a soft
-delete therefore stays deleted, and updating it fails.
+An update keeps the `deleted` flag of the journal row and does not update a missing or deleted row. An event removed
+with a soft delete therefore stays deleted, and updating it is refused with `RowDeleted`.
 
 The transaction is conditional on the `sequence-nr` and the `revision` of the head being the ones the plugin read, so a
-write or an update that lands between the read and the transaction makes the plugin read the head again and retry, up
-to three attempts. Any other reason for which DynamoDB cancels the transaction is reported as an `IllegalStateException`
-without a retry.
+write or an update that lands between the read and the transaction makes the plugin read the head again and try again,
+up to three attempts. A transaction conflict and throttling are tried again after a backoff that grows from
+the `min-backoff` of `write-backoff` up to its `max-backoff`. When the attempts are used up, the caller gets
+`JournalHeadConcurrentUpdateException`.
 
 An update changes the message of an event, keeps its sequence number and the `sequence-nr` of the head, and raises the
 `revision` of the head by one. The stream carries the update as a record with the same `sequence-nr` and a higher
 `revision`. The section "Consuming the stream" describes how a consumer applies it.
 
+An update sent from outside the aggregate can still collide with the aggregate's own writes. When it does, the write
+of the aggregate, not the update, can be the one that DynamoDB cancels with a transaction conflict. The write path
+reports that cancellation as the SDK exception, the persist fails, and the persistent actor stops through
+`onPersistFailure`. The plugin does not retry a write. This follows from the code of the write path; the test that
+races updates with persists against DynamoDB Local did not produce it, and that is not a proof that it cannot happen
+on DynamoDB. Send updates for an aggregate through the aggregate, or when it is not persisting.
+
+A soft delete and an update of the same event can overlap. A soft delete marks journal rows as deleted and does not
+write the head, so the head keeps the events of its latest write whatever their journal rows say. An update that
+commits before the delete leaves the new message in both tables, and the delete then marks only the journal row. The
+journal and the head therefore disagree about whether that event is deleted, as they do after any soft delete.
+
 A failure of the update itself, such as a DynamoDB error, now reaches the caller with its own type. Before, the head-less
 path relabelled every failure of `InPlaceUpdateEvent` as an `IllegalArgumentException` about serialization. Only a
-serialization failure keeps that type.
+serialization failure keeps that type, and the original exception is its cause.
 
 ## Deleting events
 

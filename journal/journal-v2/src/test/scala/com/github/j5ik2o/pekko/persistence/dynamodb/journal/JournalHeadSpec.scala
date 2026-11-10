@@ -887,7 +887,7 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
         case scala.util.Success(_)  => "Done"
         case scala.util.Failure(ex) => ex.getClass.getSimpleName
       }
-      val counts = outcomes.groupBy(identity).view.mapValues(_.size).toMap
+      val counts = outcomes.groupBy(identity).map { case (outcome, same) => outcome -> same.size }
       info(s"updates sent=${updates.size} outcomes=$counts")
       info(s"persist outcome=$persistOutcome persisted up to ${progress.get()} of $count")
 
@@ -931,6 +931,21 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
 
       journalPayloads(headEnabledSystem, pid) shouldBe Seq(1L -> "e1")
       headItem(pid) shouldBe None
+    }
+
+    "report an in-place update of an event that cannot be serialized as an illegal argument that keeps the cause" in {
+      val pid = "head-in-place-update-7"
+      persistOk(headEnabledSystem, pid, "e1")
+
+      val probe = newTestProbe(headEnabledSystem)
+      journalActor(headEnabledSystem)
+        .tell(DynamoDBJournal.InPlaceUpdateEvent(pid, 1L, new Object), probe.ref)
+      val failure = probe.expectMsgType[Status.Failure](60.seconds).cause
+
+      failure shouldBe an[IllegalArgumentException]
+      failure.getCause should not be null
+      journalPayloads(headEnabledSystem, pid) shouldBe Seq(1L -> "e1")
+      headPayloads(headEnabledSystem, pid) shouldBe Seq(1L -> "e1")
     }
 
     "allow an in-place event update when head mode is disabled" in {

@@ -348,15 +348,16 @@ final class DynamoDBJournal(config: Config) extends AsyncWriteJournal with Actor
     def future = {
       val write = PersistentRepr(message, sequenceNumber, persistenceId)
       serializer
-        .serialize(write).recoverWith { case _ =>
+        .serialize(write).recoverWith { case cause =>
           Future.failed(
             new IllegalArgumentException(
-              s"Failed to serialize ${write.getClass} for update of [$persistenceId] @ [$sequenceNumber]"
+              s"Failed to serialize ${write.getClass} for update of [$persistenceId] @ [$sequenceNumber]",
+              cause
             )
           )
         }.flatMap { serializedRow =>
           // Only the serialization failure is relabelled. A failure of the update itself keeps its type, so the
-          // caller can tell the head-mode refusals (a JournalHeadException) from a DynamoDB failure.
+          // caller can tell the head-mode outcomes (a JournalHeadException) from a DynamoDB failure.
           journalDao.updateMessage(serializedRow).runWith(Sink.ignore)
         }
     }

@@ -2,19 +2,18 @@
 
 ## いまの状態
 
-revision と soft-delete の保護、移行ツールの `revision` 削除は完了 (push 済み)。
+`asyncUpdateEvent` の失敗を型で分ける実装は済んだ。単体テスト 27 件、結合テストの in-place 群、全体テスト、lint、Scala 2.12 と 3.6 のコンパイル、sphinx の `-W` ビルドが通る。
 
-いまは `asyncUpdateEvent` の失敗を型で分ける作業。型 (`JournalHeadConcurrentUpdateException`、`JournalHeadRowUpdateRejectedException`) は追加済みで、テストが赤。
+- `JournalHeadConcurrentUpdateException`: 再試行を使い切った場合 (head の変化、`TransactionConflict`、スロットリング)
+- `JournalHeadRowUpdateRejectedException`: 行がない、soft-delete 済み。`reason` を値で持つ
+- 行の 400 KB 超過は送る前に測る。head が減った、head の形が壊れている、未知の取り消し理由は `IllegalStateException`
+- `DynamoDBJournal` のシリアライズ失敗は `IllegalArgumentException` に cause を残す
 
-- 単体テスト (`JournalRowStoreSpec`): 10 件が赤。やり直せる失敗、行なし・削除済み、head が減った場合、head の形が壊れている場合、行の 400 KB 超過。
-- 結合テスト (`JournalHeadSpec`): 行なし、soft-delete、行の 400 KB 超過が赤。更新と永続化が競合するテストも追加した。
-- 赤の実行: `sbt -batch "journal-base/testOnly *JournalRowStoreSpec"`、`sbt -batch "journal-v2/testOnly *JournalHeadSpec -- -z in-place"`
+独立レビューの指摘のうち、backoff を切っていても待つ点と、テストの穴を、このあと直す。
 
 ## 次の一手
 
-`JournalRowStore.updateRowAndHead` を作り直す。head を読んで型にし (形が壊れていたら `IllegalStateException`)、取り消し理由を分類する。
-行の条件が外れたときは行を読み直して、なし・削除済みを区別する。スロットリングと `TransactionConflict` は backoff で再試行する。
-行の 400 KB は送る前に測る。`DynamoDBJournal` のシリアライズ失敗は元の例外を cause に残す。そのあと docs と PR 本文を直す。
+backoff の無効時は待たない。テストの穴を埋める。docs に「リクエスト自体の失敗は SDK の例外のまま」を足す。PR 本文を直す。
 
 ## 未決の判断
 
