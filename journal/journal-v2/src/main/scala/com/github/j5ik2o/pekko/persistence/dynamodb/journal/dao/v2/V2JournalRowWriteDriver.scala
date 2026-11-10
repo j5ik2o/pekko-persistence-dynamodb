@@ -35,10 +35,12 @@ import software.amazon.awssdk.services.dynamodb.{
 }
 
 import scala.compat.java8.OptionConverters._
+import scala.concurrent.duration.FiniteDuration
 import scala.concurrent.{ ExecutionContext, Future }
 import scala.jdk.CollectionConverters._
 
 import java.io.IOException
+import java.util.concurrent.{ ThreadLocalRandom, TimeUnit }
 
 @deprecated(
   "Use com.github.j5ik2o.pekko.persistence.dynamodb.journal.store.JournalRowStore; this driver delegates to it.",
@@ -132,30 +134,79 @@ final class V2JournalRowWriteDriver(
           case Left(rejection) =>
             Source.failed(rejection.toJournalHeadException)
           case Right(transactWriteItemsRequest) =>
-            Source
-              .single(transactWriteItemsRequest)
-              .via(streamClient.transactWriteItemsFlow)
-              .flatMapConcat { response =>
-                if (response.sdkHttpResponse().isSuccessful) {
-                  Source.single(request.rows.size.toLong)
-                } else {
-                  val statusCode = response.sdkHttpResponse().statusCode()
-                  val statusText = response.sdkHttpResponse().statusText()
-                  Source.failed(new IOException(s"statusCode: $statusCode" + statusText.asScala.fold("")(s => s", $s")))
-                }
-              }.recoverWithRetries(
-                1,
-                {
-                  case ex if findTransactionCanceledException(ex).isDefined =>
-                    val canceled = findTransactionCanceledException(ex).get
-                    Source.future(classifyTransactionCancellation(request, canceled)).flatMapConcat {
-                      case Some(journalHeadException) => Source.failed(journalHeadException)
-                      case None                       => Source.failed(ex)
-                    }
-                }
-              )
+            executeTransaction(request, transactWriteItemsRequest, attempt = 1)
         }
       }.withAttributes(logLevels)
+
+  /** Sends the transaction and retries the cancellations DynamoDB reports as transient.
+    *
+    * A transaction that DynamoDB cancelled wrote nothing, so sending the same request again is safe. `write-backoff`
+    * bounds the retries and their delay. A cancellation this code cannot recover from fails immediately with a typed
+    * `JournalHeadException`, so the caller never sees the SDK exception for a reason it is expected to handle.
+    */
+  private def executeTransaction(
+      request: JournalHeadWriteRequest,
+      transactWriteItemsRequest: TransactWriteItemsRequest,
+      attempt: Int
+  ): Source[Long, NotUsed] =
+    Source
+      .single(transactWriteItemsRequest)
+      .via(streamClient.transactWriteItemsFlow)
+      .flatMapConcat { response =>
+        if (response.sdkHttpResponse().isSuccessful) {
+          Source.single(request.rows.size.toLong)
+        } else {
+          val statusCode = response.sdkHttpResponse().statusCode()
+          val statusText = response.sdkHttpResponse().statusText()
+          Source.failed(new IOException(s"statusCode: $statusCode" + statusText.asScala.fold("")(s => s", $s")))
+        }
+      }.recoverWithRetries(
+        1,
+        {
+          case ex if findTransactionCanceledException(ex).isDefined =>
+            val canceled = findTransactionCanceledException(ex).get
+            Source.future(classifyTransactionCancellation(request, canceled)).flatMapConcat {
+              case TransactionCancellation.Rejected(journalHeadException) =>
+                Source.failed(journalHeadException)
+              case TransactionCancellation.Retryable(_) if attempt < maxWriteAttempts =>
+                Source
+                  .single(())
+                  .initialDelay(backoffDelay(attempt))
+                  .flatMapConcat(_ => executeTransaction(request, transactWriteItemsRequest, attempt + 1))
+              case TransactionCancellation.Retryable(reason) =>
+                Source.failed(
+                  new JournalHeadConcurrentWriteException(
+                    request.head.persistenceId.asString,
+                    maxWriteAttempts,
+                    reason
+                  )
+                )
+              case TransactionCancellation.Unclassified =>
+                Source.failed(ex)
+            }
+        }
+      )
+
+  /** The cancellations DynamoDB can report for this transaction, as the write acts on them. */
+  private sealed trait TransactionCancellation
+  private object TransactionCancellation {
+    final case class Rejected(exception: JournalHeadException) extends TransactionCancellation
+    final case class Retryable(reason: String) extends TransactionCancellation
+    case object Unclassified extends TransactionCancellation
+  }
+
+  private val RetryableCancellationCodes =
+    Set("TransactionConflict", "ThrottlingError", "ProvisionedThroughputExceeded")
+
+  private val maxWriteAttempts: Int = math.max(0, pluginConfig.writeBackoffConfig.maxRestarts) + 1
+
+  private def backoffDelay(attempt: Int): FiniteDuration = {
+    val writeBackoffConfig = pluginConfig.writeBackoffConfig
+    val base =
+      math.min(writeBackoffConfig.maxBackoff.toMillis, writeBackoffConfig.minBackoff.toMillis << (attempt - 1))
+    val jitter = 1.0 + ThreadLocalRandom.current().nextDouble() * writeBackoffConfig.randomFactor
+    FiniteDuration(math.min(writeBackoffConfig.maxBackoff.toMillis, (base * jitter).toLong), TimeUnit.MILLISECONDS)
+  }
 
   /** The async client fails the future with the SDK exception, sometimes wrapped in another exception. */
   @scala.annotation.tailrec
@@ -255,31 +306,42 @@ final class V2JournalRowWriteDriver(
         )
       )
 
-  /** Maps a cancelled transaction to the failure reason the actor should see. The JournalHead table is read back so
-    * that "the head has not been migrated yet" can be told apart from "the head did not continue from this write".
+  /** Maps a cancelled transaction to what the write does next. The JournalHead table is read back so that "the head has
+    * not been migrated yet" can be told apart from "the head did not continue from this write".
+    *
+    * A cancellation the write cannot recover from stops the transaction. A transaction conflict and throttling are
+    * transient, so the write is retried against the new state of the items. A head that reads as behind the first
+    * sequence number changed after the transaction was checked, so that cancellation is retried too.
     */
   private def classifyTransactionCancellation(
       request: JournalHeadWriteRequest,
       ex: TransactionCanceledException
-  ): Future[Option[JournalHeadException]] = {
+  ): Future[TransactionCancellation] = {
     implicit val ec: ExecutionContext = pluginExecutor
-    val reasons                       = ex.cancellationReasons.asScala.toIndexedSeq
-    val rowCount                      = request.rows.size
-    def failedAt(index: Int): Boolean =
-      reasons.lift(index).exists(reason => reason != null && "ConditionalCheckFailed" == reason.code)
-    val failedJournalRowIndexes = request.rows.indices.filter(failedAt).toVector
+    val reasons = Option(ex.cancellationReasons)
+      .map(_.asScala.toIndexedSeq)
+      .getOrElse(IndexedSeq.empty)
+    val rowCount = request.rows.size
+    def codeAt(index: Int): Option[String] =
+      reasons.lift(index).flatMap(reason => Option(reason)).flatMap(reason => Option(reason.code))
+    def failedAt(index: Int): Boolean = codeAt(index).contains("ConditionalCheckFailed")
+    val failedJournalRowIndexes       = request.rows.indices.filter(failedAt).toVector
     if (failedJournalRowIndexes.nonEmpty) {
       val sequenceNrs = failedJournalRowIndexes.map(index => request.rows(index).sequenceNumber.value)
       Future.successful(
-        Some(new DuplicateJournalEventsException(request.head.persistenceId.asString, sequenceNrs))
+        TransactionCancellation.Rejected(
+          new DuplicateJournalEventsException(request.head.persistenceId.asString, sequenceNrs)
+        )
       )
     } else if (failedAt(rowCount)) {
       val firstSequenceNr = request.rows.head.sequenceNumber.value
       store.headSequenceNr(request.head.persistenceId).runWith(Sink.head).map {
         case None =>
-          Some(new JournalHeadMissingException(request.head.persistenceId.asString, firstSequenceNr))
+          TransactionCancellation.Rejected(
+            new JournalHeadMissingException(request.head.persistenceId.asString, firstSequenceNr)
+          )
         case Some(actualSequenceNr) if actualSequenceNr >= firstSequenceNr =>
-          Some(
+          TransactionCancellation.Rejected(
             new JournalHeadSequenceMismatchException(
               request.head.persistenceId.asString,
               firstSequenceNr - 1,
@@ -287,10 +349,17 @@ final class V2JournalRowWriteDriver(
             )
           )
         case Some(_) =>
-          None
+          TransactionCancellation.Retryable("the JournalHead item changed while the write was checked")
       }
     } else {
-      Future.successful(None)
+      val cancellation = reasons.iterator
+        .flatMap(reason => Option(reason))
+        .flatMap(reason => Option(reason.code))
+        .collectFirst {
+          case code if RetryableCancellationCodes.contains(code) => TransactionCancellation.Retryable(code)
+        }
+        .getOrElse(TransactionCancellation.Unclassified)
+      Future.successful(cancellation)
     }
   }
 

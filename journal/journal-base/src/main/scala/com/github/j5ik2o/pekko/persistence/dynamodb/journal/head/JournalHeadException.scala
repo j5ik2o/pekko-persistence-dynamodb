@@ -146,6 +146,25 @@ final class JournalHeadConcurrentUpdateException(
       null
     )
 
+/** A JournalHead write was cancelled by DynamoDB because another transaction touched the same items, or because
+  * DynamoDB throttled the request.
+  *
+  * The cancelled transaction wrote nothing. The plugin sent the same transaction again `attempts` times, so this
+  * failure means the contention or throttling lasted through every attempt. The caller can send the write again.
+  *
+  * @param reason
+  *   the last cancellation reason DynamoDB reported, for example `TransactionConflict` or
+  *   `ProvisionedThroughputExceeded`
+  */
+final class JournalHeadConcurrentWriteException(
+    val persistenceId: String,
+    val attempts: Int,
+    val reason: String
+) extends JournalHeadException(
+      s"persistenceId=[$persistenceId]: could not write after $attempts attempt(s) because $reason. Nothing was written; send the write again.",
+      null
+    )
+
 /** Why the journal row of an in-place event update cannot be updated. */
 sealed abstract class JournalRowUpdateRejection(val description: String)
 
