@@ -297,7 +297,8 @@ A single write fails, before anything is sent to DynamoDB, when:
 - the whole transaction would exceed 4 MB, with `JournalHeadTransactionTooLargeException`.
 
 The same applies to a write whose rows are empty, span several persistence ids, repeat a key, or are not contiguous,
-with `JournalHeadInvalidWriteException`.
+with `JournalHeadInvalidWriteException`. A write that the plugin cannot render as a transaction, or whose row cannot be
+keyed from the configured column definitions, fails with the same exception.
 
 A write over a limit is neither split into several transactions nor written without a transaction.
 
@@ -328,7 +329,7 @@ write that reaches DynamoDB but fails there (a failed condition or a service err
 | `JournalHeadItemTooLargeException`           | the `JournalHead` item would exceed 400 KB                       |
 | `JournalHeadJournalRowTooLargeException`     | a journal row would exceed 400 KB (the encoded event and tags)   |
 | `JournalHeadTransactionTooLargeException`    | the transaction would exceed 4 MB                                |
-| `JournalHeadInvalidWriteException`           | the rows of one write are empty, span several persistence ids, or are not contiguous |
+| `JournalHeadInvalidWriteException`           | the rows of one write are empty, span several persistence ids, repeat a key, or are not contiguous; also a write the plugin cannot render or key from the configured column definitions |
 | `JournalHeadConcurrentWriteException`        | the write was cancelled on every attempt by a transaction conflict or throttling, or because the `JournalHead` item kept changing after the check; nothing was written — the actor stops through `onPersistFailure`; after the restart it can send the same write again |
 
 Every failure of this table reaches the actor as a failed write: Pekko calls `onPersistFailure` and the actor stops. The
