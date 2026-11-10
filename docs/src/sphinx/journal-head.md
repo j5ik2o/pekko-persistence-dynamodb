@@ -297,7 +297,8 @@ $ sbt -batch "journal-v2/runMain com.github.j5ik2o.pekko.persistence.dynamodb.jo
 
 Without this option, all ids observed in the sources remain targets. Repeated values are deduplicated by exact
 match. Values follow the existing persistence id rules (nonempty, at most 2048 characters), with no trimming,
-case folding or Unicode normalization. Empty or missing values, a following flag, equals syntax such as
+case folding or Unicode normalization. This option cannot select ids that start with `--`, even when they satisfy
+the persistence id rules. Empty or missing values, values that start with `--`, equals syntax such as
 `--persistence-id=value`, unknown flags and extra positional arguments fail before the actor system or client is
 created. Rejecting unknown arguments is an intentional change from the CLI's previous silent ignore behavior.
 Existing snapshot option resolution and precedence still apply.
