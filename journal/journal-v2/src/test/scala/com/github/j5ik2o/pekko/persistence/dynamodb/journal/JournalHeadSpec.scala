@@ -328,6 +328,45 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
       dynamoDBClient.deleteItem(request)
     }
 
+  private def payloadOf(system: ActorSystem, message: Array[Byte]): Any =
+    SerializationExtension(system)
+      .serializerFor(classOf[PersistentRepr])
+      .fromBinary(message, classOf[PersistentRepr])
+      .asInstanceOf[PersistentRepr]
+      .payload
+
+  private def journalPayloads(system: ActorSystem, persistenceId: String): Seq[(Long, Any)] =
+    journalRows(persistenceId).map(row =>
+      row("sequence-nr").getN.toLong -> payloadOf(system, row("message").getB.array())
+    )
+
+  private def headPayloads(system: ActorSystem, persistenceId: String): Seq[(Long, Any)] =
+    headItem(persistenceId).toSeq.flatMap(
+      _("events").getL.asScala.map(event =>
+        event.getM.get("sequence-nr").getN.toLong -> payloadOf(system, event.getM.get("message").getB.array())
+      )
+    )
+
+  private def updateEvent(system: ActorSystem, persistenceId: String, sequenceNr: Long, payload: String): Any = {
+    val probe = newTestProbe(system)
+    journalActor(system).tell(DynamoDBJournal.InPlaceUpdateEvent(persistenceId, sequenceNr, payload), probe.ref)
+    probe.expectMsgAnyClassOf(60.seconds, classOf[Done], classOf[Status.Failure]) match {
+      case Status.Failure(cause) => fail(s"the update failed: $cause", cause)
+      case other                 => other
+    }
+  }
+
+  private def updateEventFails(
+      system: ActorSystem,
+      persistenceId: String,
+      sequenceNr: Long,
+      payload: String
+  ): Throwable = {
+    val probe = newTestProbe(system)
+    journalActor(system).tell(DynamoDBJournal.InPlaceUpdateEvent(persistenceId, sequenceNr, payload), probe.ref)
+    probe.expectMsgType[Status.Failure](60.seconds).cause
+  }
+
   private def newWriteJournalDao(system: ActorSystem): WriteJournalDaoImpl = {
     val pluginConfig  = JournalPluginConfig.fromConfig(system.settings.config.getConfig("j5ik2o.dynamo-db-journal"))
     val pluginContext = JournalPluginContext(system, pluginConfig)
@@ -676,20 +715,77 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
       headItem(pid) shouldBe None
     }
 
-    "reject an in-place event update when head mode is enabled" in {
+    "update the journal row and the JournalHead event of an in-place event update in one transaction when head mode is enabled" in {
       val pid = "head-in-place-update-1"
       persistOk(headEnabledSystem, pid, "e1")
 
-      val journal = journalActor(headEnabledSystem)
-      val probe   = newTestProbe(headEnabledSystem)
-      journal.tell(DynamoDBJournal.InPlaceUpdateEvent(pid, 1L, "updated"), probe.ref)
+      updateEvent(headEnabledSystem, pid, 1L, "updated") shouldBe Done
 
-      val failure = probe.expectMsgType[Status.Failure](60.seconds)
-      failure.cause shouldBe a[JournalHeadAsyncUpdateEventUnsupportedException]
-
-      // The refused update wrote nothing, so the journal and the head still agree.
-      journalSequenceNrs(pid) shouldBe Seq(1L)
+      journalPayloads(headEnabledSystem, pid) shouldBe Seq(1L -> "updated")
+      headPayloads(headEnabledSystem, pid) shouldBe Seq(1L -> "updated")
       headSequenceNr(pid) shouldBe Some(1L)
+    }
+
+    "keep the other events of the JournalHead item on an in-place event update of one event of a persistAll write" in {
+      val pid = "head-in-place-update-2"
+      persistAllOk(headEnabledSystem, pid, immutable.Seq("e1", "e2", "e3"))
+
+      updateEvent(headEnabledSystem, pid, 2L, "updated") shouldBe Done
+
+      journalPayloads(headEnabledSystem, pid) shouldBe Seq(1L -> "e1", 2L -> "updated", 3L -> "e3")
+      headPayloads(headEnabledSystem, pid) shouldBe Seq(1L -> "e1", 2L -> "updated", 3L -> "e3")
+      headSequenceNr(pid) shouldBe Some(3L)
+    }
+
+    "refuse an in-place update of an event that is not in the latest write of the JournalHead item" in {
+      val pid = "head-in-place-update-3"
+      persistOk(headEnabledSystem, pid, "e1")
+      persistOk(headEnabledSystem, pid, "e2")
+
+      // The head holds only the events of the latest write, so the head stream has already delivered event 1 and
+      // cannot be told about a change. The update is refused instead of changing only the journal row.
+      val failure = updateEventFails(headEnabledSystem, pid, 1L, "updated")
+      failure shouldBe a[JournalHeadAsyncUpdateEventUnsupportedException]
+
+      journalPayloads(headEnabledSystem, pid) shouldBe Seq(1L -> "e1", 2L -> "e2")
+      headPayloads(headEnabledSystem, pid) shouldBe Seq(2L -> "e2")
+    }
+
+    "leave the journal and the JournalHead item unchanged when an in-place event update would make the head item exceed 400 KB" in {
+      val pid = "head-in-place-update-4"
+      persistOk(headEnabledSystem, pid, "e1")
+
+      val failure = updateEventFails(headEnabledSystem, pid, 1L, "x" * 410000)
+      failure shouldBe a[JournalHeadItemTooLargeException]
+
+      journalPayloads(headEnabledSystem, pid) shouldBe Seq(1L -> "e1")
+      headPayloads(headEnabledSystem, pid) shouldBe Seq(1L -> "e1")
+    }
+
+    "leave the JournalHead item unchanged and create no journal row when the in-place event update transaction is cancelled" in {
+      val pid = "head-in-place-update-5"
+      persistOk(headEnabledSystem, pid, "e1")
+      // The head still holds event 1 but its journal row is gone, so the condition on the journal row fails.
+      deleteJournalRows(pid)
+
+      val failure = updateEventFails(headEnabledSystem, pid, 1L, "updated")
+      failure shouldBe an[IllegalStateException]
+
+      journalSequenceNrs(pid) shouldBe Seq.empty
+      headPayloads(headEnabledSystem, pid) shouldBe Seq(1L -> "e1")
+    }
+
+    "refuse an in-place update when the aggregate has no JournalHead item" in {
+      val pid = "head-in-place-update-6"
+      persistOk(headDisabledSystem, pid, "e1")
+      // Pekko starts the journal plugin of a system on its first use, and the update goes to the plugin directly.
+      persistOk(headEnabledSystem, "head-in-place-update-6-start-plugin", "e1")
+
+      val failure = updateEventFails(headEnabledSystem, pid, 1L, "updated")
+      failure shouldBe a[JournalHeadMissingException]
+
+      journalPayloads(headEnabledSystem, pid) shouldBe Seq(1L -> "e1")
+      headItem(pid) shouldBe None
     }
 
     "allow an in-place event update when head mode is disabled" in {
