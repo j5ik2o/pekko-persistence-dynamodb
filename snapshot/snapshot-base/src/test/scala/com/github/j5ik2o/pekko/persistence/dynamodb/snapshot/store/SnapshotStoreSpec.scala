@@ -33,6 +33,7 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.{
   SortKey,
   SortKeyResolver
 }
+import java.util.concurrent.atomic.AtomicInteger
 import org.scalatest.BeforeAndAfterAll
 import org.scalatest.concurrent.ScalaFutures
 import org.scalatest.freespec.AnyFreeSpec
@@ -132,6 +133,29 @@ final class SnapshotStoreSpec extends AnyFreeSpec with Matchers with ScalaFuture
         case other                   => fail(s"unexpected operation: $other")
       }
     }
+
+  private final class UnprocessedBatchAdapter(rows: Vector[AttributeMap], failures: Int) extends DdbClientAdapter {
+    private val attempts = new AtomicInteger(0)
+
+    def batchAttempts: Int = attempts.get()
+
+    override def capabilities: CapabilityProfile = CapabilityProfile.V2
+
+    override def run(operation: Operation): Source[OperationResult, NotUsed] = operation match {
+      case _: Operation.Query => Source.single(OperationResult.Items(rows, None))
+      case _: Operation.BatchWrite =>
+        if (attempts.incrementAndGet() <= failures) {
+          Source.failed(new IllegalStateException("BatchWriteItem left 1 unprocessed items"))
+        } else {
+          Source.single(OperationResult.Written(1))
+        }
+      case other => Source.failed(new IllegalArgumentException(s"unexpected operation: $other"))
+    }
+
+    override def queryAll(query: Operation.Query): Source[AttributeMap, NotUsed] = Source.empty
+
+    override def close(): Unit = ()
+  }
 
   "SnapshotStore" - {
     "writes the key and the row columns" in {
@@ -248,6 +272,15 @@ final class SnapshotStoreSpec extends AnyFreeSpec with Matchers with ScalaFuture
           )
         )
       )
+    }
+
+    "retries a batch delete that DynamoDB leaves unprocessed" in {
+      val adapter = new UnprocessedBatchAdapter(Vector(legacyItem), failures = 2)
+      val store   = new SnapshotStore(adapter, new SnapshotRowCodec(schema, legacy), consistentRead = false, 25)
+
+      store.deleteAll(PersistenceId("sample")).runWith(Sink.ignore).futureValue
+
+      adapter.batchAttempts shouldBe 3
     }
 
     "writes nothing when the delete query returns no rows" in {
