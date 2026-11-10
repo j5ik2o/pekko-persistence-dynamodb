@@ -166,6 +166,30 @@ final class CompiledSubtypesSpec extends AnyFreeSpec with Matchers {
     }
   }
 
+  "parent-first collisions fail instead of silently hiding an artifact subtype" in {
+    withDirectory { directory =>
+      val shadowed = prefix + "NonFinal"
+      val loader = new URLClassLoader(Array(directory.toUri.toURL), getClass.getClassLoader) {
+        override def loadClass(name: String, resolve: Boolean): Class[_] = synchronized {
+          if (name.startsWith(prefix) && name != shadowed) {
+            val loaded = Option(findLoadedClass(name)).getOrElse(findClass(name))
+            if (resolve) resolveClass(loaded)
+            loaded
+          } else super.loadClass(name, resolve)
+        }
+      }
+      try {
+        val root      = Class.forName(rootName, false, loader)
+        val collision = Class.forName(shadowed, false, loader)
+        root.isAssignableFrom(collision) shouldBe false
+        val failure = intercept[IllegalStateException] { CompiledSubtypes.of(root) }
+        failure.getMessage should include(shadowed)
+        failure.getMessage should include("CodeSource mismatch")
+        failure.getMessage should include(directory.toString)
+      } finally loader.close()
+    }
+  }
+
   "missing and unsupported CodeSources fail with an actionable diagnostic" in {
     val bytes = {
       val stream = getClass.getClassLoader.getResourceAsStream(rootName.replace('.', '/') + ".class")

@@ -53,19 +53,29 @@ private[schemacheck] object CompiledSubtypes {
     names
       .filter(_.endsWith(".class")).map { name =>
         val binaryName = name.stripSuffix(".class").replace('/', '.')
-        try Class.forName(binaryName, false, root.getClassLoader)
-        catch {
-          case error: LinkageError =>
-            throw new IllegalStateException(
-              s"Cannot load $binaryName from $artifact while checking ${root.getName}",
-              error
-            )
-          case NonFatal(error) =>
-            throw new IllegalStateException(
-              s"Cannot load $binaryName from $artifact while checking ${root.getName}",
-              error
-            )
-        }
+        val clazz =
+          try Class.forName(binaryName, false, root.getClassLoader)
+          catch {
+            case error: LinkageError =>
+              throw new IllegalStateException(
+                s"Cannot load $binaryName from $artifact while checking ${root.getName}",
+                error
+              )
+            case NonFatal(error) =>
+              throw new IllegalStateException(
+                s"Cannot load $binaryName from $artifact while checking ${root.getName}",
+                error
+              )
+          }
+        val loadedFrom = Option(clazz.getProtectionDomain.getCodeSource).flatMap(source => Option(source.getLocation))
+        if (
+          !loadedFrom
+            .exists(location => location.getProtocol == "file" && Files.isSameFile(Paths.get(location.toURI), artifact))
+        )
+          throw new IllegalStateException(
+            s"CodeSource mismatch for $binaryName: expected $artifact, loaded from $loadedFrom"
+          )
+        clazz
       }.filter(clazz => clazz != root && root.isAssignableFrom(clazz)).toSet
   }
 }
