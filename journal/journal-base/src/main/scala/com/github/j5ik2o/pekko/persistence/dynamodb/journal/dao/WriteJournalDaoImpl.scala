@@ -224,14 +224,17 @@ final class WriteJournalDaoImpl(
   /** Offers one write to a queue and waits for the driver to finish it.
     *
     * A queue whose stream has been detached refuses offers with `StreamDetachedException`, and the fail overflow
-    * strategy refuses the overflowing offer with `Failure(BufferOverflowException)`. Both carry the reason a write was
-    * refused, so the typed failures keep it as their cause.
+    * strategy refuses the overflowing offer with `Failure(BufferOverflowException)`. The backpressure strategy holds an
+    * offer back while the buffer is full and fails the `Future` of any offer beyond its concurrent limit with
+    * `IllegalStateException`. Each carries the reason a write was refused, so the typed failures keep it as their
+    * cause.
     */
   private def enqueue[A](queue: SourceQueueWithComplete[A], request: A, promise: Promise[Long]): Future[Long] =
     queue
       .offer(request)
-      .recoverWith { case t: StreamDetachedException =>
-        Future.failed(new JournalWriteQueueClosedException(t))
+      .recoverWith {
+        case t: StreamDetachedException => Future.failed(new JournalWriteQueueClosedException(t))
+        case t: IllegalStateException   => Future.failed(new JournalWriteQueueBusyException(t))
       }
       .flatMap {
         case QueueOfferResult.Enqueued => promise.future
