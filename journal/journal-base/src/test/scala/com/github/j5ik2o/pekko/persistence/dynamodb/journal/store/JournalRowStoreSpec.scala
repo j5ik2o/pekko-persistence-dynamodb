@@ -55,6 +55,7 @@ import org.scalatest.BeforeAndAfterAll
 import org.scalatest.freespec.AnyFreeSpec
 import org.scalatest.matchers.should.Matchers
 
+import java.util.concurrent.atomic.AtomicInteger
 import scala.concurrent.Await
 import scala.concurrent.duration._
 
@@ -69,17 +70,21 @@ final class JournalRowStoreSpec extends AnyFreeSpec with Matchers with BeforeAnd
 
   private final case class Fixture(adapter: InMemoryDdbAdapter, store: JournalRowStore)
 
-  /** Fails the first `failures` batch writes with the error the adapter raises for unprocessed items, then delegates.
-    */
-  private final class FlakyBatchAdapter(delegate: InMemoryDdbAdapter, failures: Int) extends DdbClientAdapter {
-    private var remaining: Int = failures
+  /** Fails the first `failures` batch writes with `failure`, then delegates. */
+  private final class FlakyBatchAdapter(
+      delegate: InMemoryDdbAdapter,
+      failures: Int,
+      failure: () => Throwable = () => new IllegalStateException("BatchWriteItem left 1 unprocessed items")
+  ) extends DdbClientAdapter {
+    private val attempts = new AtomicInteger(0)
+
+    def batchAttempts: Int = attempts.get()
 
     override val capabilities: CapabilityProfile = delegate.capabilities
 
     override def run(operation: Operation): Source[OperationResult, NotUsed] = operation match {
-      case _: Operation.BatchWrite if remaining > 0 =>
-        remaining -= 1
-        Source.failed(new IllegalStateException("BatchWriteItem left 1 unprocessed items"))
+      case _: Operation.BatchWrite =>
+        if (attempts.incrementAndGet() <= failures) Source.failed(failure()) else delegate.run(operation)
       case _ =>
         delegate.run(operation)
     }
@@ -157,6 +162,20 @@ final class JournalRowStoreSpec extends AnyFreeSpec with Matchers with BeforeAnd
       eventMessageColumnName = "message"
     )
   )
+
+  private def storeWith(adapter: DdbClientAdapter, writeBackoffConfig: BackoffConfig): JournalRowStore =
+    new JournalRowStore(
+      schema = schema,
+      partitionKeyResolver = new ShardedPartitionKeyResolver(4),
+      sortKeyResolver = sortKeyResolver,
+      adapter = adapter,
+      queryBatchSize = 2,
+      consistentRead = false,
+      batchWriteLimit = 25,
+      readBackoffConfig = disabledBackoff,
+      writeBackoffConfig = writeBackoffConfig,
+      headConfig = None
+    )
 
   private def run[T](source: Source[T, NotUsed]): Vector[T] =
     Await.result(
@@ -256,23 +275,40 @@ final class JournalRowStoreSpec extends AnyFreeSpec with Matchers with BeforeAnd
 
   "retry an unprocessed batch until the adapter accepts it" in {
     val fixture = newFixture()
-    val store = new JournalRowStore(
-      schema = schema,
-      partitionKeyResolver = new ShardedPartitionKeyResolver(4),
-      sortKeyResolver = sortKeyResolver,
-      adapter = new FlakyBatchAdapter(fixture.adapter, failures = 2),
-      queryBatchSize = 2,
-      consistentRead = false,
-      batchWriteLimit = 25,
-      readBackoffConfig = disabledBackoff,
-      writeBackoffConfig = disabledBackoff,
-      headConfig = None
-    )
-    val rows = (1L to 3L).map(sequenceNr => JournalTestSupport.row(persistenceId, sequenceNr, s"e$sequenceNr"))
+    val store   = storeWith(new FlakyBatchAdapter(fixture.adapter, failures = 2), disabledBackoff)
+    val rows    = (1L to 3L).map(sequenceNr => JournalTestSupport.row(persistenceId, sequenceNr, s"e$sequenceNr"))
 
     run(store.write(rows)) shouldBe Vector(3L)
     run(store.read(persistenceId, None, SequenceNumber(3), None, None))
       .map(_.sequenceNumber.value) shouldBe Vector(1L, 2L, 3L)
+  }
+
+  "do not retry a batch failure that is not the unprocessed-items signal" in {
+    val fixture = newFixture()
+    val adapter = new FlakyBatchAdapter(
+      fixture.adapter,
+      failures = 2,
+      failure = () => new IllegalStateException("unexpected result for a write")
+    )
+    val store = storeWith(adapter, disabledBackoff)
+    val rows  = (1L to 3L).map(sequenceNr => JournalTestSupport.row(persistenceId, sequenceNr, s"e$sequenceNr"))
+
+    val failure = Await.result(store.write(rows).runWith(Sink.ignore).failed, 30.seconds)
+
+    failure shouldBe an[IllegalStateException]
+    adapter.batchAttempts shouldBe 1
+  }
+
+  "stop retrying an unprocessed batch after the configured attempts" in {
+    val fixture = newFixture()
+    val adapter = new FlakyBatchAdapter(fixture.adapter, failures = 2)
+    val store   = storeWith(adapter, disabledBackoff.copy(maxRestarts = 0))
+    val rows    = (1L to 3L).map(sequenceNr => JournalTestSupport.row(persistenceId, sequenceNr, s"e$sequenceNr"))
+
+    val failure = Await.result(store.write(rows).runWith(Sink.ignore).failed, 30.seconds)
+
+    failure should not be an[IllegalStateException]
+    adapter.batchAttempts shouldBe 1
   }
 
   "reject two rows that resolve to the same key" in {

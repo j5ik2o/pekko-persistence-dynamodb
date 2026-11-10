@@ -66,7 +66,7 @@ final class V2ResponsesSpec extends AnyFreeSpec with Matchers {
     OperationResult.Items(Vector.empty, Some(AttributeMap.of(AttributeName("k") -> DdbValue.Str("v"))))
   }
 
-  "an unprocessed batch item fails with the signal that SnapshotStore retries" in {
+  "an unprocessed batch item fails with a recoverable failure, not an illegal state" in {
     val request = BatchWriteItemRequest
       .builder()
       .requestItems(Map("t" -> Vector(write()).asJava).asJava)
@@ -76,9 +76,8 @@ final class V2ResponsesSpec extends AnyFreeSpec with Matchers {
       .unprocessedItems(Map("t" -> Vector(write()).asJava).asJava)
       .build()
 
-    // SnapshotStore retries this type. Issue #887 replaces it, so update both places together.
     V2Responses.batch(request, response) match {
-      case Left(cause)   => cause shouldBe a[IllegalStateException]
+      case Left(cause)   => cause should not be an[IllegalStateException]
       case Right(result) => fail(s"expected a batch failure, got $result")
     }
   }
