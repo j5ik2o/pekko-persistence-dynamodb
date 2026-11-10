@@ -938,7 +938,7 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
       journalSequenceNrs(pid) shouldBe Seq(1L)
     }
 
-    "reject a write whose transaction would exceed 4 MB" in {
+    "fail a write whose transaction would exceed 4 MB and stop the actor" in {
       val pid = "head-4mb-1"
       withActor(headEnabledSystem, pid) { (actor, probe) =>
         // 99 events with a 43,000 character tag each: the journal rows alone exceed 4 MB, the head item stays small
@@ -1040,7 +1040,7 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
       } finally dao.dispose()
     }
 
-    "accept 99 events in one persistAll and reject 100 events" in {
+    "accept 99 events in one persistAll and fail 100 events" in {
       val acceptedPid = "head-99-events-1"
       persistAllOk(headEnabledSystem, acceptedPid, (1 to 99).map(i => s"e$i").toVector) shouldBe PersistedAll(99)
       journalSequenceNrs(acceptedPid) shouldBe (1L to 99L).toSeq
@@ -1054,7 +1054,7 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
       headItem(rejectedPid) shouldBe None
     }
 
-    "accept an event that keeps the JournalHead item under the size limit and reject one that exceeds it" in {
+    "accept an event that keeps the JournalHead item under the size limit and fail one that exceeds it" in {
       val acceptedPid = "head-size-under-1"
       persistOk(headEnabledSystem, acceptedPid, "x" * 406000)
       journalSequenceNrs(acceptedPid) shouldBe Seq(1L)
