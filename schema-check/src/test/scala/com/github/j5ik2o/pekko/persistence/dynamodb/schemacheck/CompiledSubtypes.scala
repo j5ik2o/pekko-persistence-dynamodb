@@ -75,7 +75,7 @@ private[schemacheck] object CompiledSubtypes {
           throw new IllegalStateException(
             s"CodeSource mismatch for $binaryName: expected $artifact, loaded from $loadedFrom"
           )
-        if (clazz.getClassLoader != root.getClassLoader)
+        if (clazz.getClassLoader ne root.getClassLoader)
           throw new IllegalStateException(
             s"ClassLoader mismatch for $binaryName from $artifact while checking ${root.getName}"
           )

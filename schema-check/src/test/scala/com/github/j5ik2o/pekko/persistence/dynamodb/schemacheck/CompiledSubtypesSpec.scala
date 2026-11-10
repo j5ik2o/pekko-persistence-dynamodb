@@ -77,8 +77,11 @@ final class CompiledSubtypesSpec extends AnyFreeSpec with Matchers {
     }
   }
 
-  private def withRoot(artifact: Path)(test: Class[_] => Unit): Unit = {
+  private def withRoot(artifact: Path, aliasesOtherLoaders: Boolean = false)(test: Class[_] => Unit): Unit = {
     val loader = new URLClassLoader(Array(artifact.toUri.toURL), getClass.getClassLoader) {
+      override def equals(other: Any): Boolean =
+        if (aliasesOtherLoaders) other.isInstanceOf[ClassLoader] else super.equals(other)
+      override def hashCode(): Int = if (aliasesOtherLoaders) 0 else super.hashCode()
       override def loadClass(name: String, resolve: Boolean): Class[_] = synchronized {
         if (name.startsWith(prefix)) {
           val loaded = Option(findLoadedClass(name)).getOrElse(findClass(name))
@@ -192,30 +195,33 @@ final class CompiledSubtypesSpec extends AnyFreeSpec with Matchers {
 
   "a different defining loader fails even when the artifact is the same" in {
     withDirectory { directory =>
-      withRoot(directory) { parentRoot =>
-        val shadowed = prefix + "NonFinal"
-        val loader = new URLClassLoader(Array(directory.toUri.toURL), parentRoot.getClassLoader) {
-          override def loadClass(name: String, resolve: Boolean): Class[_] = synchronized {
-            if (name.startsWith(prefix) && name != shadowed) {
-              val loaded = Option(findLoadedClass(name)).getOrElse(findClass(name))
-              if (resolve) resolveClass(loaded)
-              loaded
-            } else super.loadClass(name, resolve)
+      Seq(false, true).foreach { aliasesOtherLoaders =>
+        withRoot(directory, aliasesOtherLoaders) { parentRoot =>
+          val shadowed = prefix + "NonFinal"
+          val loader = new URLClassLoader(Array(directory.toUri.toURL), parentRoot.getClassLoader) {
+            override def loadClass(name: String, resolve: Boolean): Class[_] = synchronized {
+              if (name.startsWith(prefix) && name != shadowed) {
+                val loaded = Option(findLoadedClass(name)).getOrElse(findClass(name))
+                if (resolve) resolveClass(loaded)
+                loaded
+              } else super.loadClass(name, resolve)
+            }
           }
+          try {
+            val root      = Class.forName(rootName, false, loader)
+            val collision = Class.forName(shadowed, false, loader)
+            Files.isSameFile(
+              Paths.get(root.getProtectionDomain.getCodeSource.getLocation.toURI),
+              Paths.get(collision.getProtectionDomain.getCodeSource.getLocation.toURI)
+            ) shouldBe true
+            (root.getClassLoader eq collision.getClassLoader) shouldBe false
+            if (aliasesOtherLoaders) collision.getClassLoader.equals(root.getClassLoader) shouldBe true
+            root.isAssignableFrom(collision) shouldBe false
+            val failure = intercept[IllegalStateException] { CompiledSubtypes.of(root) }
+            failure.getMessage should include(shadowed)
+            failure.getMessage should include("ClassLoader mismatch")
+          } finally loader.close()
         }
-        try {
-          val root      = Class.forName(rootName, false, loader)
-          val collision = Class.forName(shadowed, false, loader)
-          Files.isSameFile(
-            Paths.get(root.getProtectionDomain.getCodeSource.getLocation.toURI),
-            Paths.get(collision.getProtectionDomain.getCodeSource.getLocation.toURI)
-          ) shouldBe true
-          root.getClassLoader should not be collision.getClassLoader
-          root.isAssignableFrom(collision) shouldBe false
-          val failure = intercept[IllegalStateException] { CompiledSubtypes.of(root) }
-          failure.getMessage should include(shadowed)
-          failure.getMessage should include("ClassLoader mismatch")
-        } finally loader.close()
       }
     }
   }
