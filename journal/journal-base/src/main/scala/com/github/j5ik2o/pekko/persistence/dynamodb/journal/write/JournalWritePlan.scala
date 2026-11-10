@@ -26,8 +26,8 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.journal.{ JournalRow, Partit
 
 /** The journal rows and the JournalHead item of one write, after every local check has passed.
   *
-  * A plan is a value. Building it never touches DynamoDB and never throws for a rejected write, so a rejection reaches
-  * the actor as a `Failure` and leaves the write queue working.
+  * A plan is a value. Building it never touches DynamoDB and never throws for a rejected write. The caller returns the
+  * rejection as the failure of the whole write, so the write queue keeps working and the actor stops.
   */
 final case class JournalWritePlan(rows: Seq[JournalRow], head: JournalHeadRow)
 
@@ -118,8 +118,8 @@ object JournalWritePlan {
     *
     * `plan` runs this check as part of the JournalHead validation. The head-less write path has no JournalHead item to
     * measure, but DynamoDB still refuses a journal row over 400 KB, so the caller of `DynamoDBJournal` runs this same
-    * check before it sends the rows and returns the rejection as a `Failure`. Both paths therefore refuse the same row
-    * locally, instead of letting DynamoDB decide depending on whether `head.enabled` is set.
+    * check before it sends the rows and fails the whole write with the rejection. Both paths therefore refuse the same
+    * row locally, instead of letting DynamoDB decide depending on whether `head.enabled` is set.
     */
   def findJournalRowTooLarge(
       rows: Seq[JournalRow],

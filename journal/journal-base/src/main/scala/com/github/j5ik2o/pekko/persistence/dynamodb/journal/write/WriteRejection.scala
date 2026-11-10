@@ -27,8 +27,8 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.journal.head.{
 /** A write the journal plugin refuses before DynamoDB is called.
   *
   * The rejection is a value so that the write queue keeps running. `toJournalHeadException` maps every case to the
-  * existing `JournalHeadException` family, which is what the actor reports through `onPersistRejected` and what an
-  * operator matches on.
+  * existing `JournalHeadException` family. `DynamoDBJournal` fails the whole write with that exception, which is what
+  * the actor reports through `onPersistFailure` before it stops and what an operator matches on.
   */
 sealed trait WriteRejection extends Product with Serializable {
 
