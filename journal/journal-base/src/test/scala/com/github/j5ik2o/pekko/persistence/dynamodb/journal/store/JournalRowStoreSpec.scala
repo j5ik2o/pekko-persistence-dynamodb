@@ -19,6 +19,7 @@ import org.apache.pekko.NotUsed
 import org.apache.pekko.actor.ActorSystem
 import org.apache.pekko.stream.{ Materializer, SystemMaterializer }
 import org.apache.pekko.stream.scaladsl.{ Sink, Source }
+import com.github.j5ik2o.pekko.persistence.dynamodb.config.BackoffConfig
 import com.github.j5ik2o.pekko.persistence.dynamodb.ddb.{
   AttributeMap,
   AttributeName,
@@ -358,12 +359,16 @@ final class JournalRowStoreSpec extends AnyFreeSpec with Matchers with BeforeAnd
 
   private val testBackoff = disabledBackoff.copy(minBackoff = 10.millis, maxBackoff = 20.millis)
 
+  private val slowBackoff =
+    disabledBackoff.copy(enabled = true, minBackoff = 300.millis, maxBackoff = 300.millis, randomFactor = 0.0)
+
   /** What the store finds in the tables before the scripted transactions run. `row` is the `deleted` flag of the
     * journal row at sequence number 2, if the row exists.
     */
   private final case class Script(
       head: Option[AttributeMap] = Some(headItem()),
       row: Option[Boolean] = Some(false),
+      backoff: BackoffConfig = testBackoff,
       onTransaction: (Int, InMemoryDdbAdapter) => Unit = (_, _) => ()
   )
 
@@ -387,7 +392,7 @@ final class JournalRowStoreSpec extends AnyFreeSpec with Matchers with BeforeAnd
       consistentRead = false,
       batchWriteLimit = 25,
       readBackoffConfig = disabledBackoff,
-      writeBackoffConfig = testBackoff,
+      writeBackoffConfig = script.backoff,
       headConfig = Some(headModeConfig)
     )
     (adapter, store)
@@ -617,5 +622,117 @@ final class JournalRowStoreSpec extends AnyFreeSpec with Matchers with BeforeAnd
 
     updateFailure(store, sequenceNr = 3L, message = "y" * 160000) shouldBe a[JournalHeadItemTooLargeException]
     adapter.transactions shouldBe empty
+  }
+
+  private def elapsedMillis(action: => Unit): Long = {
+    val started = System.nanoTime()
+    action
+    (System.nanoTime() - started) / 1000000
+  }
+
+  "update with head mode waits for the backoff before it tries a throttled update again" in {
+    val (_, store) = scriptedStore(Script(backoff = slowBackoff), throttled, committed)
+
+    elapsedMillis(run(store.update(JournalTestSupport.row(persistenceId, 2L, "new2", ordering = 2L)))) should be >= 250L
+  }
+
+  "update with head mode does not wait when the backoff is disabled" in {
+    val (_, store) = scriptedStore(Script(backoff = slowBackoff.copy(enabled = false)), throttled, committed)
+
+    elapsedMillis(run(store.update(JournalTestSupport.row(persistenceId, 2L, "new2", ordering = 2L)))) should be < 200L
+  }
+
+  "update with head mode reads the head again without waiting when the head changed" in {
+    val (_, store) = scriptedStore(Script(backoff = slowBackoff), headChanged, committed)
+
+    elapsedMillis(run(store.update(JournalTestSupport.row(persistenceId, 2L, "new2", ordering = 2L)))) should be < 200L
+  }
+
+  "update with head mode retries ProvisionedThroughputExceeded like throttling" in {
+    val (adapter, store) = scriptedStore(Script(), conditionFailedAt(0, "ProvisionedThroughputExceeded"), committed)
+
+    run(store.update(JournalTestSupport.row(persistenceId, 2L, "new2", ordering = 2L)))
+
+    adapter.transactions.size shouldBe 2
+  }
+
+  "update with head mode checks the journal row first when the row and the head conditions both failed" in {
+    val bothFailed =
+      OperationResult.TransactionRejected(
+        Vector(ConditionFailure(0, "ConditionalCheckFailed"), ConditionFailure(1, "ConditionalCheckFailed"))
+      )
+    val (adapter, store) = scriptedStore(Script(row = Some(true)), bothFailed)
+
+    val failure = updateFailure(store)
+
+    failure shouldBe a[JournalHeadRowUpdateRejectedException]
+    failure.asInstanceOf[JournalHeadRowUpdateRejectedException].reason shouldBe JournalRowUpdateRejection.RowDeleted
+    adapter.transactions.size shouldBe 1
+  }
+
+  "update with head mode returns a recoverable failure when the row keeps changing during the check" in {
+    val (adapter, store) = scriptedStore(Script(), rowConditionFailed, rowConditionFailed, rowConditionFailed)
+
+    updateFailure(store) shouldBe a[JournalHeadConcurrentUpdateException]
+    adapter.transactions.size shouldBe 3
+  }
+
+  "update with head mode builds the retry from the head it read again" in {
+    val newer = headItem(revision = Some(5))
+    val (adapter, store) = scriptedStore(
+      Script(onTransaction = (_, memory) => memory.seed(headTableName, newer)),
+      headChanged,
+      committed
+    )
+
+    run(store.update(JournalTestSupport.row(persistenceId, 2L, "new2", ordering = 2L)))
+
+    val Vector(_, retried: TransactItem.Put) = adapter.transactions(1).items
+    retried.item.get(AttributeName("revision")) shouldBe Some(DdbValue.Num(BigDecimal(6)))
+    retried.condition shouldBe Some(
+      Condition.And(
+        Condition.Compare(
+          Operand.Column(AttributeName("sequence-nr")),
+          CompareOp.Eq,
+          Operand.Literal(DdbValue.Num(BigDecimal(2)))
+        ),
+        Condition.Compare(
+          Operand.Column(AttributeName("revision")),
+          CompareOp.Eq,
+          Operand.Literal(DdbValue.Num(BigDecimal(5)))
+        )
+      )
+    )
+  }
+
+  "update with head mode fails with an illegal state for every other shape of a malformed JournalHead item" in {
+    def item(entries: (String, DdbValue)*): AttributeMap =
+      AttributeMap(entries.toVector.map { case (name, value) => AttributeName(name) -> value })
+    val id     = "persistence-id" -> DdbValue.Str(persistenceId.asString)
+    val events = "events"         -> DdbValue.L(Vector(headEvent(2, "old2")))
+    val malformed = Seq(
+      item(id, "sequence-nr" -> DdbValue.Str("2"), events),
+      item(id, "sequence-nr" -> DdbValue.Num(BigDecimal(2)), "revision" -> DdbValue.Str("1"), events),
+      item(id, "sequence-nr" -> DdbValue.Num(BigDecimal(2)), "events"   -> DdbValue.L(Vector(DdbValue.Str("event")))),
+      item(
+        id,
+        "sequence-nr" -> DdbValue.Num(BigDecimal(2)),
+        "events"      -> DdbValue.L(Vector(DdbValue.M(Vector("sequence-nr" -> DdbValue.Num(BigDecimal(2))))))
+      ),
+      item(id, "sequence-nr" -> DdbValue.Num(BigDecimal(2)))
+    )
+    malformed.foreach { head =>
+      val (adapter, store) = scriptedStore(Script(head = Some(head)), committed)
+
+      updateFailure(store) shouldBe an[IllegalStateException]
+      adapter.transactions shouldBe empty
+    }
+  }
+
+  "update with head mode fails with an illegal state when DynamoDB cancels the transaction without a reason" in {
+    val (adapter, store) = scriptedStore(Script(), OperationResult.TransactionRejected(Vector.empty))
+
+    updateFailure(store) shouldBe an[IllegalStateException]
+    adapter.transactions.size shouldBe 1
   }
 }
