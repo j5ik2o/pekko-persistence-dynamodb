@@ -29,7 +29,6 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.schema.{
   SnapshotTableSpec
 }
 
-
 final class SnapshotStore(
     adapter: DdbClientAdapter,
     private val codec: SnapshotRowCodec,
@@ -150,8 +149,9 @@ final class SnapshotStore(
 
   /** DynamoDB can leave a batch write partly unprocessed. The adapter reports that transient condition as a
     * `BatchWriteUnprocessedItemsException`, so retry only that failure. Other failures propagate unchanged, because a
-    * permanent service error is not retryable. The write path has no other retry, so the bound and timings from
-    * write-backoff apply even when its `enabled` flag is false.
+    * permanent service error is not retryable. The write path has no other retry, so the bound from write-backoff
+    * (`max-restarts`) applies even when its `enabled` flag is false. The flag decides only whether the retries wait:
+    * enabled waits the backoff between attempts, disabled sends the batch again at once, as the journal does.
     */
   private def deleteBatch(keys: Vector[RowKey]): Source[Unit, NotUsed] = {
     val operation   = Operation.BatchWrite(tableSpec.table.table, Vector.empty, keys)
@@ -163,10 +163,12 @@ final class SnapshotStore(
           1,
           {
             case _: BatchWriteUnprocessedItemsException if attemptNo < maxAttempts =>
-              Source
-                .single(()).initialDelay(Backoff.backoffDelay(writeBackoffConfig, attemptNo)).flatMapConcat(_ =>
-                  attempt(attemptNo + 1)
-                )
+              if (writeBackoffConfig.enabled)
+                Source
+                  .single(()).initialDelay(Backoff.backoffDelay(writeBackoffConfig, attemptNo)).flatMapConcat(_ =>
+                    attempt(attemptNo + 1)
+                  )
+              else attempt(attemptNo + 1)
             case cause: BatchWriteUnprocessedItemsException =>
               Source.failed(
                 new SnapshotStoreException.BatchWriteRetriesExhausted(
