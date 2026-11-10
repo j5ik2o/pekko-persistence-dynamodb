@@ -15,9 +15,9 @@
  */
 package com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.store
 
+import java.util.concurrent.ThreadLocalRandom
 import org.apache.pekko.NotUsed
-import org.apache.pekko.stream.RestartSettings
-import org.apache.pekko.stream.scaladsl.{ RestartSource, Source }
+import org.apache.pekko.stream.scaladsl.Source
 import com.github.j5ik2o.pekko.persistence.dynamodb.config.BackoffConfig
 import com.github.j5ik2o.pekko.persistence.dynamodb.ddb._
 import com.github.j5ik2o.pekko.persistence.dynamodb.model.{ PersistenceId, SequenceNumber }
@@ -28,6 +28,8 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.schema.{
   SnapshotSchema,
   SnapshotTableSpec
 }
+
+import scala.concurrent.duration.{ DurationLong, FiniteDuration }
 
 final class SnapshotStore(
     adapter: DdbClientAdapter,
@@ -147,38 +149,46 @@ final class SnapshotStore(
       .grouped(batchWriteLimit)
       .flatMapConcat(keys => deleteBatch(keys.toVector))
 
-  /** DynamoDB can leave a batch write partly unprocessed. The adapter fails the stream for that transient condition, so
-    * retry the idempotent batch within the configured bound. The write path has no other retry, so the bound and
-    * timings from write-backoff apply even when its `enabled` flag is false.
+  /** DynamoDB can leave a batch write partly unprocessed. The adapter fails the stream with an `IllegalStateException`
+    * for that transient condition, so retry only that failure. Other failures propagate unchanged, because a permanent
+    * service error is not retryable. The write path has no other retry, so the bound and timings from write-backoff
+    * apply even when its `enabled` flag is false.
     */
   private def deleteBatch(keys: Vector[RowKey]): Source[Unit, NotUsed] = {
     val operation   = Operation.BatchWrite(tableSpec.table.table, Vector.empty, keys)
-    val maxRestarts = math.max(0, writeBackoffConfig.maxRestarts)
-    // A restart window shorter than one backoff lets the source reset its count and restart without bound.
-    val restartWindow = writeBackoffConfig.maxBackoff * (maxRestarts + 2)
-    val settings = RestartSettings(
-      writeBackoffConfig.minBackoff,
-      writeBackoffConfig.maxBackoff,
-      writeBackoffConfig.randomFactor
-    ).withMaxRestarts(maxRestarts, restartWindow)
-    RestartSource
-      .onFailuresWithBackoff(settings)(() => adapter.run(operation))
-      .recoverWithRetries(
-        1,
-        { case cause: Exception =>
-          Source.failed(
-            new SnapshotStoreException.BatchWriteRetriesExhausted(
-              tableSpec.table.table,
-              maxRestarts + 1,
-              cause
-            )
-          )
-        }
-      )
-      .flatMapConcat {
-        case OperationResult.Written(_) => Source.single(())
-        case other                      => Source.failed(new IllegalStateException(s"unexpected write result: $other"))
-      }
+    val maxAttempts = math.max(0, writeBackoffConfig.maxRestarts) + 1
+
+    def attempt(attemptNo: Int): Source[OperationResult, NotUsed] =
+      adapter
+        .run(operation).recoverWithRetries(
+          1,
+          {
+            case cause: IllegalStateException if attemptNo < maxAttempts =>
+              Source.single(()).delay(backoffDelay(attemptNo - 1)).flatMapConcat(_ => attempt(attemptNo + 1))
+            case cause: IllegalStateException =>
+              Source.failed(
+                new SnapshotStoreException.BatchWriteRetriesExhausted(
+                  tableSpec.table.table,
+                  maxAttempts,
+                  cause
+                )
+              )
+          }
+        )
+
+    attempt(1).flatMapConcat {
+      case OperationResult.Written(_) => Source.single(())
+      case other                      => Source.failed(new IllegalStateException(s"unexpected write result: $other"))
+    }
+  }
+
+  private def backoffDelay(retryIndex: Int): FiniteDuration = {
+    val baseMillis = math.min(
+      writeBackoffConfig.maxBackoff.toMillis.toDouble,
+      writeBackoffConfig.minBackoff.toMillis.toDouble * math.pow(2.0, retryIndex.toDouble)
+    )
+    val jitter = 1.0 + writeBackoffConfig.randomFactor * ThreadLocalRandom.current().nextDouble()
+    (baseMillis * jitter).toLong.millis
   }
 
   private def written(operation: Operation): Source[Unit, NotUsed] =

@@ -148,7 +148,8 @@ final class SnapshotStoreSpec extends AnyFreeSpec with Matchers with ScalaFuture
       }
     }
 
-  private final class UnprocessedBatchAdapter(rows: Vector[AttributeMap], failures: Int) extends DdbClientAdapter {
+  private final class FailingBatchAdapter(rows: Vector[AttributeMap], failures: Int, failure: () => Throwable)
+      extends DdbClientAdapter {
     private val attempts = new AtomicInteger(0)
 
     def batchAttempts: Int = attempts.get()
@@ -159,7 +160,7 @@ final class SnapshotStoreSpec extends AnyFreeSpec with Matchers with ScalaFuture
       case _: Operation.Query => Source.single(OperationResult.Items(rows, None))
       case _: Operation.BatchWrite =>
         if (attempts.incrementAndGet() <= failures) {
-          Source.failed(new IllegalStateException("BatchWriteItem left 1 unprocessed items"))
+          Source.failed(failure())
         } else {
           Source.single(OperationResult.Written(1))
         }
@@ -170,6 +171,9 @@ final class SnapshotStoreSpec extends AnyFreeSpec with Matchers with ScalaFuture
 
     override def close(): Unit = ()
   }
+
+  private def unprocessedBatchFailure: () => Throwable =
+    () => new IllegalStateException("BatchWriteItem left 1 unprocessed items")
 
   "SnapshotStore" - {
     "writes the key and the row columns" in {
@@ -296,7 +300,7 @@ final class SnapshotStoreSpec extends AnyFreeSpec with Matchers with ScalaFuture
     }
 
     "retries a batch delete that DynamoDB leaves unprocessed" in {
-      val adapter = new UnprocessedBatchAdapter(Vector(legacyItem), failures = 2)
+      val adapter = new FailingBatchAdapter(Vector(legacyItem), failures = 2, unprocessedBatchFailure)
       val store =
         new SnapshotStore(adapter, new SnapshotRowCodec(schema, legacy), consistentRead = false, 25, writeBackoff)
 
@@ -306,7 +310,7 @@ final class SnapshotStoreSpec extends AnyFreeSpec with Matchers with ScalaFuture
     }
 
     "fails with a retryable exception when a batch delete keeps failing" in {
-      val adapter = new UnprocessedBatchAdapter(Vector(legacyItem), failures = Int.MaxValue)
+      val adapter = new FailingBatchAdapter(Vector(legacyItem), failures = Int.MaxValue, unprocessedBatchFailure)
       val store =
         new SnapshotStore(adapter, new SnapshotRowCodec(schema, legacy), consistentRead = false, 25, writeBackoff)
 
@@ -317,6 +321,22 @@ final class SnapshotStoreSpec extends AnyFreeSpec with Matchers with ScalaFuture
       exhausted.attempts shouldBe 4
       exhausted.table shouldBe TableName("Snapshot")
       adapter.batchAttempts shouldBe 4
+    }
+
+    "does not retry a permanent batch delete failure" in {
+      val adapter =
+        new FailingBatchAdapter(
+          Vector(legacyItem),
+          failures = Int.MaxValue,
+          () => new IllegalArgumentException("permanent")
+        )
+      val store =
+        new SnapshotStore(adapter, new SnapshotRowCodec(schema, legacy), consistentRead = false, 25, writeBackoff)
+
+      val failure = store.deleteAll(PersistenceId("sample")).runWith(Sink.ignore).failed.futureValue
+
+      failure shouldBe a[IllegalArgumentException]
+      adapter.batchAttempts shouldBe 1
     }
 
     "writes nothing when the delete query returns no rows" in {
