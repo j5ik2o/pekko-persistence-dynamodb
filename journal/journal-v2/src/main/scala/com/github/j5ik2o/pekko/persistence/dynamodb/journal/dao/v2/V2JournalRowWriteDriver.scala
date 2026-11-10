@@ -253,7 +253,8 @@ final class V2JournalRowWriteDriver(
       // The head is written only if it is behind the first sequence number of this write, or if it does not exist
       // and this write starts at sequence number 1. A head that is ahead (a rewind, or another writer that already
       // wrote these sequence numbers) fails. The gap is allowed on purpose: Pekko does not rewind the sequence
-      // number of a rejected write, so the write after a rejection starts above the head by more than one.
+      // number of a write that it rejects itself (an event that cannot be serialized), so the write after that
+      // rejection starts above the head by more than one.
       //
       // This is not optimistic locking. It checks that the assumption "there is only one writer per aggregate"
       // (kept by Cluster Sharding and Split Brain Resolver) still holds.
