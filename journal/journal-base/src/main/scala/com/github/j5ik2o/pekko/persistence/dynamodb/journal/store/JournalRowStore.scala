@@ -16,7 +16,6 @@
 package com.github.j5ik2o.pekko.persistence.dynamodb.journal.store
 
 import org.apache.pekko.NotUsed
-import org.apache.pekko.stream.RestartSettings
 import org.apache.pekko.stream.scaladsl.{ RestartSource, Source }
 import com.github.j5ik2o.pekko.persistence.dynamodb.client.Backoff
 import com.github.j5ik2o.pekko.persistence.dynamodb.config.BackoffConfig
@@ -65,11 +64,6 @@ final class JournalRowStore(
 ) {
 
   private val UpdateAttempts: Int = 3
-
-  /** The restart window of a batch write. It is far longer than any attempt, so a slow attempt cannot reset the count
-    * of `write-backoff.max-restarts` and the batch stops after `max-restarts + 1` attempts.
-    */
-  private val BatchRestartWindow: FiniteDuration = 365.days
 
   private val journalColumns: JournalColumnsDefConfig = JournalColumnsDefConfig(
     sourceConfig = ConfigFactory.empty(),
@@ -550,35 +544,21 @@ final class JournalRowStore(
         )
 
     if (writeBackoffConfig.enabled) {
-      run(operation, writeBackoffConfig, BatchRestartWindow).mapError {
-        case cause: BatchWriteUnprocessedItemsException =>
-          exhausted(cause)
+      run(operation, writeBackoffConfig).mapError { case cause: BatchWriteUnprocessedItemsException =>
+        exhausted(cause)
       }
     } else {
       attempt(1)
     }
   }
 
-  private def run(operation: Operation, backoffConfig: BackoffConfig): Source[OperationResult, NotUsed] =
-    run(operation, backoffConfig, backoffConfig.minBackoff)
-
-  /** `restartWindow` is the period in which `max-restarts` counts. A restart count resets when an attempt runs longer
-    * than the window before it fails, so a caller that needs a hard bound passes a window longer than any attempt.
+  /** With `write-backoff` enabled the operation restarts after any failure, at most `max-restarts` times in total
+    * however long each attempt takes.
     */
-  private def run(
-      operation: Operation,
-      backoffConfig: BackoffConfig,
-      restartWindow: FiniteDuration
-  ): Source[OperationResult, NotUsed] = {
+  private def run(operation: Operation, backoffConfig: BackoffConfig): Source[OperationResult, NotUsed] = {
     def source: Source[OperationResult, NotUsed] = adapter.run(operation)
     if (backoffConfig.enabled) {
-      RestartSource.onFailuresWithBackoff(
-        RestartSettings(
-          backoffConfig.minBackoff,
-          backoffConfig.maxBackoff,
-          backoffConfig.randomFactor
-        ).withMaxRestarts(backoffConfig.maxRestarts, restartWindow)
-      )(() => source)
+      RestartSource.onFailuresWithBackoff(Backoff.restartSettings(backoffConfig))(() => source)
     } else {
       source
     }

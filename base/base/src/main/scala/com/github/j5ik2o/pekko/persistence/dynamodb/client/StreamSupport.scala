@@ -16,7 +16,6 @@
 package com.github.j5ik2o.pekko.persistence.dynamodb.client
 
 import org.apache.pekko.NotUsed
-import org.apache.pekko.stream.RestartSettings
 import org.apache.pekko.stream.scaladsl.{ Flow, RestartFlow }
 import com.github.j5ik2o.pekko.persistence.dynamodb.config.BackoffConfig
 
@@ -27,15 +26,7 @@ trait StreamSupport {
       flow: Flow[In, Out, NotUsed]
   ): Flow[In, Out, NotUsed] = {
     if (backoffConfig.enabled) {
-      val restartSettings = RestartSettings(
-        minBackoff = backoffConfig.minBackoff,
-        maxBackoff = backoffConfig.maxBackoff,
-        randomFactor = backoffConfig.randomFactor
-      ).withMaxRestarts(backoffConfig.maxRestarts, backoffConfig.minBackoff)
-      RestartFlow
-        .withBackoff(
-          restartSettings
-        ) { () => flow }
+      RestartFlow.withBackoff(Backoff.restartSettings(backoffConfig)) { () => flow }
     } else flow
   }
 }
