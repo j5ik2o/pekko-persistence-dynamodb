@@ -35,4 +35,6 @@ Push the branch, open one draft PR with a Japanese title and body, and wait for 
 
 ## PR
 
-Not created yet.
+Draft PR #895: https://github.com/j5ik2o/pekko-persistence-dynamodb/pull/895
+
+Waiting for CI. Do not mark it ready, merge it, or close the issue.
