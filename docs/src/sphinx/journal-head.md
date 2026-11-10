@@ -534,12 +534,19 @@ of the failures below, and none of them changes the journal or the head.
 | `JournalHeadConcurrentUpdateException`        | the head kept changing, DynamoDB reported a transaction conflict, or it throttled the request, for three attempts | yes, send the update again |
 | `IllegalStateException`                       | a state that cannot happen: the head went backwards between two reads, the head item is malformed, DynamoDB cancelled the transaction for a reason the plugin does not handle, or it returned an unexpected result | no, a bug or a damaged table |
 
-An update keeps the `deleted` flag of the journal row and does not update a missing or deleted row. An event removed
-with a soft delete therefore stays deleted, and updating it is refused with `RowDeleted`.
+An update keeps the `deleted` flag of the journal row and does not update a missing or deleted row. This rule and
+`JournalHeadRowUpdateRejectedException`, with `reason` of `RowDoesNotExist` or `RowDeleted`, also apply when
+`head.enabled = false`.
 
-The transaction is conditional on the `sequence-nr` and the `revision` of the head being the ones the plugin read, so a
-write or an update that lands between the read and the transaction makes the plugin read the head again and try again,
-up to three attempts. A transaction conflict and throttling are tried again after a backoff that grows from
+Both paths condition the update on the journal row existing and not being soft deleted. If that condition fails, the
+plugin reads the row with a strongly consistent read to determine the rejection reason. If the row exists and is not
+deleted at that read, it retries the update, for at most three attempts in total. If this race persists through all
+three attempts, the caller gets `JournalHeadConcurrentUpdateException` and can send the update again. With
+`head.enabled = false`, these attempts check only the journal row and use no head revision check or transaction.
+
+When `head.enabled = true`, the transaction is also conditional on the `sequence-nr` and the `revision` of the head
+being the ones the plugin read. A write or an update that lands between the read and the transaction makes the plugin
+read the head again and try again, up to three attempts. A transaction conflict and throttling are tried again after a backoff that grows from
 the `min-backoff` of `write-backoff` up to its `max-backoff`. When the attempts are used up, the caller gets
 `JournalHeadConcurrentUpdateException`. When `write-backoff` is disabled, these attempts follow one another without a
 wait.
