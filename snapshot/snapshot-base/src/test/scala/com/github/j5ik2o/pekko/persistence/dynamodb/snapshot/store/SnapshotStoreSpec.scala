@@ -33,11 +33,16 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.{
   SortKey,
   SortKeyResolver
 }
+import java.util.concurrent.atomic.AtomicInteger
+import com.github.j5ik2o.pekko.persistence.dynamodb.config.BackoffConfig
+import com.typesafe.config.ConfigFactory
 import org.scalatest.BeforeAndAfterAll
 import org.scalatest.concurrent.ScalaFutures
 import org.scalatest.freespec.AnyFreeSpec
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.time.{ Millis, Seconds, Span }
+
+import scala.concurrent.duration.DurationInt
 
 final class SnapshotStoreSpec extends AnyFreeSpec with Matchers with ScalaFutures with BeforeAndAfterAll {
 
@@ -74,6 +79,18 @@ final class SnapshotStoreSpec extends AnyFreeSpec with Matchers with ScalaFuture
     )
 
   private val legacy = SnapshotTableSpec.legacy(schema, TableName("Snapshot"))
+
+  private val writeBackoff: BackoffConfig =
+    BackoffConfig(
+      sourceConfig = ConfigFactory.empty(),
+      enabled = false,
+      minBackoff = 1.milli,
+      maxBackoff = 5.millis,
+      randomFactor = 0.0,
+      maxRestarts = 3
+    )
+
+  private val noRestartBackoff: BackoffConfig = writeBackoff.copy(maxRestarts = 0)
 
   private val row = SnapshotRow(
     persistenceId = PersistenceId("sample"),
@@ -133,10 +150,38 @@ final class SnapshotStoreSpec extends AnyFreeSpec with Matchers with ScalaFuture
       }
     }
 
+  private final class FailingBatchAdapter(rows: Vector[AttributeMap], failures: Int, failure: () => Throwable)
+      extends DdbClientAdapter {
+    private val attempts = new AtomicInteger(0)
+
+    def batchAttempts: Int = attempts.get()
+
+    override def capabilities: CapabilityProfile = CapabilityProfile.V2
+
+    override def run(operation: Operation): Source[OperationResult, NotUsed] = operation match {
+      case _: Operation.Query => Source.single(OperationResult.Items(rows, None))
+      case _: Operation.BatchWrite =>
+        if (attempts.incrementAndGet() <= failures) {
+          Source.failed(failure())
+        } else {
+          Source.single(OperationResult.Written(1))
+        }
+      case other => Source.failed(new IllegalArgumentException(s"unexpected operation: $other"))
+    }
+
+    override def queryAll(query: Operation.Query): Source[AttributeMap, NotUsed] = Source.empty
+
+    override def close(): Unit = ()
+  }
+
+  private def unprocessedBatchFailure: () => Throwable =
+    () => new IllegalStateException("BatchWriteItem left 1 unprocessed items")
+
   "SnapshotStore" - {
     "writes the key and the row columns" in {
       val adapter = adapterReturning(Vector.empty)
-      val store   = new SnapshotStore(adapter, new SnapshotRowCodec(schema, sharded), consistentRead = false, 25)
+      val store =
+        new SnapshotStore(adapter, new SnapshotRowCodec(schema, sharded), consistentRead = false, 25, writeBackoff)
 
       store.save(row).runWith(Sink.ignore).futureValue
 
@@ -149,7 +194,8 @@ final class SnapshotStoreSpec extends AnyFreeSpec with Matchers with ScalaFuture
 
     "reads the latest row through the configured index" in {
       val adapter = adapterReturning(Vector(shardedItem))
-      val store   = new SnapshotStore(adapter, new SnapshotRowCodec(schema, sharded), consistentRead = false, 25)
+      val store =
+        new SnapshotStore(adapter, new SnapshotRowCodec(schema, sharded), consistentRead = false, 25, writeBackoff)
 
       val result = store.latest(PersistenceId("sample")).runWith(Sink.head).futureValue
 
@@ -172,14 +218,16 @@ final class SnapshotStoreSpec extends AnyFreeSpec with Matchers with ScalaFuture
 
     "returns no row when the query returns none" in {
       val adapter = adapterReturning(Vector.empty)
-      val store   = new SnapshotStore(adapter, new SnapshotRowCodec(schema, sharded), consistentRead = false, 25)
+      val store =
+        new SnapshotStore(adapter, new SnapshotRowCodec(schema, sharded), consistentRead = false, 25, writeBackoff)
 
       store.latest(PersistenceId("sample")).runWith(Sink.head).futureValue shouldBe None
     }
 
     "filters by the created column for a maximum timestamp" in {
       val adapter = adapterReturning(Vector.empty)
-      val store   = new SnapshotStore(adapter, new SnapshotRowCodec(schema, sharded), consistentRead = false, 25)
+      val store =
+        new SnapshotStore(adapter, new SnapshotRowCodec(schema, sharded), consistentRead = false, 25, writeBackoff)
 
       store.forMaxTimestamp(PersistenceId("sample"), 1000L).runWith(Sink.head).futureValue shouldBe None
 
@@ -191,7 +239,8 @@ final class SnapshotStoreSpec extends AnyFreeSpec with Matchers with ScalaFuture
 
     "deletes the found rows by their sharded key" in {
       val adapter = adapterReturning(Vector(shardedItem))
-      val store   = new SnapshotStore(adapter, new SnapshotRowCodec(schema, sharded), consistentRead = false, 25)
+      val store =
+        new SnapshotStore(adapter, new SnapshotRowCodec(schema, sharded), consistentRead = false, 25, writeBackoff)
 
       store.delete(PersistenceId("sample"), SequenceNumber(5)).runWith(Sink.ignore).futureValue
 
@@ -210,7 +259,8 @@ final class SnapshotStoreSpec extends AnyFreeSpec with Matchers with ScalaFuture
 
     "deletes a single row by its identity key in the legacy format" in {
       val adapter = adapterReturning(Vector.empty)
-      val store   = new SnapshotStore(adapter, new SnapshotRowCodec(schema, legacy), consistentRead = false, 25)
+      val store =
+        new SnapshotStore(adapter, new SnapshotRowCodec(schema, legacy), consistentRead = false, 25, writeBackoff)
 
       store.delete(PersistenceId("sample"), SequenceNumber(5)).runWith(Sink.ignore).futureValue
 
@@ -231,7 +281,8 @@ final class SnapshotStoreSpec extends AnyFreeSpec with Matchers with ScalaFuture
 
     "deletes the found rows by their identity key in the legacy format" in {
       val adapter = adapterReturning(Vector(legacyItem))
-      val store   = new SnapshotStore(adapter, new SnapshotRowCodec(schema, legacy), consistentRead = false, 25)
+      val store =
+        new SnapshotStore(adapter, new SnapshotRowCodec(schema, legacy), consistentRead = false, 25, writeBackoff)
 
       store.deleteAll(PersistenceId("sample")).runWith(Sink.ignore).futureValue
 
@@ -250,9 +301,61 @@ final class SnapshotStoreSpec extends AnyFreeSpec with Matchers with ScalaFuture
       )
     }
 
+    "retries a batch delete that DynamoDB leaves unprocessed" in {
+      val adapter = new FailingBatchAdapter(Vector(legacyItem), failures = 2, unprocessedBatchFailure)
+      val store =
+        new SnapshotStore(adapter, new SnapshotRowCodec(schema, legacy), consistentRead = false, 25, writeBackoff)
+
+      store.deleteAll(PersistenceId("sample")).runWith(Sink.ignore).futureValue
+
+      adapter.batchAttempts shouldBe 3
+    }
+
+    "fails with a retryable exception when a batch delete keeps failing" in {
+      val unprocessed = new IllegalStateException("BatchWriteItem left 1 unprocessed items")
+      val adapter     = new FailingBatchAdapter(Vector(legacyItem), failures = Int.MaxValue, () => unprocessed)
+      val store =
+        new SnapshotStore(adapter, new SnapshotRowCodec(schema, legacy), consistentRead = false, 25, writeBackoff)
+
+      val failure = store.deleteAll(PersistenceId("sample")).runWith(Sink.ignore).failed.futureValue
+
+      failure shouldBe a[SnapshotStoreException.BatchWriteRetriesExhausted]
+      val exhausted = failure.asInstanceOf[SnapshotStoreException.BatchWriteRetriesExhausted]
+      exhausted.attempts shouldBe 4
+      exhausted.table shouldBe TableName("Snapshot")
+      exhausted.getCause should be theSameInstanceAs unprocessed
+      adapter.batchAttempts shouldBe 4
+    }
+
+    "does not retry a permanent batch delete failure" in {
+      val permanent = new IllegalArgumentException("permanent")
+      val adapter =
+        new FailingBatchAdapter(Vector(legacyItem), failures = Int.MaxValue, () => permanent)
+      val store =
+        new SnapshotStore(adapter, new SnapshotRowCodec(schema, legacy), consistentRead = false, 25, writeBackoff)
+
+      val failure = store.deleteAll(PersistenceId("sample")).runWith(Sink.ignore).failed.futureValue
+
+      failure should be theSameInstanceAs permanent
+      adapter.batchAttempts shouldBe 1
+    }
+
+    "does not retry when max-restarts is zero" in {
+      val adapter = new FailingBatchAdapter(Vector(legacyItem), failures = Int.MaxValue, unprocessedBatchFailure)
+      val store =
+        new SnapshotStore(adapter, new SnapshotRowCodec(schema, legacy), consistentRead = false, 25, noRestartBackoff)
+
+      val failure = store.deleteAll(PersistenceId("sample")).runWith(Sink.ignore).failed.futureValue
+
+      failure shouldBe a[SnapshotStoreException.BatchWriteRetriesExhausted]
+      failure.asInstanceOf[SnapshotStoreException.BatchWriteRetriesExhausted].attempts shouldBe 1
+      adapter.batchAttempts shouldBe 1
+    }
+
     "writes nothing when the delete query returns no rows" in {
       val adapter = adapterReturning(Vector.empty)
-      val store   = new SnapshotStore(adapter, new SnapshotRowCodec(schema, sharded), consistentRead = false, 25)
+      val store =
+        new SnapshotStore(adapter, new SnapshotRowCodec(schema, sharded), consistentRead = false, 25, writeBackoff)
 
       store.deleteAll(PersistenceId("sample")).runWith(Sink.ignore).futureValue
 

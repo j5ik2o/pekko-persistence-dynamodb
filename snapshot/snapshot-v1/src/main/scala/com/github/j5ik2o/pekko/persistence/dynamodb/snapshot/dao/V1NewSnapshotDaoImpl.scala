@@ -64,7 +64,8 @@ private[dao] final class V1SnapshotDaoDelegate(
   private val schema    = SnapshotSchema.fromColumns(columnsDefConfig)
   private val tableSpec = SnapshotTableSpec.fromConfig(schema, pluginConfig, partitionKeyResolver, sortKeyResolver)
   private val codec     = new SnapshotRowCodec(schema, tableSpec)
-  private val store     = new SnapshotStore(adapter, codec, consistentRead, clientConfig.batchWriteItemLimit)
+  private val store =
+    new SnapshotStore(adapter, codec, consistentRead, clientConfig.batchWriteItemLimit, writeBackoffConfig)
 
   private val serializer = new ByteArraySnapshotSerializer(serialization, metricsReporter, traceReporter)
 

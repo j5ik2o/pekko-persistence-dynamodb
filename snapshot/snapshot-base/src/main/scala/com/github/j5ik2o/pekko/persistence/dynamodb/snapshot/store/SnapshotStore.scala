@@ -15,8 +15,10 @@
  */
 package com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.store
 
+import java.util.concurrent.ThreadLocalRandom
 import org.apache.pekko.NotUsed
 import org.apache.pekko.stream.scaladsl.Source
+import com.github.j5ik2o.pekko.persistence.dynamodb.config.BackoffConfig
 import com.github.j5ik2o.pekko.persistence.dynamodb.ddb._
 import com.github.j5ik2o.pekko.persistence.dynamodb.model.{ PersistenceId, SequenceNumber }
 import com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.dao.SnapshotRow
@@ -27,11 +29,14 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.schema.{
   SnapshotTableSpec
 }
 
+import scala.concurrent.duration.{ DurationLong, FiniteDuration }
+
 final class SnapshotStore(
     adapter: DdbClientAdapter,
     private val codec: SnapshotRowCodec,
     consistentRead: Boolean,
-    batchWriteLimit: Int
+    batchWriteLimit: Int,
+    writeBackoffConfig: BackoffConfig
 ) {
 
   private val schema: SnapshotSchema       = codec.schema
@@ -142,7 +147,52 @@ final class SnapshotStore(
         case Left(error) => Source.failed(new IllegalArgumentException(s"cannot decode the snapshot row: $error"))
       }
       .grouped(batchWriteLimit)
-      .flatMapConcat(keys => written(Operation.BatchWrite(tableSpec.table.table, Vector.empty, keys.toVector)))
+      .flatMapConcat(keys => deleteBatch(keys.toVector))
+
+  /** DynamoDB can leave a batch write partly unprocessed. The adapter fails the stream with an `IllegalStateException`
+    * for that transient condition, so retry only that failure. Other failures propagate unchanged, because a permanent
+    * service error is not retryable. The write path has no other retry, so the bound and timings from write-backoff
+    * apply even when its `enabled` flag is false.
+    *
+    * Issue #887 replaces the adapter's `IllegalStateException` signal with a typed failure. When it lands, update this
+    * predicate and the response tests in base-v1 and base-v2.
+    */
+  private def deleteBatch(keys: Vector[RowKey]): Source[Unit, NotUsed] = {
+    val operation   = Operation.BatchWrite(tableSpec.table.table, Vector.empty, keys)
+    val maxAttempts = math.max(0, writeBackoffConfig.maxRestarts) + 1
+
+    def attempt(attemptNo: Int): Source[OperationResult, NotUsed] =
+      adapter
+        .run(operation).recoverWithRetries(
+          1,
+          {
+            case cause: IllegalStateException if attemptNo < maxAttempts =>
+              Source.single(()).delay(backoffDelay(attemptNo - 1)).flatMapConcat(_ => attempt(attemptNo + 1))
+            case cause: IllegalStateException =>
+              Source.failed(
+                new SnapshotStoreException.BatchWriteRetriesExhausted(
+                  tableSpec.table.table,
+                  maxAttempts,
+                  cause
+                )
+              )
+          }
+        )
+
+    attempt(1).flatMapConcat {
+      case OperationResult.Written(_) => Source.single(())
+      case other                      => Source.failed(new IllegalStateException(s"unexpected write result: $other"))
+    }
+  }
+
+  private def backoffDelay(retryIndex: Int): FiniteDuration = {
+    val baseMillis = math.min(
+      writeBackoffConfig.maxBackoff.toMillis.toDouble,
+      writeBackoffConfig.minBackoff.toMillis.toDouble * math.pow(2.0, retryIndex.toDouble)
+    )
+    val jitter = 1.0 + writeBackoffConfig.randomFactor * ThreadLocalRandom.current().nextDouble()
+    (baseMillis * jitter).toLong.millis
+  }
 
   private def written(operation: Operation): Source[Unit, NotUsed] =
     adapter.run(operation).flatMapConcat {
