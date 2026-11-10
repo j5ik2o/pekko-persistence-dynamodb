@@ -19,8 +19,8 @@ package com.github.j5ik2o.pekko.persistence.dynamodb.journal.dao
   *
   * The queue is a bounded buffer, so it can refuse a write without sending anything to DynamoDB. Each subclass is a
   * distinct reason, so that a caller can tell "the buffer is full" apart from "the queue is closed" or "too many offers
-  * are waiting". Pekko still fails
-  * the write and stops the actor through `onPersistFailure`; the type is available to the log and to that callback.
+  * are waiting". Pekko still fails the write and stops the actor through `onPersistFailure`; the type is available to
+  * the log and to that callback.
   */
 sealed abstract class JournalWriteQueueException(message: String, cause: Throwable)
     extends RuntimeException(message, cause)
@@ -48,8 +48,8 @@ final class JournalWriteQueueClosedException(cause: Throwable = null)
 /** The write was refused because too many writes were already waiting for the queue to accept them.
   *
   * With the backpressure overflow strategy a full buffer holds an offer back instead of refusing it, and the queue
-  * accepts only a bounded number of such concurrent offers. Nothing was sent to DynamoDB and the queue keeps running, so
-  * a retry after the in-flight writes drain can succeed. The cause holds the `IllegalStateException` from Pekko.
+  * accepts only a bounded number of such concurrent offers. Nothing was sent to DynamoDB and the queue keeps running,
+  * so a retry after the in-flight writes drain can succeed. The cause holds the `IllegalStateException` from Pekko.
   */
 final class JournalWriteQueueBusyException(cause: Throwable = null)
     extends JournalWriteQueueException(
