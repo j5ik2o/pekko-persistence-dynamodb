@@ -108,6 +108,23 @@ class CanaryTest(unittest.TestCase):
         self.assertEqual(result['adopted_record']['task'], '\ud800')
         self.assertEqual(result['actual_model'], 'unknown')
 
+    def test_overflowing_json_numbers_are_rejected(self):
+        for container in ['identity', 'observed']:
+            with self.subTest(container=container):
+                export = copy.deepcopy(self.export)
+                record = export['records'][0]
+                key = 'extra' if container == 'identity' else 'executedModel'
+                record[container][key] = 'overflow-placeholder'
+                path = self.directory / 'overflow.json'
+                path.write_text(json.dumps(export).replace('"overflow-placeholder"', '1e999'),
+                                encoding='utf-8')
+                process = subprocess.run([sys.executable, str(CLI), str(path), '--as-of', AS_OF,
+                                          '--max-age-seconds', '3600'], capture_output=True, text=True)
+                self.assertEqual(process.returncode, 2, process.stderr)
+                self.assertEqual(process.stdout, '')
+                self.assertNotIn('Traceback', process.stderr)
+                self.assertNotIn('1e999', process.stderr)
+
     def test_ambiguous_models_and_missing_config(self):
         for value in [None, '', 'auto', 'ambiguous', 'unknown']:
             with self.subTest(value=value):

@@ -181,6 +181,12 @@ def reject_constant(_):
     raise Unknown('invalid_json')
 
 
+def finite_float(value):
+    result = float(value)
+    require(math.isfinite(result), 'invalid_json')
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('export', type=Path)
@@ -191,7 +197,7 @@ def main():
         as_of = timestamp(args.as_of)
         require(args.max_age_seconds >= 0, 'invalid_max_age')
         data = json.loads(args.export.read_text(encoding='utf-8'), object_pairs_hook=unique_object,
-                          parse_constant=reject_constant)
+                          parse_constant=reject_constant, parse_float=finite_float)
     except (OSError, ValueError):
         parser.exit(2, 'Cannot read export or invalid JSON/time/age. No file contents displayed.\n')
     print(json.dumps(assess(data, as_of, args.max_age_seconds, args.export.parent),
