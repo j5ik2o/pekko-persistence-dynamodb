@@ -315,6 +315,20 @@ then rebuild the read model of the aggregates the tool reports.
 Restore the journal table and the `JournalHead` table to the same point in time. If you use the snapshot table, restore
 it to that time too, because the migration tool reads it as a source of the last sequence number.
 
+Matching timestamps do not prove that every transaction was restored completely. DynamoDB propagates transaction
+changes to backups gradually, so a restored backup can contain only part of a transaction. See the
+[transaction backup limitations](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/transaction-apis.html).
+For example, a restored multi-event write can include its head and highest journal row but omit an earlier row.
+The highest sequence numbers can then agree and the migration dry-run can report no work, even though history is
+incomplete. Neither check validates the complete event history.
+
+Choose a documented, verified recovery checkpoint taken while every writer and migration tool was quiescent, with
+all in-flight writes complete and the backup contents validated. Otherwise, validate the restored transaction and
+event history against authoritative write records, accounting for intentional deletions, before accepting the
+recovery point. Stopping nodes during a restore does not make the historical recovery point quiescent. If neither
+form of verification is possible, stop and select a verified backup; do not restart from matching timestamps and
+sequence numbers alone.
+
 The plugin does not reject two tables that disagree. With `head.enabled = true`, recovery takes the higher of two
 numbers after a restart: the highest `sequence-nr` in the journal and the `sequence-nr` of the `JournalHead` item. The write condition accepts every
 write whose first sequence number is above the head. The aggregate therefore keeps writing, and a mismatch shows up
@@ -335,11 +349,12 @@ higher of `J` and `S`.
 ### Choose the backup type
 
 Use [point-in-time recovery](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Point-in-time-recovery.html)
-(PITR). It lets you restore each table to the same timestamp.
+(PITR). It lets you restore each table to the same timestamp, subject to the transaction validation above.
 
-An [on-demand backup](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Backup-and-Restore.html) holds
-the table as it was when you requested that backup. Two requests capture two moments. Stop every node before you
-request both backups, or the two tables can differ.
+[On-demand backups](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Backup-and-Restore.html) are
+requested separately for each table. Quiesce every writer and migration tool and finish in-flight writes before
+requesting the backups, then validate their contents as above. The requests alone do not prove a consistent
+multi-table recovery checkpoint.
 
 ### Restore the tables
 
@@ -350,7 +365,8 @@ each table. The window runs from `EarliestRestorableDateTime` to `LatestRestorab
 $ aws dynamodb describe-continuous-backups --table-name JournalHead
 ```
 
-1. Stop every node and the stream consumer.
+1. Stop every node and the stream consumer. Choose and verify the historical recovery point as described above.
+   This shutdown protects the restore work; it does not validate the history captured in that recovery point.
 2. Restore each table to the same time. A restore always creates a new table. Keep the indexes, because the plugin
    needs `GetJournalRowsIndex`.
 
