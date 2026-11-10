@@ -39,8 +39,13 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.journal.config.{ JournalHead
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.dao.PersistenceIdWithSeqNr
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.head.{
   JournalHeadAsyncUpdateEventUnsupportedException,
+  JournalHeadConcurrentUpdateException,
   JournalHeadInvalidWriteException,
-  JournalHeadMissingException
+  JournalHeadItemTooLargeException,
+  JournalHeadJournalRowTooLargeException,
+  JournalHeadMissingException,
+  JournalHeadRowUpdateRejectedException,
+  JournalRowUpdateRejection
 }
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.schema.JournalTestSupport
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.{ PartitionKey, PartitionKeyResolver }
@@ -83,9 +88,15 @@ final class JournalRowStoreSpec extends AnyFreeSpec with Matchers with BeforeAnd
     override def close(): Unit = delegate.close()
   }
 
-  /** Answers every transactional write with the next scripted result and records the transactions it received. */
-  private final class ScriptedTransactionAdapter(delegate: InMemoryDdbAdapter, results: Seq[OperationResult])
-      extends DdbClientAdapter {
+  /** Answers every transactional write with the next scripted result and records the transactions it received.
+    * `onTransaction` runs after a transaction is recorded, so a test can change the data the way a concurrent writer
+    * would before the store reads again.
+    */
+  private final class ScriptedTransactionAdapter(
+      delegate: InMemoryDdbAdapter,
+      results: Seq[OperationResult],
+      onTransaction: Int => Unit
+  ) extends DdbClientAdapter {
     private val pending = scala.collection.mutable.Queue(results: _*)
     val transactions: scala.collection.mutable.ArrayBuffer[Operation.TransactWrite] =
       scala.collection.mutable.ArrayBuffer.empty
@@ -95,6 +106,7 @@ final class JournalRowStoreSpec extends AnyFreeSpec with Matchers with BeforeAnd
     override def run(operation: Operation): Source[OperationResult, NotUsed] = operation match {
       case transaction: Operation.TransactWrite =>
         transactions += transaction
+        onTransaction(transactions.size)
         Source.single(pending.dequeue())
       case _ =>
         delegate.run(operation)
@@ -317,42 +329,55 @@ final class JournalRowStoreSpec extends AnyFreeSpec with Matchers with BeforeAnd
       )
     )
 
-  private def seedHead(fixture: Fixture, revision: Option[Long], events: DdbValue*): Unit =
-    fixture.adapter.seed(
-      TableName("JournalHead"),
-      AttributeMap(
-        Vector(
-          AttributeName("persistence-id") -> (DdbValue.Str(persistenceId.asString): DdbValue),
-          AttributeName("sequence-nr")    -> (DdbValue.Num(BigDecimal(2)): DdbValue),
-          AttributeName("events")         -> (DdbValue.L(events.toVector): DdbValue)
-        ) ++ revision.map(value => AttributeName("revision") -> (DdbValue.Num(BigDecimal(value)): DdbValue))
-      )
+  private def headItem(
+      sequenceNr: Long = 2,
+      revision: Option[Long] = None,
+      events: Vector[DdbValue] = Vector(headEvent(1, "old1"), headEvent(2, "old2"))
+  ): AttributeMap =
+    AttributeMap(
+      Vector[(AttributeName, DdbValue)](
+        AttributeName("persistence-id") -> DdbValue.Str(persistenceId.asString),
+        AttributeName("sequence-nr")    -> DdbValue.Num(BigDecimal(sequenceNr)),
+        AttributeName("events")         -> DdbValue.L(events)
+      ) ++ revision.map(value => AttributeName("revision") -> (DdbValue.Num(BigDecimal(value)): DdbValue))
     )
 
-  private val headChanged: OperationResult = OperationResult.TransactionRejected(
-    Vector(ConditionFailure(0, "None"), ConditionFailure(1, "ConditionalCheckFailed"))
-  )
-  private val rowMissing: OperationResult = OperationResult.TransactionRejected(
-    Vector(ConditionFailure(0, "ConditionalCheckFailed"), ConditionFailure(1, "None"))
-  )
+  private val headTableName = TableName("JournalHead")
 
-  private val validationError: OperationResult = OperationResult.TransactionRejected(
-    Vector(ConditionFailure(0, "ValidationError"), ConditionFailure(1, "None"))
-  )
-  private val transactionConflict: OperationResult = OperationResult.TransactionRejected(
-    Vector(ConditionFailure(0, "None"), ConditionFailure(1, "TransactionConflict"))
-  )
+  private def conditionFailedAt(index: Int, code: String = "ConditionalCheckFailed"): OperationResult =
+    OperationResult.TransactionRejected(
+      (0 to 1).toVector.map(i => if (i == index) ConditionFailure(i, code) else ConditionFailure(i, "None"))
+    )
 
-  private def scriptedStore(results: OperationResult*): (ScriptedTransactionAdapter, JournalRowStore) =
-    scriptedStore(None, results: _*)
+  private val headChanged: OperationResult         = conditionFailedAt(1)
+  private val rowConditionFailed: OperationResult  = conditionFailedAt(0)
+  private val validationError: OperationResult     = conditionFailedAt(0, "ValidationError")
+  private val transactionConflict: OperationResult = conditionFailedAt(1, "TransactionConflict")
+  private val throttled: OperationResult           = conditionFailedAt(0, "ThrottlingError")
+  private val committed: OperationResult           = OperationResult.TransactionCommitted(2)
+
+  private val testBackoff = disabledBackoff.copy(minBackoff = 10.millis, maxBackoff = 20.millis)
+
+  /** What the store finds in the tables before the scripted transactions run. `row` is the `deleted` flag of the
+    * journal row at sequence number 2, if the row exists.
+    */
+  private final case class Script(
+      head: Option[AttributeMap] = Some(headItem()),
+      row: Option[Boolean] = Some(false),
+      onTransaction: (Int, InMemoryDdbAdapter) => Unit = (_, _) => ()
+  )
 
   private def scriptedStore(
-      revision: Option[Long],
+      script: Script,
       results: OperationResult*
   ): (ScriptedTransactionAdapter, JournalRowStore) = {
     val inMemory = newFixture(headConfig = Some(headModeConfig))
-    seedHead(inMemory, revision, headEvent(1, "old1"), headEvent(2, "old2"))
-    val adapter = new ScriptedTransactionAdapter(inMemory.adapter, results)
+    script.head.foreach(item => inMemory.adapter.seed(headTableName, item))
+    script.row.foreach { deleted =>
+      run(inMemory.store.write(Seq(JournalTestSupport.row(persistenceId, 2L, "old2", deleted = deleted))))
+    }
+    val adapter =
+      new ScriptedTransactionAdapter(inMemory.adapter, results, i => script.onTransaction(i, inMemory.adapter))
     val store = new JournalRowStore(
       schema = schema,
       partitionKeyResolver = new ShardedPartitionKeyResolver(4),
@@ -362,14 +387,20 @@ final class JournalRowStoreSpec extends AnyFreeSpec with Matchers with BeforeAnd
       consistentRead = false,
       batchWriteLimit = 25,
       readBackoffConfig = disabledBackoff,
-      writeBackoffConfig = disabledBackoff,
+      writeBackoffConfig = testBackoff,
       headConfig = Some(headModeConfig)
     )
     (adapter, store)
   }
 
+  private def updateFailure(store: JournalRowStore, sequenceNr: Long = 2L, message: String = "new2"): Throwable =
+    Await.result(
+      store.update(JournalTestSupport.row(persistenceId, sequenceNr, message, ordering = 2L)).runWith(Sink.head).failed,
+      30.seconds
+    )
+
   "update with head mode sends the row update and the head replacement in one transaction" in {
-    val (adapter, store) = scriptedStore(OperationResult.TransactionCommitted(2))
+    val (adapter, store) = scriptedStore(Script(), committed)
 
     run(store.update(JournalTestSupport.row(persistenceId, 2L, "new2", ordering = 2L)))
 
@@ -384,7 +415,7 @@ final class JournalRowStoreSpec extends AnyFreeSpec with Matchers with BeforeAnd
         )
       )
     )
-    headPut.table shouldBe TableName("JournalHead")
+    headPut.table shouldBe headTableName
     headPut.item.get(AttributeName("events")) shouldBe Some(
       DdbValue.L(Vector(headEvent(1, "old1"), headEvent(2, "new2")))
     )
@@ -402,7 +433,7 @@ final class JournalRowStoreSpec extends AnyFreeSpec with Matchers with BeforeAnd
   }
 
   "update with head mode raises the revision that it read and conditions the head on it" in {
-    val (adapter, store) = scriptedStore(Some(3L), OperationResult.TransactionCommitted(2))
+    val (adapter, store) = scriptedStore(Script(head = Some(headItem(revision = Some(3)))), committed)
 
     run(store.update(JournalTestSupport.row(persistenceId, 2L, "new2", ordering = 2L)))
 
@@ -425,77 +456,166 @@ final class JournalRowStoreSpec extends AnyFreeSpec with Matchers with BeforeAnd
   }
 
   "update with head mode reads the head again and retries when the head changed before the transaction" in {
-    val (adapter, store) = scriptedStore(headChanged, OperationResult.TransactionCommitted(2))
+    val (adapter, store) = scriptedStore(Script(), headChanged, committed)
 
     run(store.update(JournalTestSupport.row(persistenceId, 2L, "new2", ordering = 2L)))
 
     adapter.transactions.size shouldBe 2
   }
 
-  "update with head mode fails after three attempts while the head keeps changing" in {
-    val (adapter, store) = scriptedStore(headChanged, headChanged, headChanged)
+  "update with head mode returns a recoverable failure after three attempts while the head keeps changing" in {
+    val (adapter, store) = scriptedStore(Script(), headChanged, headChanged, headChanged)
 
-    val failure =
-      Await.result(
-        store.update(JournalTestSupport.row(persistenceId, 2L, "new2")).runWith(Sink.head).failed,
-        30.seconds
-      )
+    val failure = updateFailure(store)
 
-    failure shouldBe an[IllegalStateException]
+    failure shouldBe a[JournalHeadConcurrentUpdateException]
+    val concurrent = failure.asInstanceOf[JournalHeadConcurrentUpdateException]
+    concurrent.persistenceId shouldBe persistenceId.asString
+    concurrent.sequenceNr shouldBe 2L
+    concurrent.attempts shouldBe 3
     adapter.transactions.size shouldBe 3
   }
 
-  "update with head mode does not retry when the journal row does not exist" in {
-    val (adapter, store) = scriptedStore(rowMissing)
+  "update with head mode retries a transaction conflict and returns a recoverable failure when it persists" in {
+    val (retried, retryingStore) = scriptedStore(Script(), transactionConflict, committed)
+    run(retryingStore.update(JournalTestSupport.row(persistenceId, 2L, "new2", ordering = 2L)))
+    retried.transactions.size shouldBe 2
 
-    val failure =
-      Await.result(
-        store.update(JournalTestSupport.row(persistenceId, 2L, "new2")).runWith(Sink.head).failed,
-        30.seconds
-      )
+    val (adapter, store) = scriptedStore(Script(), transactionConflict, transactionConflict, transactionConflict)
+    updateFailure(store) shouldBe a[JournalHeadConcurrentUpdateException]
+    adapter.transactions.size shouldBe 3
+  }
 
-    failure shouldBe an[IllegalStateException]
+  "update with head mode retries throttling and returns a recoverable failure when it persists" in {
+    val (retried, retryingStore) = scriptedStore(Script(), throttled, committed)
+    run(retryingStore.update(JournalTestSupport.row(persistenceId, 2L, "new2", ordering = 2L)))
+    retried.transactions.size shouldBe 2
+
+    val (adapter, store) = scriptedStore(Script(), throttled, throttled, throttled)
+    updateFailure(store) shouldBe a[JournalHeadConcurrentUpdateException]
+    adapter.transactions.size shouldBe 3
+  }
+
+  "update with head mode refuses an update whose journal row does not exist and does not retry" in {
+    val (adapter, store) = scriptedStore(Script(row = None), rowConditionFailed)
+
+    val failure = updateFailure(store)
+
+    failure shouldBe a[JournalHeadRowUpdateRejectedException]
+    failure
+      .asInstanceOf[JournalHeadRowUpdateRejectedException].reason shouldBe JournalRowUpdateRejection.RowDoesNotExist
     adapter.transactions.size shouldBe 1
   }
 
-  "update with head mode reports a cancellation that is not a failed condition without retrying" in {
-    Seq(validationError, transactionConflict).foreach { rejection =>
-      val (adapter, store) = scriptedStore(rejection)
+  "update with head mode refuses an update whose journal row is soft deleted and does not retry" in {
+    val (adapter, store) = scriptedStore(Script(row = Some(true)), rowConditionFailed)
 
-      val failure =
-        Await.result(
-          store.update(JournalTestSupport.row(persistenceId, 2L, "new2")).runWith(Sink.head).failed,
-          30.seconds
-        )
+    val failure = updateFailure(store)
 
-      failure shouldBe an[IllegalStateException]
-      failure.getMessage should (include("ValidationError").or(include("TransactionConflict")))
-      adapter.transactions.size shouldBe 1
+    failure shouldBe a[JournalHeadRowUpdateRejectedException]
+    failure.asInstanceOf[JournalHeadRowUpdateRejectedException].reason shouldBe JournalRowUpdateRejection.RowDeleted
+    adapter.transactions.size shouldBe 1
+  }
+
+  "update with head mode retries when the row condition failed but the row is there and not deleted" in {
+    val (adapter, store) = scriptedStore(Script(), rowConditionFailed, committed)
+
+    run(store.update(JournalTestSupport.row(persistenceId, 2L, "new2", ordering = 2L)))
+
+    adapter.transactions.size shouldBe 2
+  }
+
+  "update with head mode fails with an illegal state when the head sequence number goes backwards between attempts" in {
+    val lower = headItem(sequenceNr = 1, events = Vector(headEvent(1, "old1"), headEvent(2, "old2")))
+    val (adapter, store) = scriptedStore(
+      Script(onTransaction = (_, memory) => memory.seed(headTableName, lower)),
+      headChanged,
+      committed
+    )
+
+    updateFailure(store) shouldBe an[IllegalStateException]
+    adapter.transactions.size shouldBe 1
+  }
+
+  "update with head mode fails with an illegal state when the head revision goes backwards between attempts" in {
+    val lower = headItem(revision = Some(1))
+    val (adapter, store) = scriptedStore(
+      Script(
+        head = Some(headItem(revision = Some(2))),
+        onTransaction = (_, memory) => memory.seed(headTableName, lower)
+      ),
+      headChanged,
+      committed
+    )
+
+    updateFailure(store) shouldBe an[IllegalStateException]
+    adapter.transactions.size shouldBe 1
+  }
+
+  "update with head mode fails with an illegal state for a malformed JournalHead item and sends no transaction" in {
+    val noSequenceNr = AttributeMap.of(
+      AttributeName("persistence-id") -> DdbValue.Str(persistenceId.asString),
+      AttributeName("events")         -> DdbValue.L(Vector(headEvent(2, "old2")))
+    )
+    val eventsNotAList = AttributeMap.of(
+      AttributeName("persistence-id") -> DdbValue.Str(persistenceId.asString),
+      AttributeName("sequence-nr")    -> DdbValue.Num(BigDecimal(2)),
+      AttributeName("events")         -> DdbValue.Str("broken")
+    )
+    val eventWithoutSequenceNr = headItem(events = Vector(DdbValue.M(Vector("message" -> DdbValue.Bin(Vector.empty)))))
+    Seq(noSequenceNr, eventsNotAList, eventWithoutSequenceNr).foreach { malformed =>
+      val (adapter, store) = scriptedStore(Script(head = Some(malformed)), committed)
+
+      updateFailure(store) shouldBe an[IllegalStateException]
+      adapter.transactions shouldBe empty
     }
   }
 
+  "update with head mode fails with an illegal state for a cancellation reason it does not know and does not retry" in {
+    val (adapter, store) = scriptedStore(Script(), validationError)
+
+    val failure = updateFailure(store)
+
+    failure shouldBe an[IllegalStateException]
+    failure.getMessage should include("ValidationError")
+    adapter.transactions.size shouldBe 1
+  }
+
+  "update with head mode fails with an illegal state for a result it does not expect" in {
+    val (_, store) = scriptedStore(Script(), OperationResult.Written(1))
+
+    updateFailure(store) shouldBe an[IllegalStateException]
+  }
+
+  "update with head mode refuses a journal row over 400 KB before it reads or writes anything" in {
+    val (adapter, store) = scriptedStore(Script(), committed)
+
+    val failure = updateFailure(store, message = "x" * 410000)
+
+    failure shouldBe a[JournalHeadJournalRowTooLargeException]
+    adapter.transactions shouldBe empty
+  }
+
   "update with head mode sends no transaction for an event outside the latest head write" in {
-    val (adapter, store) = scriptedStore()
+    val (adapter, store) = scriptedStore(Script())
 
-    val failure =
-      Await.result(
-        store.update(JournalTestSupport.row(persistenceId, 9L, "new9")).runWith(Sink.head).failed,
-        30.seconds
-      )
-
-    failure shouldBe a[JournalHeadAsyncUpdateEventUnsupportedException]
+    updateFailure(store, sequenceNr = 9L, message = "new9") shouldBe a[JournalHeadAsyncUpdateEventUnsupportedException]
     adapter.transactions shouldBe empty
   }
 
   "update with head mode sends no transaction when the JournalHead item does not exist" in {
-    val fixture = newFixture(headConfig = Some(headModeConfig))
+    val (adapter, store) = scriptedStore(Script(head = None))
 
-    val failure =
-      Await.result(
-        fixture.store.update(JournalTestSupport.row(persistenceId, 1L, "new1")).runWith(Sink.head).failed,
-        30.seconds
-      )
+    updateFailure(store, sequenceNr = 1L, message = "new1") shouldBe a[JournalHeadMissingException]
+    adapter.transactions shouldBe empty
+  }
 
-    failure shouldBe a[JournalHeadMissingException]
+  "update with head mode refuses a head item over 400 KB with the head too large rejection" in {
+    val big              = "x" * 130000
+    val bigEvents        = Vector(headEvent(1, big), headEvent(2, big), headEvent(3, big))
+    val (adapter, store) = scriptedStore(Script(head = Some(headItem(sequenceNr = 3, events = bigEvents))), committed)
+
+    updateFailure(store, sequenceNr = 3L, message = "y" * 160000) shouldBe a[JournalHeadItemTooLargeException]
+    adapter.transactions shouldBe empty
   }
 }

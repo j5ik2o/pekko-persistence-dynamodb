@@ -74,6 +74,8 @@ object JournalHeadSpec {
   final case class PersistThenOverLimit(first: String, overLimitCount: Int)
   final case class PersistTaggedAll(count: Int, tagLength: Int)
   final case class DeleteTo(sequenceNr: Long)
+  final case class PersistChain(count: Int, progress: java.util.concurrent.atomic.AtomicLong)
+  final case class ChainDone()
   final case class Persisted(payload: String)
   final case class PersistedAll(size: Int)
   final case class PersistedSecond(payload: String)
@@ -111,6 +113,16 @@ object JournalHeadSpec {
       case PersistTaggedAll(count, tagLength) =>
         val tag = "t" * tagLength
         persistAll((1 to count).map(index => Tagged(s"e$index", Set(tag)))) { _ => () }
+      case PersistChain(count, progress) =>
+        val replyTo = sender()
+        def next(index: Int): Unit =
+          if (index > count) replyTo ! ChainDone()
+          else
+            persist(s"e$index") { _ =>
+              progress.set(index.toLong)
+              next(index + 1)
+            }
+        next(1)
       case DeleteTo(sequenceNr) =>
         deleteMessages(sequenceNr)
       case org.apache.pekko.persistence.DeleteMessagesSuccess(_) =>
@@ -781,7 +793,8 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
       val headBefore = headItem(pid)
 
       val failure = updateEventFails(headEnabledSystem, pid, 1L, "updated")
-      failure shouldBe an[IllegalStateException]
+      failure shouldBe a[JournalHeadRowUpdateRejectedException]
+      failure.asInstanceOf[JournalHeadRowUpdateRejectedException].reason shouldBe JournalRowUpdateRejection.RowDeleted
 
       journalRows(pid).map(_("deleted").getBOOL.booleanValue()) shouldBe Seq(true)
       journalPayloads(headEnabledSystem, pid) shouldBe Seq(1L -> "e1")
@@ -814,24 +827,94 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
     }
 
     "leave the journal and the JournalHead item unchanged when an in-place event update would make the head item exceed 400 KB" in {
-      val pid = "head-in-place-update-4"
+      val pid     = "head-in-place-update-4"
+      val payload = "x" * 125000
+      persistAllOk(headEnabledSystem, pid, immutable.Seq(payload, payload, payload))
+
+      // each journal row stays far below 400 KB, but the three events of the head would not fit with the new one
+      val failure = updateEventFails(headEnabledSystem, pid, 3L, "y" * 160000)
+      failure shouldBe a[JournalHeadItemTooLargeException]
+
+      journalPayloads(headEnabledSystem, pid) shouldBe Seq(1L -> payload, 2L -> payload, 3L -> payload)
+      headPayloads(headEnabledSystem, pid) shouldBe Seq(1L -> payload, 2L -> payload, 3L -> payload)
+      headItem(pid).get.contains("revision") shouldBe false
+    }
+
+    "refuse an in-place event update whose journal row would exceed 400 KB before it calls DynamoDB" in {
+      val pid = "head-in-place-update-4b"
       persistOk(headEnabledSystem, pid, "e1")
 
       val failure = updateEventFails(headEnabledSystem, pid, 1L, "x" * 410000)
-      failure shouldBe a[JournalHeadItemTooLargeException]
+      failure shouldBe a[JournalHeadJournalRowTooLargeException]
 
       journalPayloads(headEnabledSystem, pid) shouldBe Seq(1L -> "e1")
       headPayloads(headEnabledSystem, pid) shouldBe Seq(1L -> "e1")
     }
 
-    "leave the JournalHead item unchanged and create no journal row when the in-place event update transaction is cancelled" in {
+    "end every in-place event update that races with persists in a typed outcome and keep the journal and the head in agreement" in {
+      val pid      = "head-in-place-race-1"
+      val count    = 60
+      val progress = new java.util.concurrent.atomic.AtomicLong(0)
+      // the journal plugin starts on its first use, and the updates go to the plugin directly
+      persistOk(headEnabledSystem, "head-in-place-race-start-plugin", "e1")
+      val journal = journalActor(headEnabledSystem)
+      val probe   = newTestProbe(headEnabledSystem)
+      val actor   = newActor(headEnabledSystem, pid, probe.ref)
+
+      import org.apache.pekko.pattern.ask
+      implicit val timeout: org.apache.pekko.util.Timeout = org.apache.pekko.util.Timeout(120.seconds)
+
+      actor.tell(PersistChain(count, progress), probe.ref)
+      var updates                     = Vector.empty[scala.concurrent.Future[Any]]
+      var persistOutcome: Option[Any] = None
+      var lastSent                    = 0L
+      val deadline                    = System.nanoTime() + 120.seconds.toNanos
+      while (persistOutcome.isEmpty && System.nanoTime() < deadline) {
+        // The actor persists the next event as soon as one is confirmed, so the updates of the event just confirmed
+        // run at the same time as the write of the next one.
+        val latest = progress.get()
+        if (latest > lastSent) {
+          // three updates of the same event also race with each other, on top of the next write
+          updates ++= (1 to 3).map(n => journal ? DynamoDBJournal.InPlaceUpdateEvent(pid, latest, s"u$latest-$n"))
+          lastSent = latest
+        }
+        persistOutcome = Option(probe.receiveOne(1.millis))
+      }
+      headEnabledSystem.stop(actor)
+
+      val results = updates.map(update => Await.ready(update, 120.seconds).value.get)
+      val outcomes = results.map {
+        case scala.util.Success(_)  => "Done"
+        case scala.util.Failure(ex) => ex.getClass.getSimpleName
+      }
+      val counts = outcomes.groupBy(identity).view.mapValues(_.size).toMap
+      info(s"updates sent=${updates.size} outcomes=$counts")
+      info(s"persist outcome=$persistOutcome persisted up to ${progress.get()} of $count")
+
+      val typed = Set(
+        "Done",
+        classOf[JournalHeadAsyncUpdateEventUnsupportedException].getSimpleName,
+        classOf[JournalHeadRowUpdateRejectedException].getSimpleName,
+        classOf[JournalHeadConcurrentUpdateException].getSimpleName
+      )
+      outcomes.filterNot(typed.contains) shouldBe empty
+
+      val journalBySeq = journalPayloads(headEnabledSystem, pid).toMap
+      headPayloads(headEnabledSystem, pid).foreach { case (sequenceNr, payload) =>
+        journalBySeq.get(sequenceNr) shouldBe Some(payload)
+      }
+    }
+
+    "refuse an in-place event update whose journal row was hard deleted and create no journal row" in {
       val pid = "head-in-place-update-5"
       persistOk(headEnabledSystem, pid, "e1")
-      // The head still holds event 1 but its journal row is gone, so the condition on the journal row fails.
+      // A hard delete removes the journal row and leaves the head alone, so the head still holds event 1.
       deleteJournalRows(pid)
 
       val failure = updateEventFails(headEnabledSystem, pid, 1L, "updated")
-      failure shouldBe an[IllegalStateException]
+      failure shouldBe a[JournalHeadRowUpdateRejectedException]
+      failure.asInstanceOf[JournalHeadRowUpdateRejectedException].reason shouldBe
+      JournalRowUpdateRejection.RowDoesNotExist
 
       journalSequenceNrs(pid) shouldBe Seq.empty
       headPayloads(headEnabledSystem, pid) shouldBe Seq(1L -> "e1")

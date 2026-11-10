@@ -2,18 +2,19 @@
 
 ## いまの状態
 
-#886 の追加作業のうち、revision と soft-delete の保護は実装済み (全体テスト緑)。
+revision と soft-delete の保護、移行ツールの `revision` 削除は完了 (push 済み)。
 
-1. head に省略できる `revision` を足した。head の Put の条件は `sequence-nr` と `revision` の一致。
-2. head モードの行の更新は `deleted` を書き換えず、条件は「行があり、`deleted` が true でない」。
+いまは `asyncUpdateEvent` の失敗を型で分ける作業。型 (`JournalHeadConcurrentUpdateException`、`JournalHeadRowUpdateRejectedException`) は追加済みで、テストが赤。
 
-独立レビューで次の 2 点が出た。これから直す。
-- 移行ツールの `raiseJournalHeadIfBehind` が `revision` を残す。`REMOVE revision` を足す。
-- 購読側の再構築手順で `revision` が未指定。docs に「再構築の前に head の `revision` を読む」と、events が空の record の行を足す。
+- 単体テスト (`JournalRowStoreSpec`): 10 件が赤。やり直せる失敗、行なし・削除済み、head が減った場合、head の形が壊れている場合、行の 400 KB 超過。
+- 結合テスト (`JournalHeadSpec`): 行なし、soft-delete、行の 400 KB 超過が赤。更新と永続化が競合するテストも追加した。
+- 赤の実行: `sbt -batch "journal-base/testOnly *JournalRowStoreSpec"`、`sbt -batch "journal-v2/testOnly *JournalHeadSpec -- -z in-place"`
 
 ## 次の一手
 
-上の 2 点をテスト先行で直す。そのあと、例外の型の整理 (IllegalStateException は「あり得ない状態」だけ) に進む。
+`JournalRowStore.updateRowAndHead` を作り直す。head を読んで型にし (形が壊れていたら `IllegalStateException`)、取り消し理由を分類する。
+行の条件が外れたときは行を読み直して、なし・削除済みを区別する。スロットリングと `TransactionConflict` は backoff で再試行する。
+行の 400 KB は送る前に測る。`DynamoDBJournal` のシリアライズ失敗は元の例外を cause に残す。そのあと docs と PR 本文を直す。
 
 ## 未決の判断
 
