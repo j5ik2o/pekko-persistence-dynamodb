@@ -259,23 +259,30 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
       probe.expectMsgType[PersistedAll](60.seconds)
     }
 
-  /** A write that DynamoDB refuses (a failed condition or a service error) stops the actor. */
+  /** A write that fails (a limit of the plugin, a failed condition or a service error) stops the actor. */
   private def persistFails(system: ActorSystem, persistenceId: String, payloads: immutable.Seq[String]): Throwable =
     withActor(system, persistenceId) { (actor, probe) =>
       actor.tell(PersistAllPayloads(payloads), probe.ref)
       probe.expectMsgType[PersistFailed](60.seconds).cause
     }
 
-  /** A write that the JournalHead path rejects before DynamoDB is the responsibility of onPersistRejected. */
-  private def persistRejected(
-      system: ActorSystem,
-      persistenceId: String,
-      payloads: immutable.Seq[String]
-  ): Throwable =
-    withActor(system, persistenceId) { (actor, probe) =>
-      actor.tell(PersistAllPayloads(payloads), probe.ref)
-      probe.expectMsgType[PersistRejected](60.seconds).cause
-    }
+  /** The actor is stopped by Pekko after onPersistFailure: it receives no further command. */
+  private def expectStopped(probe: TestProbe, actor: ActorRef): Unit = {
+    probe.watch(actor)
+    probe.expectTerminated(actor, 60.seconds)
+  }
+
+  /** A write over a limit is a failure, not a rejection: onPersistFailure runs and the actor stops. */
+  private def expectPersistFailed(probe: TestProbe, actor: ActorRef): Throwable = {
+    val failed = probe
+      .fishForMessage(120.seconds, "the failure of a write over a limit") {
+        case PersistFailed(_)   => true
+        case PersistRejected(_) => fail("a write over a limit must fail the actor, not be rejected")
+        case _                  => false
+      }.asInstanceOf[PersistFailed]
+    expectStopped(probe, actor)
+    failed.cause
+  }
 
   private def headItem(persistenceId: String): Option[Map[String, AttributeValue]] = {
     val getItemRequest = new com.amazonaws.services.dynamodbv2.model.GetItemRequest()
@@ -531,7 +538,7 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
         Await.result(dao.putMessages(Seq(journalRow(headEnabledSystem, pid, 5L, "e5"))).runWith(Sink.head), 60.seconds)
       } finally dao.dispose()
 
-      // a gap is accepted (a rejected write of the same actor leaves one), and the head moves to the written seqNr
+      // a gap is accepted (a write that Pekko itself refuses, such as a serialization failure, leaves one), and the head moves to the written seqNr
       journalSequenceNrs(pid) shouldBe Seq(1L, 2L, 3L, 5L)
       headSequenceNr(pid) shouldBe Some(5L)
     }
@@ -592,48 +599,33 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
       headItem(pid).get("events").getL.asScala.map(_.getM.get("sequence-nr").getN.toLong) shouldBe Seq(2L)
     }
 
-    "keep the actor alive after a rejected write and accept the next write" in {
-      val pid = "head-rejected-then-persist-1"
+    "stop the actor when a write exceeds the event limit and continue without a gap after a restart" in {
+      val pid = "head-over-limit-then-persist-1"
       persistOk(headEnabledSystem, pid, "e1")
       headSequenceNr(pid) shouldBe Some(1L)
 
       withActor(headEnabledSystem, pid) { (actor, probe) =>
         actor.tell(PersistRejectedThenPersist(100, "after"), probe.ref)
-        // Pekko does not take the 100 rejected sequence numbers back, so "after" is written above the head
-        probe.fishForMessage(60.seconds, "a rejected write followed by a successful persist") {
-          case PersistRejected(_) => false
-          case Persisted(_)       => true
-        }
+        expectPersistFailed(probe, actor) shouldBe a[JournalHeadTooManyEventsException]
       }
 
-      // a gap is left where the rejected write was, and the head moves to the write that succeeded
-      journalSequenceNrs(pid) shouldBe Seq(1L, 102L)
-      headSequenceNr(pid) shouldBe Some(102L)
-      headItem(pid).get("events").getL.asScala.map(_.getM.get("sequence-nr").getN.toLong) shouldBe Seq(102L)
+      // nothing of the call was written, so there is no gap and the sequence number 2 is still free
+      journalSequenceNrs(pid) shouldBe Seq(1L)
+      headSequenceNr(pid) shouldBe Some(1L)
+
+      persistOk(headEnabledSystem, pid, "e2")
+      journalSequenceNrs(pid) shouldBe Seq(1L, 2L)
+      headSequenceNr(pid) shouldBe Some(2L)
+      headItem(pid).get("events").getL.asScala.map(_.getM.get("sequence-nr").getN.toLong) shouldBe Seq(2L)
     }
 
-    "stop the actor when the first write of a new aggregate is rejected, and write from 1 after a restart" in {
-      // a new aggregate has no JournalHead item yet, so the condition accepts only a write that starts at 1
+    "stop the actor when the first write of a new aggregate exceeds the event limit, and write from 1 after a restart" in {
       val pid = "head-new-aggregate-rejected-1"
       withActor(headEnabledSystem, pid) { (actor, probe) =>
         actor.tell(PersistAllPayloads((1 to 100).map(index => s"e$index").toVector), probe.ref)
-        val rejected = probe
-          .fishForMessage(60.seconds, "the rejection of the first write") {
-            case PersistRejected(_) => true
-            case _                  => false
-          }.asInstanceOf[PersistRejected]
-        rejected.cause shouldBe a[JournalHeadTooManyEventsException]
-        journalSequenceNrs(pid) shouldBe Seq.empty
-        headItem(pid) shouldBe None
-
-        // the actor keeps the advanced sequence numbers, so its next write starts above 1 and stops the actor
-        actor.tell(Persist("after"), probe.ref)
-        val failed = probe
-          .fishForMessage(60.seconds, "the failure of the next write of the same actor") {
-            case PersistFailed(_) => true
-            case _                => false
-          }.asInstanceOf[PersistFailed]
-        failed.cause shouldBe a[JournalHeadMissingException]
+        val cause = expectPersistFailed(probe, actor)
+        cause shouldBe a[JournalHeadTooManyEventsException]
+        cause.asInstanceOf[JournalHeadTooManyEventsException].eventCount shouldBe 100
       }
       journalSequenceNrs(pid) shouldBe Seq.empty
       headItem(pid) shouldBe None
@@ -648,20 +640,7 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
       val pid = "head-new-aggregate-rejected-size-1"
       withActor(headEnabledSystem, pid) { (actor, probe) =>
         actor.tell(Persist("x" * 410000), probe.ref)
-        val rejected = probe
-          .fishForMessage(60.seconds, "the rejection of the first write") {
-            case PersistRejected(_) => true
-            case _                  => false
-          }.asInstanceOf[PersistRejected]
-        rejected.cause shouldBe a[JournalHeadItemTooLargeException]
-
-        actor.tell(Persist("after"), probe.ref)
-        val failed = probe
-          .fishForMessage(60.seconds, "the failure of the next write of the same actor") {
-            case PersistFailed(_) => true
-            case _                => false
-          }.asInstanceOf[PersistFailed]
-        failed.cause shouldBe a[JournalHeadMissingException]
+        expectPersistFailed(probe, actor) shouldBe a[JournalHeadItemTooLargeException]
       }
       journalSequenceNrs(pid) shouldBe Seq.empty
       headItem(pid) shouldBe None
@@ -671,59 +650,58 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
       headSequenceNr(pid) shouldBe Some(1L)
     }
 
-    "write the first write and reject the second one of the same batch" in {
+    "write nothing of a batch when its second write exceeds a limit" in {
       val pid = "head-batch-partial-1"
       withActor(headEnabledSystem, pid) { (actor, probe) =>
         actor.tell(PersistThenOverLimit("e1", 100), probe.ref)
-        probe.expectMsgType[PersistRejected](60.seconds)
+        expectPersistFailed(probe, actor) shouldBe a[JournalHeadTooManyEventsException]
       }
 
-      // the first write of the batch is durable, the rejected one wrote nothing
+      // every write of the call is checked before the first one is sent, so the first write is not durable either
+      journalSequenceNrs(pid) shouldBe Seq.empty
+      headItem(pid) shouldBe None
+
+      persistOk(headEnabledSystem, pid, "e1")
       journalSequenceNrs(pid) shouldBe Seq(1L)
-      headSequenceNr(pid) shouldBe Some(1L)
     }
 
-    "reject a journal row over 400 KB locally and keep the actor alive" in {
+    "stop the actor when a journal row exceeds 400 KB and continue without a gap after a restart" in {
       val pid = "head-row-size-over-1"
       persistOk(headEnabledSystem, pid, "e1")
 
       withActor(headEnabledSystem, pid) { (actor, probe) =>
         // The tag makes the journal row exceed 400 KB while the JournalHead item, which does not carry tags, stays
-        // small. The rejection must happen before DynamoDB is called.
+        // small. The failure must happen before DynamoDB is called.
         actor.tell(PersistTaggedAll(1, 410000), probe.ref)
-        val rejected = probe.expectMsgType[PersistRejected](120.seconds)
-        rejected.cause shouldBe a[JournalHeadJournalRowTooLargeException]
-        rejected.cause.asInstanceOf[JournalHeadJournalRowTooLargeException].limitBytes shouldBe
+        val cause = expectPersistFailed(probe, actor)
+        cause shouldBe a[JournalHeadJournalRowTooLargeException]
+        cause.asInstanceOf[JournalHeadJournalRowTooLargeException].limitBytes shouldBe
         JournalHeadLimits.MaxItemSizeBytes
-
-        // Pekko does not take the rejected sequence number back, so the next write starts at 3 and is accepted.
-        actor.tell(Persist("e3"), probe.ref)
-        probe.expectMsg(60.seconds, Persisted("e3"))
       }
+      journalSequenceNrs(pid) shouldBe Seq(1L)
 
-      journalSequenceNrs(pid) shouldBe Seq(1L, 3L)
-      headSequenceNr(pid) shouldBe Some(3L)
+      persistOk(headEnabledSystem, pid, "e2")
+      journalSequenceNrs(pid) shouldBe Seq(1L, 2L)
+      headSequenceNr(pid) shouldBe Some(2L)
     }
 
-    "reject a journal row over 400 KB locally when head.enabled is false and keep the actor alive" in {
+    "stop the actor when a journal row exceeds 400 KB and head.enabled is false, and continue without a gap after a restart" in {
       val pid = "head-disabled-row-size-over-1"
       persistOk(headDisabledSystem, pid, "e1")
 
       withActor(headDisabledSystem, pid) { (actor, probe) =>
-        // The head-less path has no JournalHead item to check, but the row itself still must be refused before
-        // DynamoDB sees it, so the actor reports the write through onPersistRejected and keeps running.
+        // The head-less path has no JournalHead item to check, but the row itself still must fail before DynamoDB
+        // sees it, so onPersistFailure runs and the actor stops.
         actor.tell(PersistTaggedAll(1, 410000), probe.ref)
-        val rejected = probe.expectMsgType[PersistRejected](120.seconds)
-        rejected.cause shouldBe a[JournalHeadJournalRowTooLargeException]
-        rejected.cause.asInstanceOf[JournalHeadJournalRowTooLargeException].limitBytes shouldBe
+        val cause = expectPersistFailed(probe, actor)
+        cause shouldBe a[JournalHeadJournalRowTooLargeException]
+        cause.asInstanceOf[JournalHeadJournalRowTooLargeException].limitBytes shouldBe
         JournalHeadLimits.MaxItemSizeBytes
-
-        // Pekko does not take the rejected sequence number back, so the next write starts at 3 and is accepted.
-        actor.tell(Persist("e3"), probe.ref)
-        probe.expectMsg(60.seconds, Persisted("e3"))
       }
+      journalSequenceNrs(pid) shouldBe Seq(1L)
 
-      journalSequenceNrs(pid) shouldBe Seq(1L, 3L)
+      persistOk(headDisabledSystem, pid, "e2")
+      journalSequenceNrs(pid) shouldBe Seq(1L, 2L)
       headItem(pid) shouldBe None
     }
 
@@ -965,8 +943,7 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
       withActor(headEnabledSystem, pid) { (actor, probe) =>
         // 99 events with a 43,000 character tag each: the journal rows alone exceed 4 MB, the head item stays small
         actor.tell(PersistTaggedAll(99, 43000), probe.ref)
-        val rejected = probe.expectMsgType[PersistRejected](120.seconds)
-        rejected.cause shouldBe a[JournalHeadTransactionTooLargeException]
+        expectPersistFailed(probe, actor) shouldBe a[JournalHeadTransactionTooLargeException]
       }
       journalSequenceNrs(pid) shouldBe Seq.empty
       headItem(pid) shouldBe None
@@ -1070,7 +1047,7 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
       headSequenceNr(acceptedPid) shouldBe Some(99L)
 
       val rejectedPid = "head-100-events-1"
-      val failure     = persistRejected(headEnabledSystem, rejectedPid, (1 to 100).map(i => s"e$i").toVector)
+      val failure     = persistFails(headEnabledSystem, rejectedPid, (1 to 100).map(i => s"e$i").toVector)
       failure shouldBe a[JournalHeadTooManyEventsException]
       failure.asInstanceOf[JournalHeadTooManyEventsException].eventCount shouldBe 100
       journalSequenceNrs(rejectedPid) shouldBe Seq.empty
@@ -1084,7 +1061,7 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
       headSequenceNr(acceptedPid) shouldBe Some(1L)
 
       val rejectedPid = "head-size-over-1"
-      val failure     = persistRejected(headEnabledSystem, rejectedPid, immutable.Seq("x" * 410000))
+      val failure     = persistFails(headEnabledSystem, rejectedPid, immutable.Seq("x" * 410000))
       failure shouldBe a[JournalHeadItemTooLargeException]
       journalSequenceNrs(rejectedPid) shouldBe Seq.empty
       headItem(rejectedPid) shouldBe None
