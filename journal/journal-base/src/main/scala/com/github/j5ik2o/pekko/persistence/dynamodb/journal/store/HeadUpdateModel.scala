@@ -104,6 +104,16 @@ private[store] object ObservedHead {
 
 }
 
+/** The cancellation reason codes that the update path and the write path of a JournalHead act on. */
+private[dynamodb] object CancellationCodes {
+
+  val ConditionalCheckFailed = "ConditionalCheckFailed"
+
+  /** Other transactions touch the same items, or DynamoDB throttled the request. Trying again later can succeed. */
+  val Contention: Set[String] = Set("TransactionConflict", "ThrottlingError", "ProvisionedThroughputExceeded")
+
+}
+
 /** Why DynamoDB cancelled the transaction of an update, as the store acts on it.
   *
   * Index 0 of the transaction is the journal row and index 1 is the JournalHead item.
@@ -124,10 +134,9 @@ private[store] object UpdateCancellation {
   /** A reason that this code does not know how to recover from. */
   final case class Unknown(reasons: Vector[ConditionFailure]) extends UpdateCancellation
 
-  private val ConditionalCheckFailed = "ConditionalCheckFailed"
+  private val ConditionalCheckFailed = CancellationCodes.ConditionalCheckFailed
   private val JournalRowIndex        = 0
   private val HeadIndex              = 1
-  private val contention             = Set("TransactionConflict", "ThrottlingError", "ProvisionedThroughputExceeded")
 
   def classify(reasons: Vector[ConditionFailure]): UpdateCancellation = {
     val failed = reasons.collect { case ConditionFailure(index, code) if code != "None" => (index, code) }
@@ -135,7 +144,7 @@ private[store] object UpdateCancellation {
     else if (failed.contains((HeadIndex, ConditionalCheckFailed))) HeadChanged
     else
       failed
-        .collectFirst { case (_, code) if contention.contains(code) => Contended(code) }
+        .collectFirst { case (_, code) if CancellationCodes.Contention.contains(code) => Contended(code) }
         .getOrElse(Unknown(reasons.filter(_.code != "None")))
   }
 
