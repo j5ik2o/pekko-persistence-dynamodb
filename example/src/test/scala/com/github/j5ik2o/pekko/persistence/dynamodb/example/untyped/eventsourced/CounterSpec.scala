@@ -6,7 +6,7 @@ import com.amazonaws.services.dynamodbv2.model.{ AttributeValue, QueryRequest, Q
 import com.github.j5ik2o.pekko.persistence.dynamodb.config.client.{ ClientType, ClientVersion }
 import com.github.j5ik2o.pekko.persistence.dynamodb.example.untyped.eventsourced.CounterProtocol.GetValueReply
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.config.JournalPluginConfig
-import com.github.j5ik2o.pekko.persistence.dynamodb.utils.{ ConfigHelper, DynamoDBContainerHelper, RandomPortUtil }
+import com.github.j5ik2o.pekko.persistence.dynamodb.utils.{ ConfigHelper, DockerAssignedPort, DynamoDBContainerHelper }
 import org.scalatest.BeforeAndAfterAll
 import org.scalatest.concurrent.ScalaFutures
 import org.scalatest.freespec.AnyFreeSpecLike
@@ -179,9 +179,7 @@ abstract class BaseCounterSpec(
 
 package softdelete {
 
-  object CounterV1AsyncSpec {
-    val dynamoDBPort: Int = RandomPortUtil.temporaryServerPort()
-  }
+  object CounterV1AsyncSpec extends DockerAssignedPort
 
   class CounterV1AsyncSpec
       extends BaseCounterSpec(
@@ -189,13 +187,13 @@ package softdelete {
         softDelete = true,
         clientVersion = ClientVersion.V1,
         clientType = ClientType.Async
-      )
+      ) {
+    override lazy val controller = CounterV1AsyncSpec.controller
+  }
 
   // ---
 
-  object CounterV1SyncSpec {
-    val dynamoDBPort: Int = RandomPortUtil.temporaryServerPort()
-  }
+  object CounterV1SyncSpec extends DockerAssignedPort
 
   class CounterV1SyncSpec
       extends BaseCounterSpec(
@@ -203,13 +201,13 @@ package softdelete {
         softDelete = true,
         clientVersion = ClientVersion.V1,
         clientType = ClientType.Sync
-      )
+      ) {
+    override lazy val controller = CounterV1SyncSpec.controller
+  }
 
   // ---
 
-  object CounterV2AsyncSpec {
-    val dynamoDBPort: Int = RandomPortUtil.temporaryServerPort()
-  }
+  object CounterV2AsyncSpec extends DockerAssignedPort
 
   class CounterV2AsyncSpec
       extends BaseCounterSpec(
@@ -217,13 +215,13 @@ package softdelete {
         softDelete = true,
         clientVersion = ClientVersion.V2,
         clientType = ClientType.Async
-      )
+      ) {
+    override lazy val controller = CounterV2AsyncSpec.controller
+  }
 
   // ---
 
-  object CounterV2SyncSpec {
-    val dynamoDBPort: Int = RandomPortUtil.temporaryServerPort()
-  }
+  object CounterV2SyncSpec extends DockerAssignedPort
 
   class CounterV2SyncSpec
       extends BaseCounterSpec(
@@ -231,15 +229,15 @@ package softdelete {
         softDelete = true,
         clientVersion = ClientVersion.V2,
         clientType = ClientType.Sync
-      )
+      ) {
+    override lazy val controller = CounterV2SyncSpec.controller
+  }
 
 }
 
 package harddelete {
 
-  object CounterV1AsyncSpec {
-    val dynamoDBPort: Int = RandomPortUtil.temporaryServerPort()
-  }
+  object CounterV1AsyncSpec extends DockerAssignedPort
 
   class CounterV1AsyncSpec
       extends BaseCounterSpec(
@@ -247,13 +245,13 @@ package harddelete {
         softDelete = false,
         clientVersion = ClientVersion.V1,
         clientType = ClientType.Async
-      )
+      ) {
+    override lazy val controller = CounterV1AsyncSpec.controller
+  }
 
   // ---
 
-  object CounterV1SyncSpec {
-    val dynamoDBPort: Int = RandomPortUtil.temporaryServerPort()
-  }
+  object CounterV1SyncSpec extends DockerAssignedPort
 
   class CounterV1SyncSpec
       extends BaseCounterSpec(
@@ -261,13 +259,13 @@ package harddelete {
         softDelete = false,
         clientVersion = ClientVersion.V1,
         clientType = ClientType.Sync
-      )
+      ) {
+    override lazy val controller = CounterV1SyncSpec.controller
+  }
 
   // ---
 
-  object CounterV2AsyncSpec {
-    val dynamoDBPort: Int = RandomPortUtil.temporaryServerPort()
-  }
+  object CounterV2AsyncSpec extends DockerAssignedPort
 
   class CounterV2AsyncSpec
       extends BaseCounterSpec(
@@ -275,13 +273,13 @@ package harddelete {
         softDelete = false,
         clientVersion = ClientVersion.V2,
         clientType = ClientType.Async
-      )
+      ) {
+    override lazy val controller = CounterV2AsyncSpec.controller
+  }
 
   // ---
 
-  object CounterV2SyncSpec {
-    val dynamoDBPort: Int = RandomPortUtil.temporaryServerPort()
-  }
+  object CounterV2SyncSpec extends DockerAssignedPort
 
   class CounterV2SyncSpec
       extends BaseCounterSpec(
@@ -289,6 +287,8 @@ package harddelete {
         softDelete = false,
         clientVersion = ClientVersion.V2,
         clientType = ClientType.Sync
-      )
+      ) {
+    override lazy val controller = CounterV2SyncSpec.controller
+  }
 
 }

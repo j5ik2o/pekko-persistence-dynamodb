@@ -18,15 +18,14 @@ package com.github.j5ik2o.pekko.persistence.dynamodb.state
 import org.apache.pekko.persistence.state.DurableStateStoreRegistry
 import com.github.j5ik2o.pekko.persistence.dynamodb.config.client.{ ClientType, ClientVersion }
 import com.github.j5ik2o.pekko.persistence.dynamodb.state.scaladsl.{ DynamoDBDurableStateStoreV2, StateSpecBase }
-import com.github.j5ik2o.pekko.persistence.dynamodb.utils.{ ConfigHelper, DynamoDBContainerHelper, RandomPortUtil }
+import com.github.j5ik2o.pekko.persistence.dynamodb.utils.{ ConfigHelper, DockerAssignedPort, DynamoDBContainerHelper }
 import org.scalatest.concurrent.ScalaFutures
 import org.scalatest.time.SpanSugar.convertIntToGrainOfTime
 
 import java.util.UUID
 
-object DynamoDBStateV2SyncSpec {
+object DynamoDBStateV2SyncSpec extends DockerAssignedPort {
   val dynamoDBHost: String = "localhost"
-  val dynamoDBPort: Int    = RandomPortUtil.temporaryServerPort()
 }
 
 final class DynamoDBStateV2SyncSpec
@@ -48,6 +47,8 @@ final class DynamoDBStateV2SyncSpec
   implicit val pc: PatienceConfig = PatienceConfig(30.seconds, 1.seconds)
 
   override lazy val dynamoDBPort: Int = DynamoDBStateV2SyncSpec.dynamoDBPort
+
+  override lazy val controller = DynamoDBStateV2SyncSpec.controller
 
   "A durable state store plugin" - {
     "instantiate a DynamoDBDurableDataStore successfully" in {

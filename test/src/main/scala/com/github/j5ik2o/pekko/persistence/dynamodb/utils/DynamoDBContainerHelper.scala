@@ -20,17 +20,18 @@ import com.amazonaws.client.builder.AwsClientBuilder.EndpointConfiguration
 import com.amazonaws.regions.Regions
 import com.amazonaws.services.dynamodbv2.model._
 import com.amazonaws.services.dynamodbv2.{ AmazonDynamoDB, AmazonDynamoDBClientBuilder }
-import com.github.j5ik2o.dockerController.RandomPortUtil.temporaryServerPort
+import com.github.dockerjava.api.model.ExposedPort
 import com.github.j5ik2o.dockerController.WaitPredicates.WaitPredicate
 import com.github.j5ik2o.dockerController.dynamodbLocal.DynamoDBLocalController
 import com.github.j5ik2o.dockerController.{
+  CmdConfigures,
   DockerController,
   DockerControllerHelper,
   DockerControllerSpecSupport,
   WaitPredicates
 }
 import com.typesafe.config.Config
-import org.scalatest.TestSuite
+import org.scalatest.{ Args, Status, TestSuite }
 
 import scala.concurrent.duration._
 import scala.jdk.CollectionConverters._
@@ -40,8 +41,9 @@ trait DockerControllerHelperUtil extends DockerControllerHelper {
   val testTimeFactor: Int = sys.env.getOrElse("TEST_TIME_FACTOR", "1").toInt
   logger.debug(s"testTimeFactor = $testTimeFactor")
 
-  lazy val dynamoDBPort: Int              = temporaryServerPort()
-  val controller: DynamoDBLocalController = new DynamoDBLocalController(dockerClient, imageTag = None)(dynamoDBPort)
+  lazy val dynamoDBPort: Int = RandomPortUtil.temporaryServerPort()
+  lazy val controller: DynamoDBLocalController =
+    new DynamoDBLocalController(dockerClient, isDockerClientAutoClose = true, imageTag = None)(dynamoDBPort)
 
   val waitPredicate: WaitPredicate = WaitPredicates.forLogMessageByRegex(
     DynamoDBLocalController.RegexOfWaitPredicate,
@@ -52,14 +54,14 @@ trait DockerControllerHelperUtil extends DockerControllerHelper {
 
   val tableName = "test"
 
-  override protected val dockerControllers: Vector[DockerController] = Vector(controller)
+  override protected lazy val dockerControllers: Vector[DockerController] = Vector(controller)
 
-  override protected val waitPredicatesSettings: Map[DockerController, WaitPredicateSetting] =
+  override protected lazy val waitPredicatesSettings: Map[DockerController, WaitPredicateSetting] =
     Map(
       controller -> waitPredicateSetting
     )
 
-  val dynamoDBEndpoint: String        = s"http://$dockerHost:$dynamoDBPort"
+  lazy val dynamoDBEndpoint: String   = s"http://$dockerHost:$dynamoDBPort"
   val dynamoDBRegion: Regions         = Regions.AP_NORTHEAST_1
   val dynamoDBAccessKeyId: String     = "x"
   val dynamoDBSecretAccessKey: String = "x"
@@ -85,14 +87,22 @@ trait DockerControllerHelperUtil extends DockerControllerHelper {
 
   protected val MaxCount = 10
 
-  def startContainer(): Unit = {
-    createDockerContainer(controller, None)
-    startDockerContainer(controller, None)
+  def startContainer(): Unit = synchronized {
+    if (Option(controller.containerId).flatten.isEmpty) {
+      super.createDockerContainer(controller, None)
+      try super.startDockerContainer(controller, None)
+      catch {
+        case scala.util.control.NonFatal(error) =>
+          controller.removeContainer(_.withForce(true))
+          dockerClient.close()
+          throw error
+      }
+    }
   }
 
   def stopContainer(): Unit = {
-    stopDockerContainer(controller, None)
-    removeDockerContainer(controller, None)
+    super.stopDockerContainer(controller, None)
+    super.removeDockerContainer(controller, None)
   }
 
   protected def waitDynamoDBLocal(tableNames: Seq[String]): Unit = {
@@ -326,4 +336,37 @@ trait DockerControllerHelperUtil extends DockerControllerHelper {
 
 }
 
-trait DynamoDBContainerHelper extends DockerControllerSpecSupport with DockerControllerHelperUtil { this: TestSuite => }
+private[dynamodb] trait DockerAssignedPort extends DockerControllerHelperUtil {
+  override lazy val controller: DynamoDBLocalController = {
+    val result = new DynamoDBLocalController(dockerClient, isDockerClientAutoClose = true, imageTag = None)(0)
+    result.configureCmds(CmdConfigures(removeContainerCmdConfigure = _.withForce(true)))
+    result
+  }
+
+  override lazy val dynamoDBPort: Int = {
+    startContainer()
+    controller
+      .inspectContainer().getNetworkSettings.getPorts
+      .getBindings.get(ExposedPort.tcp(DynamoDBLocalController.DefaultContainerPort)).head.getHostPortSpec.toInt
+  }
+}
+
+trait DynamoDBContainerHelper extends DockerControllerSpecSupport with DockerAssignedPort { this: TestSuite =>
+
+  abstract override def run(testName: Option[String], args: Args): Status =
+    try super.run(testName, args)
+    finally {
+      if (expectedTestCount(args.filter) == 0 && Option(controller.containerId).flatten.isDefined)
+        disposeResources()
+    }
+
+  // Keep Docker's port binding alive while the suite's ActorSystem uses its endpoint.
+  override protected def createDockerContainer(controller: DockerController, testName: Option[String]): Unit =
+    startContainer()
+
+  override protected def startDockerContainer(controller: DockerController, testName: Option[String]): Unit = ()
+
+  override protected def stopDockerContainer(controller: DockerController, testName: Option[String]): Unit = ()
+
+  override protected def removeDockerContainer(controller: DockerController, testName: Option[String]): Unit = ()
+}
