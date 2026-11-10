@@ -207,18 +207,69 @@ final class JournalRowStore(
       case Some(head) => updateRowAndHead(head, row)
     }
 
-  private def updateRow(row: JournalRow): Source[Unit, NotUsed] =
+  /** Rewrites the journal row under the condition that it exists and is not deleted, so an update cannot create a
+    * missing row or bring a soft deleted one back. A row that is missing or deleted is refused with
+    * `JournalHeadRowUpdateRejectedException`, the same failure that `head.enabled` gives. When the condition failed but
+    * the row is there and not deleted, a concurrent writer changed it while it was checked, and the update is sent
+    * again. After `UpdateAttempts` attempts the failure is `JournalHeadConcurrentUpdateException`.
+    */
+  private def updateRow(row: JournalRow): Source[Unit, NotUsed] = updateRowAttempt(row, 1)
+
+  private def updateRowAttempt(row: JournalRow, attempt: Int): Source[Unit, NotUsed] = {
+    val persistenceId = row.persistenceId.asString
+    val sequenceNr    = row.sequenceNumber.value
     run(
       Operation.Update(
         schema.table,
         keyOf(row.persistenceId, row.sequenceNumber),
-        rowContentUpdates(row) :+ AttributeUpdate.Set(schema.deleted, DdbValue.Bool(row.deleted))
+        rowContentUpdates(row) :+ AttributeUpdate.Set(schema.deleted, DdbValue.Bool(row.deleted)),
+        Some(updatableRowCondition)
       ),
       writeBackoffConfig
-    ).map { result =>
-      expectWritten(result)
-      ()
+    ).flatMapConcat {
+      case OperationResult.Written(_) =>
+        Source.single(())
+      case OperationResult.ConditionRejected(_) =>
+        readRowState(row).flatMapConcat {
+          case None =>
+            Source.failed(
+              new JournalHeadRowUpdateRejectedException(
+                persistenceId,
+                sequenceNr,
+                JournalRowUpdateRejection.RowDoesNotExist
+              )
+            )
+          case Some(true) =>
+            Source.failed(
+              new JournalHeadRowUpdateRejectedException(persistenceId, sequenceNr, JournalRowUpdateRejection.RowDeleted)
+            )
+          case Some(false) if attempt < UpdateAttempts =>
+            updateRowAttempt(row, attempt + 1)
+          case Some(false) =>
+            Source.failed(
+              new JournalHeadConcurrentUpdateException(
+                persistenceId,
+                sequenceNr,
+                UpdateAttempts,
+                "the journal row changed while it was checked"
+              )
+            )
+        }
+      case other =>
+        Source.failed(
+          new IllegalStateException(s"persistenceId=[$persistenceId]: unexpected result for a row update: $other")
+        )
     }
+  }
+
+  /** The journal row exists and is not soft deleted. */
+  private val updatableRowCondition: Condition =
+    Condition.And(
+      Condition.AttributeExists(schema.partitionKey),
+      Condition.Not(
+        Condition.Compare(Operand.Column(schema.deleted), CompareOp.Eq, Operand.Literal(DdbValue.Bool(true)))
+      )
+    )
 
   private def rowContentUpdates(row: JournalRow): Vector[AttributeUpdate] =
     Vector(
@@ -343,18 +394,7 @@ final class JournalRowStore(
           schema.table,
           keyOf(row.persistenceId, row.sequenceNumber),
           rowContentUpdates(row),
-          Some(
-            Condition.And(
-              Condition.AttributeExists(schema.partitionKey),
-              Condition.Not(
-                Condition.Compare(
-                  Operand.Column(schema.deleted),
-                  CompareOp.Eq,
-                  Operand.Literal(DdbValue.Bool(true))
-                )
-              )
-            )
-          )
+          Some(updatableRowCondition)
         ),
         TransactItem.Put(head.spec.table, newHeadItem, Some(headCondition))
       )
