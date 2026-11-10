@@ -1122,6 +1122,31 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
       headSequenceNr(existingPid) shouldBe Some(6L)
     }
 
+    "remove the revision when the migration raises a JournalHead item that is behind the journal" in {
+      val pid = "head-migration-revision-1"
+      persistOk(headEnabledSystem, pid, "e1")
+      updateEvent(headEnabledSystem, pid, 1L, "updated") shouldBe Done
+      headItem(pid).get("revision").getN shouldBe "1"
+      // a node that runs with head mode off writes the journal and leaves the head behind
+      persistOk(headDisabledSystem, pid, "e2")
+
+      val client = newV2Client()
+      try {
+        val result = JournalHeadMigration.run(
+          client,
+          journalTableName,
+          journalColumnsDefConfig,
+          headConfig,
+          execute = true
+        )
+        result.raisedPersistenceIds should contain(pid)
+      } finally client.close()
+
+      headSequenceNr(pid) shouldBe Some(2L)
+      headItem(pid).get("events").getL.isEmpty shouldBe true
+      headItem(pid).get.contains("revision") shouldBe false
+    }
+
     "migrate an aggregate whose journal events were all hard deleted from its snapshot" in {
       val pid = "head-snapshot-only-1"
       persistAllOk(headDisabledSystem, pid, immutable.Seq("e1", "e2", "e3"))

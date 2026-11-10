@@ -18,6 +18,7 @@ package com.github.j5ik2o.pekko.persistence.dynamodb.journal.head
 import com.github.j5ik2o.pekko.persistence.dynamodb.config.client.ClientVersion
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.config.{
   JournalColumnsDefConfig,
+  JournalHeadColumnsDefConfig,
   JournalHeadConfig,
   JournalPluginConfig
 }
@@ -225,8 +226,8 @@ object JournalHeadMigration {
   }
 
   /** Raises an existing JournalHead item to the last sequence number of the journal, if the head is behind. The event
-    * list is cleared: after the raise the head no longer describes a single write, and the events up to the raise are
-    * in the journal for a rebuild.
+    * list is cleared and the revision is removed: after the raise the head no longer describes a single write, and the
+    * events up to the raise are in the journal for a rebuild.
     */
   private def raiseJournalHeadIfBehind(
       syncClient: JavaDynamoDbSyncClient,
@@ -243,12 +244,13 @@ object JournalHeadMigration {
           headColumnsDefConfig.persistenceIdColumnName -> AttributeValue.builder().s(persistenceId.asString).build()
         ).asJava
       )
-      .updateExpression("SET #sequenceNr = :latest, #events = :emptyEvents")
+      .updateExpression("SET #sequenceNr = :latest, #events = :emptyEvents REMOVE #revision")
       .conditionExpression("#sequenceNr < :latest")
       .expressionAttributeNames(
         Map(
           "#sequenceNr" -> headColumnsDefConfig.sequenceNrColumnName,
-          "#events"     -> headColumnsDefConfig.eventsColumnName
+          "#events"     -> headColumnsDefConfig.eventsColumnName,
+          "#revision"   -> JournalHeadColumnsDefConfig.revisionColumnName
         ).asJava
       )
       .expressionAttributeValues(

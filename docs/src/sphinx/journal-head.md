@@ -126,6 +126,7 @@ store supports transactions. Compare a record with the checkpoint in this order:
 
 | Record compared with the checkpoint                       | What the consumer does                                                      |
 |:----------------------------------------------------------|:----------------------------------------------------------------------------|
+| `events` is empty                                         | written by the migration tool: do not apply it and do not move the checkpoint, rebuild from the journal |
 | `sequence-nr` is lower                                    | discard the record, it was applied before                                   |
 | `sequence-nr` is equal and `revision` is not higher       | discard the record, it was applied before                                   |
 | `sequence-nr` is equal and `revision` is higher           | an in-place update of an event of that write: replace the stored events with the same sequence numbers by the events of the record, or rebuild them from the journal |
@@ -147,13 +148,16 @@ were hard deleted, the journal cannot rebuild them. Restore the read model, the 
 from a backup taken at the same point in time.
 
 To rebuild a read model, stop the consumer, clear the affected read model state, replay the journal rows for the
-affected persistence ids, and set the checkpoint of each persistence id to the last sequence number you replayed.
-Start the consumer after all affected persistence ids reach that point.
+affected persistence ids, and set the checkpoint of each persistence id to the pair (`sequence-nr`, `revision`) of the
+`JournalHead` item that you read before you started the replay, reading a missing `revision` as 0. Read the item first:
+the journal rows you replay already contain every update up to that `revision`, so a checkpoint with a lower `revision`
+would apply a stale record again. Start the consumer after all affected persistence ids reach that point.
 
 The migration tool writes `JournalHead` items with an empty `events` list. Do not apply such a record to the read
 model, and do not advance a checkpoint from it. The events between the old head and the new `sequence-nr` never
 reached the stream. If the checkpoint of the consumer is behind the new `sequence-nr`, rebuild the read model for
-that persistence id from the journal before you continue.
+that persistence id from the journal before you continue. When the tool raises an existing item, it also removes
+`revision`, so the raised item reads as revision 0.
 
 ## Configuration
 
