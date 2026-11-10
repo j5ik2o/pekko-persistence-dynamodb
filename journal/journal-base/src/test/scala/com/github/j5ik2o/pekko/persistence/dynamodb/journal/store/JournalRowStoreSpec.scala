@@ -352,6 +352,29 @@ final class JournalRowStoreSpec extends AnyFreeSpec with Matchers with BeforeAnd
     stored.message.toSeq shouldBe JournalTestSupport.row(persistenceId, 2L, "new2").message.toSeq
   }
 
+  "update without head mode fails with a typed conflict when the row keeps changing" in {
+    val inMemory = newFixture()
+    val attempts = new AtomicInteger(0)
+    val racing = new DdbClientAdapter {
+      override val capabilities: CapabilityProfile = inMemory.adapter.capabilities
+      override def run(operation: Operation): Source[OperationResult, NotUsed] = operation match {
+        case _: Operation.Update =>
+          attempts.incrementAndGet()
+          Source.single(OperationResult.ConditionRejected(Vector(ConditionFailure(0, "ConditionalCheckFailed"))))
+        case _ => inMemory.adapter.run(operation)
+      }
+      override def queryAll(query: Operation.Query): Source[AttributeMap, NotUsed] = inMemory.adapter.queryAll(query)
+      override def close(): Unit                                                   = ()
+    }
+    val store = storeWith(racing, disabledBackoff)
+    run(store.write(Seq(JournalTestSupport.row(persistenceId, 2L, "old2", ordering = 1L))))
+
+    updateFailure(store) shouldBe a[JournalHeadConcurrentUpdateException]
+    attempts.get() shouldBe 3
+    val stored = run(store.read(persistenceId, None, SequenceNumber(2), None, None)).head
+    stored.message.toSeq shouldBe JournalTestSupport.row(persistenceId, 2L, "old2").message.toSeq
+  }
+
   "retry an unprocessed batch until the adapter accepts it" in {
     val fixture = newFixture()
     val store   = storeWith(new FlakyBatchAdapter(fixture.adapter, failures = 2), fastBackoff)
