@@ -151,7 +151,8 @@ Both preserve the order of the records of one item.
 DynamoDB Streams keeps records for up to 24 hours. If the consumer is stopped for longer, it can lose records and the
 read model becomes incomplete. Rebuild the read model from the journal table. If the journal events of an aggregate
 were hard deleted, the journal cannot rebuild them. Restore the read model, the journal, and the `JournalHead` table
-from a backup taken at the same point in time.
+from a backup taken at the same point in time. The Backup and restore section describes how to restore the two tables
+together.
 
 To rebuild a read model, stop the consumer, clear the affected read model state, replay the journal rows for the
 affected persistence ids, and set the checkpoint of each persistence id to the pair (`sequence-nr`, `revision`) of the
@@ -256,8 +257,8 @@ node runs with `head.enabled = true`.
 7. The tool prints the persistence ids whose `JournalHead` item it raised. The events between the old head and the
    raise were never written to the `JournalHead` table, so their read models did not receive them. Rebuild the read
    model of those aggregates from the journal table before relying on it. If the journal events of an aggregate were
-   hard deleted, the journal cannot rebuild them. Restore the read model and the journal from a backup taken at the
-   same point in time.
+   hard deleted, the journal cannot rebuild them. Restore the read model, the journal, and the `JournalHead` table from
+   a backup taken at the same point in time (see the Backup and restore section).
 
 The writes of the tool are conditional, so it can be run as often as needed. A run without `--execute` is a dry-run
 and never writes.
@@ -308,6 +309,124 @@ If a mixed deployment has happened, rebuild the read model of every aggregate th
 during that period. The tool cannot identify those aggregates after a head-on node has written. To avoid the
 situation, stop every node, run the migration tool with `--execute`, start every node with `head.enabled = true`, and
 then rebuild the read model of the aggregates the tool reports.
+
+## Backup and restore
+
+Restore the journal table and the `JournalHead` table to the same point in time. If you use the snapshot table, restore
+it to that time too, because the migration tool reads it as a source of the last sequence number.
+
+The plugin does not reject two tables that disagree. With `head.enabled = true`, recovery takes the higher of two
+numbers after a restart: the highest `sequence-nr` in the journal and the `sequence-nr` of the `JournalHead` item. The write condition accepts every
+write whose first sequence number is above the head. The aggregate therefore keeps writing, and a mismatch shows up
+later as a gap in the journal or as a read model that missed events. `J` is the highest sequence number of an aggregate
+in the journal, and `H` is the `sequence-nr` of its head item.
+
+| State after the restore | The next write of the aggregate | Dry-run of the migration tool |
+|:--|:--|:--|
+| `H < J`, the head is behind | starts at `J + 1` and succeeds, the head moves to `J + 1`, and the events from `H + 1` to `J` never reach the head stream | lists the aggregate under "raised JournalHead items" |
+| `H > J`, the head is ahead | starts at `H + 1` and succeeds, and the journal has no events from `J + 1` to `H` | does not report it: the tool counts the item as "skipped existing" |
+| no head item, and `J` is at least 1 | fails with `JournalHeadMissingException` | counts it as "created" |
+| `H = J` | continues at `J + 1` | counts it as "skipped existing" |
+
+### Choose the backup type
+
+Use [point-in-time recovery](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Point-in-time-recovery.html)
+(PITR). It lets you restore each table to the same timestamp.
+
+An [on-demand backup](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Backup-and-Restore.html) holds
+the table as it was when you requested that backup. Two requests capture two moments. Stop every node before you
+request both backups, or the two tables can differ.
+
+### Restore the tables
+
+Before you start, check that PITR is on for each table and that the restore time lies inside the recovery window of
+each table. The window runs from `EarliestRestorableDateTime` to `LatestRestorableDateTime`:
+
+```shell
+$ aws dynamodb describe-continuous-backups --table-name JournalHead
+```
+
+1. Stop every node and the stream consumer.
+2. Restore each table to the same time. A restore always creates a new table. Keep the indexes, because the plugin
+   needs `GetJournalRowsIndex`.
+
+   ```shell
+   $ RESTORE_TIME=1760000000   # epoch seconds, inside the window of every table
+   $ aws dynamodb restore-table-to-point-in-time --source-table-name Journal \
+       --target-table-name Journal-restored --no-use-latest-restorable-time --restore-date-time $RESTORE_TIME
+   $ aws dynamodb restore-table-to-point-in-time --source-table-name JournalHead \
+       --target-table-name JournalHead-restored --no-use-latest-restorable-time --restore-date-time $RESTORE_TIME
+   $ aws dynamodb restore-table-to-point-in-time --source-table-name Snapshot \
+       --target-table-name Snapshot-restored --no-use-latest-restorable-time --restore-date-time $RESTORE_TIME
+   ```
+
+   Wait until every restored table is `ACTIVE`. A restore recreates the data, the indexes, the capacity, and the
+   encryption settings. It does not carry over auto scaling policies, IAM policies, CloudWatch alarms, tags,
+   DynamoDB Streams settings, Time to Live settings, or PITR settings. See
+   [restoring a table to a point in time](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/PointInTimeRecovery.Tutorial.html).
+3. Point the plugin at the restored tables with `j5ik2o.dynamo-db-journal.table-name`,
+   `j5ik2o.dynamo-db-journal.head.table-name`, and `j5ik2o.dynamo-db-snapshot.table-name`. Keep the head table name
+   different from the journal table name.
+4. Run the migration tool without `--execute`. It is a dry-run and writes nothing. The tool reads the snapshot table
+   from `j5ik2o.dynamo-db-snapshot`. Without that config, pass `--snapshot-table` or `--without-snapshots`.
+
+   ```shell
+   $ sbt -batch "journal-v2/runMain com.github.j5ik2o.pekko.persistence.dynamodb.journal.head.JournalHeadMigration"
+   [dry-run] JournalHead migration finished: scanned 120 persistence ids, created 0 JournalHead items, raised 2 JournalHead items, skipped 118 existing JournalHead items
+   [dry-run] raised JournalHead items (rebuild the read model of these aggregates from the journal):
+     - order-17
+     - order-42
+   ```
+
+   `created` counts the aggregates that have no head item. `raised` counts the aggregates whose head is behind. Both
+   must be 0 before you continue, or you repair them in step 6.
+5. Look for heads that are ahead, because the tool does not report them. For one aggregate, compare the two numbers.
+   The first command reads the head. The second reads the highest journal row.
+
+   ```shell
+   $ aws dynamodb get-item --table-name JournalHead-restored --consistent-read \
+       --key '{"persistence-id":{"S":"order-17"}}' \
+       --projection-expression '#s' --expression-attribute-names '{"#s":"sequence-nr"}'
+   $ aws dynamodb query --table-name Journal-restored --index-name GetJournalRowsIndex \
+       --key-condition-expression '#p = :p' --expression-attribute-values '{":p":{"S":"order-17"}}' \
+       --expression-attribute-names '{"#p":"persistence-id","#s":"sequence-nr"}' \
+       --projection-expression '#s' --no-scan-index-forward --limit 1
+   ```
+
+   The commands use the default column names. To check every aggregate, scan the `JournalHead` table and run the
+   second command for each `persistence-id`. The head is ahead when its `sequence-nr` is higher than the one the query
+   returns. Steps 4 and 5 check the result instead of assuming that the two restored tables agree.
+6. Repair the aggregates before any node starts.
+
+   - **The head is missing or behind.** Run the tool with `--execute`. It creates the missing items and raises the
+     items that are behind, and it clears their event lists. It never lowers a head. It prints the persistence ids it
+     raised.
+   - **The head is ahead.** The tool cannot lower a head. Delete the head item of the aggregate, and then run the tool
+     with `--execute`. The tool creates the item again at the highest sequence number of the journal or the snapshot,
+     whichever is higher, with an empty event list.
+
+     ```shell
+     $ aws dynamodb delete-item --table-name JournalHead-restored --key '{"persistence-id":{"S":"order-17"}}'
+     ```
+
+   Run the dry-run of step 4 again. Both `created` and `raised` must be 0. Run the commands of step 5 again for the
+   aggregates that were ahead. Their head must now equal the highest journal row.
+7. Enable DynamoDB Streams on the restored `JournalHead` table, because the restore does not carry the setting over.
+   Do it after the repairs, so that the stream holds no record of them. Then run the preflight (see the Preflight
+   section). It checks that the head table has a stream with the view type `NEW_IMAGE` or `NEW_AND_OLD_IMAGES` and
+   that the journal table has none.
+
+   ```shell
+   $ aws dynamodb update-table --table-name JournalHead-restored \
+       --stream-specification StreamEnabled=true,StreamViewType=NEW_IMAGE
+   ```
+
+8. Rebuild the read model. The restore does not touch the read model, and the events after the restore time are gone
+   from the journal. If the read model is newer than the restore time, rebuild it from the restored journal as
+   described in "Consuming the stream". Rebuild the aggregates that the tool printed in step 4 or 6 in any case, and
+   point the consumer at the stream of the restored `JournalHead` table. A repaired head has an empty event list, which
+   the consumer must not apply.
+9. Set `head.enabled = true`, start every node, and then start the consumer.
 
 ## Limits
 
