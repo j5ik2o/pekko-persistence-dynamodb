@@ -22,7 +22,7 @@ import org.apache.pekko.stream.scaladsl.Source
 import software.amazon.awssdk.services.dynamodb.model.{ ConditionalCheckFailedException, TransactionCanceledException }
 import software.amazon.awssdk.services.dynamodb.{ DynamoDbAsyncClient, DynamoDbClient }
 
-import java.util.concurrent.CompletableFuture
+import java.util.concurrent.{ CompletableFuture, CompletionException }
 import scala.compat.java8.FutureConverters._
 import scala.concurrent.{ ExecutionContext, Future }
 import scala.jdk.CollectionConverters._
@@ -112,7 +112,10 @@ final class V2ClientAdapter(
       asyncCall: DynamoDbAsyncClient => CompletableFuture[A],
       syncCall: DynamoDbClient => A
   ): Future[A] = asyncClient match {
-    case Some(client) => asyncCall(client).toScala
+    case Some(client) =>
+      asyncCall(client).toScala.recoverWith {
+        case wrapped: CompletionException if wrapped.getCause != null => Future.failed(wrapped.getCause)
+      }
     case None =>
       syncClient match {
         case Some(client) => Future(syncCall(client))

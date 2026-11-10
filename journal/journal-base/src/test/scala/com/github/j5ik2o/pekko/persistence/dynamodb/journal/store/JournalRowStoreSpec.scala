@@ -277,6 +277,104 @@ final class JournalRowStoreSpec extends AnyFreeSpec with Matchers with BeforeAnd
     decoded.tags shouldBe Some("tag")
   }
 
+  "update without head mode refuses a row that does not exist and does not create it" in {
+    val fixture = newFixture()
+
+    val failure = updateFailure(fixture.store)
+
+    failure shouldBe a[JournalHeadRowUpdateRejectedException]
+    failure
+      .asInstanceOf[JournalHeadRowUpdateRejectedException].reason shouldBe JournalRowUpdateRejection.RowDoesNotExist
+    run(fixture.store.read(persistenceId, None, SequenceNumber(2), None, None)) shouldBe empty
+  }
+
+  "update without head mode refuses a soft deleted row and keeps it deleted and unchanged" in {
+    val fixture = newFixture()
+    run(fixture.store.write(Seq(JournalTestSupport.row(persistenceId, 2L, "old2", deleted = true, ordering = 1L))))
+
+    val failure = updateFailure(fixture.store)
+
+    failure shouldBe a[JournalHeadRowUpdateRejectedException]
+    failure.asInstanceOf[JournalHeadRowUpdateRejectedException].reason shouldBe JournalRowUpdateRejection.RowDeleted
+    val stored = run(fixture.store.read(persistenceId, None, SequenceNumber(2), None, None)).head
+    stored.deleted shouldBe true
+    stored.message.toSeq shouldBe JournalTestSupport.row(persistenceId, 2L, "old2").message.toSeq
+  }
+
+  "update without head mode sends the update under the condition that the row exists and is not deleted" in {
+    val recorded = scala.collection.mutable.ArrayBuffer.empty[Operation.Update]
+    val inMemory = newFixture()
+    val recording = new DdbClientAdapter {
+      override val capabilities: CapabilityProfile = inMemory.adapter.capabilities
+      override def run(operation: Operation): Source[OperationResult, NotUsed] = {
+        operation match { case update: Operation.Update => recorded += update; case _ => () }
+        inMemory.adapter.run(operation)
+      }
+      override def queryAll(query: Operation.Query): Source[AttributeMap, NotUsed] = inMemory.adapter.queryAll(query)
+      override def close(): Unit                                                   = ()
+    }
+    val store = storeWith(recording, disabledBackoff)
+    run(store.write(Seq(JournalTestSupport.row(persistenceId, 2L, "old2", ordering = 1L))))
+
+    run(store.update(JournalTestSupport.row(persistenceId, 2L, "new2", ordering = 2L)))
+
+    recorded.map(_.condition) shouldBe Vector(
+      Some(
+        Condition.And(
+          Condition.AttributeExists(schema.partitionKey),
+          Condition.Not(
+            Condition.Compare(Operand.Column(schema.deleted), CompareOp.Eq, Operand.Literal(DdbValue.Bool(true)))
+          )
+        )
+      )
+    )
+  }
+
+  "update without head mode tries again when the condition failed but the row is there and not deleted" in {
+    val inMemory   = newFixture()
+    val rejections = new AtomicInteger(1)
+    val racing = new DdbClientAdapter {
+      override val capabilities: CapabilityProfile = inMemory.adapter.capabilities
+      override def run(operation: Operation): Source[OperationResult, NotUsed] = operation match {
+        case _: Operation.Update if rejections.getAndDecrement() > 0 =>
+          Source.single(OperationResult.ConditionRejected(Vector(ConditionFailure(0, "ConditionalCheckFailed"))))
+        case _ => inMemory.adapter.run(operation)
+      }
+      override def queryAll(query: Operation.Query): Source[AttributeMap, NotUsed] = inMemory.adapter.queryAll(query)
+      override def close(): Unit                                                   = ()
+    }
+    val store = storeWith(racing, disabledBackoff)
+    run(store.write(Seq(JournalTestSupport.row(persistenceId, 2L, "old2", ordering = 1L))))
+
+    run(store.update(JournalTestSupport.row(persistenceId, 2L, "new2", ordering = 2L)))
+
+    val stored = run(store.read(persistenceId, None, SequenceNumber(2), None, None)).head
+    stored.message.toSeq shouldBe JournalTestSupport.row(persistenceId, 2L, "new2").message.toSeq
+  }
+
+  "update without head mode fails with a typed conflict when the row keeps changing" in {
+    val inMemory = newFixture()
+    val attempts = new AtomicInteger(0)
+    val racing = new DdbClientAdapter {
+      override val capabilities: CapabilityProfile = inMemory.adapter.capabilities
+      override def run(operation: Operation): Source[OperationResult, NotUsed] = operation match {
+        case _: Operation.Update =>
+          attempts.incrementAndGet()
+          Source.single(OperationResult.ConditionRejected(Vector(ConditionFailure(0, "ConditionalCheckFailed"))))
+        case _ => inMemory.adapter.run(operation)
+      }
+      override def queryAll(query: Operation.Query): Source[AttributeMap, NotUsed] = inMemory.adapter.queryAll(query)
+      override def close(): Unit                                                   = ()
+    }
+    val store = storeWith(racing, disabledBackoff)
+    run(store.write(Seq(JournalTestSupport.row(persistenceId, 2L, "old2", ordering = 1L))))
+
+    updateFailure(store) shouldBe a[JournalHeadConcurrentUpdateException]
+    attempts.get() shouldBe 3
+    val stored = run(store.read(persistenceId, None, SequenceNumber(2), None, None)).head
+    stored.message.toSeq shouldBe JournalTestSupport.row(persistenceId, 2L, "old2").message.toSeq
+  }
+
   "retry an unprocessed batch until the adapter accepts it" in {
     val fixture = newFixture()
     val store   = storeWith(new FlakyBatchAdapter(fixture.adapter, failures = 2), fastBackoff)
