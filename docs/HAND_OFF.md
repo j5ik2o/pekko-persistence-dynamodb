@@ -12,7 +12,7 @@
 
 ## 次の一手
 
-PR のレビューコメント (Cursor Bugbot など) を待つ。届いたら「直す」「理由をつけて直さない」「聞く」に分ける。マージはしない。
+PR #886 のレビューコメント (Cursor Bugbot など) と CI を確認する。届いたら「直す」「理由をつけて直さない」「聞く」に分ける。マージはしない。
 
 ## 未決の判断
 
@@ -23,4 +23,4 @@ PR のレビューコメント (Cursor Bugbot など) を待つ。届いたら�
 
 ## PR
 
-(PR を出したらここに URL を書く)
+https://github.com/j5ik2o/pekko-persistence-dynamodb/pull/886 (ドラフト)
