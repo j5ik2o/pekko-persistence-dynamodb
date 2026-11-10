@@ -263,6 +263,31 @@ node runs with `head.enabled = true`.
 The writes of the tool are conditional, so it can be run as often as needed. A run without `--execute` is a dry-run
 and never writes.
 
+Pass `--progress` with or without `--persistence-id` to either migration command to print scan diagnostics to stderr. Without this flag, no
+additional progress diagnostics are emitted; the existing stdout summary and warnings keep their format and order.
+The programmatic `run` method remains silent.
+
+```text
+[dry-run] JournalHead migration progress phase=scan source=journal started
+[dry-run] JournalHead migration progress phase=scan source=journal pages=1 rows-observed=120 ids-observed=40 source-exhausted=false
+```
+
+Each source reports cumulative pages, successfully decoded and aggregated rows, and distinct observed IDs.
+Counts reset for the snapshot source. IDs can occur in both sources, so their counts are not a combined total.
+`source-exhausted=true` means only that the source has no continuation key. Empty pages with a continuation
+key are still followed. A missing snapshot table is `unavailable`; `--without-snapshots` is `skipped`.
+Phase starts identify scan, head reads, planning, and execution. Dry-run diagnostics carry `[dry-run]`.
+A failed page is not reported as processed. Diagnostics contain neither table names nor persistence IDs,
+and provide no remaining count, ETA, percentage, or periodic heartbeat during a slow request.
+
+With selection, progress still counts every observed source row and ID before selection.
+Selection counts describe only the requested and observed target set.
+
+Progress is observation, not a checkpoint or mixed-writer detection. It does not reduce downtime, RCU use,
+or memory use. The full scans and conditional writes, and the requirement to stop application writes, still
+apply. A failed run starts scanning again when retried. A blocked stderr can delay the tool; combining stdout
+and stderr does not guarantee their relative order.
+
 To select exact persistence ids, repeat `--persistence-id VALUE` for both the dry-run and execute run:
 
 ```shell

@@ -24,6 +24,10 @@ class JournalHeadMigrationSelectionSpec extends AnyWordSpec with Matchers {
   "Migration selection" should {
     "keep all IDs by default and deduplicate exact values without normalization" in {
       JournalHeadMigration.resolvePersistenceIds(Array.empty) shouldBe None
+      JournalHeadMigration.resolvePersistenceIds(Array("--progress")) shouldBe None
+      JournalHeadMigration.resolvePersistenceIds(Array("--progress", "--persistence-id", "p")) shouldBe Some(
+        Set(PersistenceId("p"))
+      )
       val values = Seq("p", "p", " P ", " ", "é", "e\u0301", "x" * 2048)
       JournalHeadMigration.resolvePersistenceIds(values.flatMap(v => Seq("--persistence-id", v)).toArray) shouldBe
       Some(values.map(PersistenceId(_)).toSet)
@@ -39,7 +43,7 @@ class JournalHeadMigrationSelectionSpec extends AnyWordSpec with Matchers {
         Array("--persistance-id", "p"),
         Array("extra"),
         Array("--execute", "extra"),
-        Array("--progress"),
+        Array("--bogus"),
         Array("--snapshot-table"),
         Array("--snapshot-table", "--execute")
       )
