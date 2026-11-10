@@ -334,6 +334,8 @@ final class JournalRowStoreSpec extends AnyFreeSpec with Matchers with BeforeAnd
     adapter.batchAttempts shouldBe 4
   }
 
+  private def unprocessed(): Throwable = new BatchWriteUnprocessedItemsException(1)
+
   private def rows3 = (1L to 3L).map(sequenceNr => JournalTestSupport.row(persistenceId, sequenceNr, s"e$sequenceNr"))
 
   "send an unprocessed batch again at once when the backoff is disabled" in {
@@ -382,6 +384,41 @@ final class JournalRowStoreSpec extends AnyFreeSpec with Matchers with BeforeAnd
     exhausted.attempts shouldBe 4
     exhausted.getCause shouldBe a[BatchWriteUnprocessedItemsException]
     adapter.batchAttempts shouldBe 4
+  }
+
+  "stop after the configured attempts when the backoff is enabled and each attempt is slower than the minimum backoff" in {
+    val fixture  = newFixture()
+    val attempts = new AtomicInteger(0)
+    val slowAdapter: DdbClientAdapter = new DdbClientAdapter {
+      override val capabilities: CapabilityProfile = fixture.adapter.capabilities
+
+      override def run(operation: Operation): Source[OperationResult, NotUsed] = operation match {
+        case _: Operation.BatchWrite =>
+          attempts.incrementAndGet()
+          Source.single(()).initialDelay(150.millis).flatMapConcat(_ => Source.failed(unprocessed()))
+        case _ => fixture.adapter.run(operation)
+      }
+
+      override def queryAll(query: Operation.Query): Source[AttributeMap, NotUsed] = fixture.adapter.queryAll(query)
+
+      override def close(): Unit = ()
+    }
+    val store = storeWith(
+      slowAdapter,
+      fastBackoff.copy(
+        enabled = true,
+        minBackoff = 20.millis,
+        maxBackoff = 30.millis,
+        randomFactor = 0.0,
+        maxRestarts = 2
+      )
+    )
+
+    val failure = Await.result(store.write(rows3).runWith(Sink.ignore).failed, 10.seconds)
+
+    failure shouldBe a[JournalRowStoreException.BatchWriteRetriesExhausted]
+    failure.asInstanceOf[JournalRowStoreException.BatchWriteRetriesExhausted].attempts shouldBe 3
+    attempts.get shouldBe 3
   }
 
   "keep the backoff delay within the bounds for a large attempt number" in {

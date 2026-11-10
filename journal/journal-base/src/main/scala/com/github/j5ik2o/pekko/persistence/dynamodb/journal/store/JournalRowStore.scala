@@ -49,7 +49,7 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.model.{ PersistenceId, Seque
 import com.typesafe.config.ConfigFactory
 
 import java.util.concurrent.{ ThreadLocalRandom, TimeUnit }
-import scala.concurrent.duration.FiniteDuration
+import scala.concurrent.duration._
 
 final class JournalRowStore(
     val schema: JournalSchema,
@@ -65,6 +65,11 @@ final class JournalRowStore(
 ) {
 
   private val UpdateAttempts: Int = 3
+
+  /** The restart window of a batch write. It is far longer than any attempt, so a slow attempt cannot reset the count
+    * of `write-backoff.max-restarts` and the batch stops after `max-restarts + 1` attempts.
+    */
+  private val BatchRestartWindow: FiniteDuration = 365.days
 
   private val journalColumns: JournalColumnsDefConfig = JournalColumnsDefConfig(
     sourceConfig = ConfigFactory.empty(),
@@ -546,15 +551,26 @@ final class JournalRowStore(
         )
 
     if (writeBackoffConfig.enabled) {
-      run(operation, writeBackoffConfig).mapError { case cause: BatchWriteUnprocessedItemsException =>
-        exhausted(cause)
+      run(operation, writeBackoffConfig, BatchRestartWindow).mapError {
+        case cause: BatchWriteUnprocessedItemsException =>
+          exhausted(cause)
       }
     } else {
       attempt(1)
     }
   }
 
-  private def run(operation: Operation, backoffConfig: BackoffConfig): Source[OperationResult, NotUsed] = {
+  private def run(operation: Operation, backoffConfig: BackoffConfig): Source[OperationResult, NotUsed] =
+    run(operation, backoffConfig, backoffConfig.minBackoff)
+
+  /** `restartWindow` is the period in which `max-restarts` counts. A restart count resets when an attempt runs longer
+    * than the window before it fails, so a caller that needs a hard bound passes a window longer than any attempt.
+    */
+  private def run(
+      operation: Operation,
+      backoffConfig: BackoffConfig,
+      restartWindow: FiniteDuration
+  ): Source[OperationResult, NotUsed] = {
     def source: Source[OperationResult, NotUsed] = adapter.run(operation)
     if (backoffConfig.enabled) {
       RestartSource.onFailuresWithBackoff(
@@ -562,7 +578,7 @@ final class JournalRowStore(
           backoffConfig.minBackoff,
           backoffConfig.maxBackoff,
           backoffConfig.randomFactor
-        ).withMaxRestarts(backoffConfig.maxRestarts, backoffConfig.minBackoff)
+        ).withMaxRestarts(backoffConfig.maxRestarts, restartWindow)
       )(() => source)
     } else {
       source
