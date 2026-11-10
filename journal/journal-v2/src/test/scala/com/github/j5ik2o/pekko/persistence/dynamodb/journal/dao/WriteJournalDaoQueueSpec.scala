@@ -191,8 +191,8 @@ final class WriteJournalDaoQueueSpec extends AnyFreeSpec with Matchers with Befo
     val deadline = 10.seconds.fromNow
     @tailrec
     def loop(): JournalWriteQueueFullException = {
-      val found = writes.flatMap(_.value).collectFirst {
-        case Failure(e: JournalWriteQueueFullException) => e
+      val found = writes.flatMap(_.value).collectFirst { case Failure(e: JournalWriteQueueFullException) =>
+        e
       }
       found match {
         case Some(e)                        => e

@@ -18,24 +18,28 @@ package com.github.j5ik2o.pekko.persistence.dynamodb.journal.dao
 /** Base class of the failures the journal write queue raises before a write reaches its row driver.
   *
   * The queue is a bounded buffer, so it can refuse a write without sending anything to DynamoDB. Each subclass is a
-  * distinct reason, so that a caller can tell "the buffer is full, retry later" apart from "the queue is closed,
-  * restart the plugin".
+  * distinct reason, so that a caller can tell "the buffer is full" apart from "the queue is closed". Pekko still fails
+  * the write and stops the actor through `onPersistFailure`; the type is available to the log and to that callback.
   */
-sealed abstract class JournalWriteQueueException(message: String) extends RuntimeException(message, null)
+sealed abstract class JournalWriteQueueException(message: String, cause: Throwable)
+    extends RuntimeException(message, cause)
 
 /** The write was refused because the queue buffer was full.
   *
-  * Nothing was sent to DynamoDB. Retrying after the buffer drains can succeed.
+  * Nothing was sent to DynamoDB. With a drop overflow strategy the queue keeps running, so a retry after the buffer
+  * drains can succeed. With the default fail strategy the queue stops, so the plugin must restart.
   */
-final class JournalWriteQueueFullException(val bufferSize: Int)
+final class JournalWriteQueueFullException(val bufferSize: Int, cause: Throwable = null)
     extends JournalWriteQueueException(
       s"Failed to enqueue journal row batch write, the queue buffer was full ($bufferSize elements); " +
-      "check the queue-buffer-size setting or retry the write"
+      "check the queue-buffer-size and queue-overflow-strategy settings",
+      cause
     )
 
 /** The write was refused because the queue is closed.
   *
-  * The plugin has been disposed, so the write succeeds only after the plugin restarts.
+  * The queue was disposed, or its stream terminated abnormally. The cause holds the `StreamDetachedException` when the
+  * queue was detached. The write succeeds only after the plugin restarts.
   */
-final class JournalWriteQueueClosedException
-    extends JournalWriteQueueException("Failed to enqueue journal row batch write, the queue was closed")
+final class JournalWriteQueueClosedException(cause: Throwable = null)
+    extends JournalWriteQueueException("Failed to enqueue journal row batch write, the queue was closed", cause)

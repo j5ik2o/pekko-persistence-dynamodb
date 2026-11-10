@@ -223,15 +223,20 @@ final class WriteJournalDaoImpl(
 
   /** Offers one write to a queue and waits for the driver to finish it.
     *
-    * A queue whose stream has been detached refuses offers with `StreamDetachedException` instead of
-    * `QueueOfferResult.QueueClosed`. Both mean the plugin was disposed, so both become the same typed failure.
+    * A queue whose stream has been detached refuses offers with `StreamDetachedException`, and the fail overflow
+    * strategy refuses the overflowing offer with `Failure(BufferOverflowException)`. Both carry the reason a write was
+    * refused, so the typed failures keep it as their cause.
     */
   private def enqueue[A](queue: SourceQueueWithComplete[A], request: A, promise: Promise[Long]): Future[Long] =
     queue
       .offer(request)
-      .recoverWith { case _: StreamDetachedException => Future.successful(QueueOfferResult.QueueClosed) }
+      .recoverWith { case t: StreamDetachedException =>
+        Future.failed(new JournalWriteQueueClosedException(t))
+      }
       .flatMap {
         case QueueOfferResult.Enqueued => promise.future
+        case QueueOfferResult.Failure(t: BufferOverflowException) =>
+          Future.failed(new JournalWriteQueueFullException(queueBufferSize, t))
         case QueueOfferResult.Failure(t) =>
           Future.failed(new Exception("Failed to write journal row batch", t))
         case QueueOfferResult.Dropped     => Future.failed(new JournalWriteQueueFullException(queueBufferSize))
