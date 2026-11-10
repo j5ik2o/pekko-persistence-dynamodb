@@ -25,7 +25,7 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.ddb.v2.{ V2ClientAdapter, V2
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal._
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.dao.{ JournalRowWriteDriver, PersistenceIdWithSeqNr }
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.head._
-import com.github.j5ik2o.pekko.persistence.dynamodb.journal.store.JournalRowStore
+import com.github.j5ik2o.pekko.persistence.dynamodb.journal.store.{ CancellationCodes, JournalRowStore }
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.write.WriteRejection
 import com.github.j5ik2o.pekko.persistence.dynamodb.model.{ PersistenceId, SequenceNumber }
 import software.amazon.awssdk.services.dynamodb.model.{ TransactWriteItemsRequest, TransactionCanceledException }
@@ -196,9 +196,6 @@ final class V2JournalRowWriteDriver(
     case object Unclassified extends TransactionCancellation
   }
 
-  private val RetryableCancellationCodes =
-    Set("TransactionConflict", "ThrottlingError", "ProvisionedThroughputExceeded")
-
   private val maxWriteAttempts: Int = math.max(0, pluginConfig.writeBackoffConfig.maxRestarts) + 1
 
   private def backoffDelay(attempt: Int): FiniteDuration = {
@@ -325,7 +322,7 @@ final class V2JournalRowWriteDriver(
     val rowCount = request.rows.size
     def codeAt(index: Int): Option[String] =
       reasons.lift(index).flatMap(reason => Option(reason)).flatMap(reason => Option(reason.code))
-    def failedAt(index: Int): Boolean = codeAt(index).contains("ConditionalCheckFailed")
+    def failedAt(index: Int): Boolean = codeAt(index).contains(CancellationCodes.ConditionalCheckFailed)
     val failedJournalRowIndexes       = request.rows.indices.filter(failedAt).toVector
     if (failedJournalRowIndexes.nonEmpty) {
       val sequenceNrs = failedJournalRowIndexes.map(index => request.rows(index).sequenceNumber.value)
@@ -357,7 +354,7 @@ final class V2JournalRowWriteDriver(
         .flatMap(reason => Option(reason))
         .flatMap(reason => Option(reason.code))
         .collectFirst {
-          case code if RetryableCancellationCodes.contains(code) => TransactionCancellation.Retryable(code)
+          case code if CancellationCodes.Contention.contains(code) => TransactionCancellation.Retryable(code)
         }
         .getOrElse(TransactionCancellation.Unclassified)
       Future.successful(cancellation)
