@@ -319,6 +319,7 @@ at most 400 KB for the `JournalHead` item) after the restart.
 | `JournalHeadJournalRowTooLargeException`     | a journal row would exceed 400 KB (the encoded event and tags)   |
 | `JournalHeadTransactionTooLargeException`    | the transaction would exceed 4 MB                                |
 | `JournalHeadInvalidWriteException`           | the rows of one write are empty, span several persistence ids, or are not contiguous |
+| `JournalHeadConcurrentWriteException`        | DynamoDB cancelled the write with a transaction conflict or throttling on every attempt; nothing was written — restart the actor or send the write again |
 
 ## In-place event updates
 
@@ -360,11 +361,14 @@ An update changes the message of an event, keeps its sequence number and the `se
 `revision`. The section "Consuming the stream" describes how a consumer applies it.
 
 An update sent from outside the aggregate can still collide with the aggregate's own writes. When it does, the write
-of the aggregate, not the update, can be the one that DynamoDB cancels with a transaction conflict. The write path
-reports that cancellation as the SDK exception, the persist fails, and the persistent actor stops through
-`onPersistFailure`. The plugin does not retry a write. This follows from the code of the write path; the test that
-races updates with persists against DynamoDB Local did not produce it, and that is not a proof that it cannot happen
-on DynamoDB. Send updates for an aggregate through the aggregate, or when it is not persisting.
+of the aggregate, not the update, can be the one that DynamoDB cancels with a transaction conflict. The plugin
+classifies a cancellation reason of `TransactionConflict`, `ThrottlingError`, or `ProvisionedThroughputExceeded`, and
+sends the same transaction again, up to `max-restarts` of `write-backoff`. Between attempts it waits only when
+`write-backoff` is enabled, as on the update path. When the attempts are used up, the write fails with
+`JournalHeadConcurrentWriteException`, the persist fails, and the persistent actor stops through `onPersistFailure`.
+Restart the actor, or send the write again. The transaction wrote nothing, so a retry cannot duplicate an event. The
+test that races updates with persists against DynamoDB Local did not produce such a conflict, and that is not a proof
+that it cannot happen on DynamoDB. Send updates for an aggregate through the aggregate, or when it is not persisting.
 
 A soft delete and an update of the same event can overlap. A soft delete marks journal rows as deleted and does not
 write the head, so the head keeps the events of its latest write whatever their journal rows say. An update that
