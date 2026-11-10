@@ -22,7 +22,13 @@ import com.amazonaws.services.dynamodbv2.model.{
   QueryResult,
   WriteRequest
 }
-import com.github.j5ik2o.pekko.persistence.dynamodb.ddb.{ AttributeMap, AttributeName, DdbValue, OperationResult }
+import com.github.j5ik2o.pekko.persistence.dynamodb.ddb.{
+  AttributeMap,
+  AttributeName,
+  BatchWriteUnprocessedItemsException,
+  DdbValue,
+  OperationResult
+}
 import org.scalatest.freespec.AnyFreeSpec
 import org.scalatest.matchers.should.Matchers
 
@@ -62,12 +68,14 @@ final class V1ResponsesSpec extends AnyFreeSpec with Matchers {
     OperationResult.Items(Vector.empty, Some(AttributeMap.of(AttributeName("k") -> DdbValue.Str("v"))))
   }
 
-  "an unprocessed batch item fails with a recoverable failure, not an illegal state" in {
+  "an unprocessed batch item fails with the typed recoverable failure" in {
     val request  = new BatchWriteItemRequest().withRequestItems(Map("t" -> Vector(write()).asJava).asJava)
     val response = new BatchWriteItemResult().withUnprocessedItems(Map("t" -> Vector(write()).asJava).asJava)
 
     V1Responses.batch(request, response) match {
-      case Left(cause)   => cause should not be an[IllegalStateException]
+      case Left(cause) =>
+        cause shouldBe a[BatchWriteUnprocessedItemsException]
+        cause.asInstanceOf[BatchWriteUnprocessedItemsException].unprocessedItems shouldBe 1
       case Right(result) => fail(s"expected a batch failure, got $result")
     }
   }

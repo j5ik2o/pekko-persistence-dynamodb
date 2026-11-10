@@ -21,7 +21,7 @@ import com.amazonaws.services.dynamodbv2.model.{
   BatchWriteItemResult,
   QueryResult
 }
-import com.github.j5ik2o.pekko.persistence.dynamodb.ddb.OperationResult
+import com.github.j5ik2o.pekko.persistence.dynamodb.ddb.{ BatchWriteUnprocessedItemsException, OperationResult }
 
 import scala.jdk.CollectionConverters._
 
@@ -45,7 +45,7 @@ private[v1] object V1Responses {
   ): Either[Throwable, OperationResult] = {
     val unprocessed = Option(response.getUnprocessedItems).map(_.asScala.values.map(_.size).sum).getOrElse(0)
     if (unprocessed > 0) {
-      Left(new IllegalStateException(s"BatchWriteItem left $unprocessed unprocessed items"))
+      Left(new BatchWriteUnprocessedItemsException(unprocessed))
     } else {
       val count = Option(request.getRequestItems).map(_.asScala.values.map(_.size).sum).getOrElse(0)
       Right(OperationResult.Written(count))

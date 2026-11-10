@@ -1,0 +1,34 @@
+/*
+ * Copyright 2026 Junichi Kato
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package com.github.j5ik2o.pekko.persistence.dynamodb.journal.store
+
+import com.github.j5ik2o.pekko.persistence.dynamodb.ddb.TableName
+
+/** A journal row store failure that a caller can recover from. */
+sealed abstract class JournalRowStoreException(message: String, cause: Throwable)
+    extends RuntimeException(message, cause)
+
+object JournalRowStoreException {
+
+  /** A batch write still had unprocessed items after the configured attempts. The write is idempotent, so the caller
+    * can retry it.
+    */
+  final class BatchWriteRetriesExhausted(val table: TableName, val attempts: Int, cause: Throwable)
+      extends JournalRowStoreException(
+        s"the batch write to ${table.value} failed after $attempts attempt(s)",
+        cause
+      )
+}

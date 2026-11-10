@@ -175,7 +175,7 @@ final class SnapshotStoreSpec extends AnyFreeSpec with Matchers with ScalaFuture
   }
 
   private def unprocessedBatchFailure: () => Throwable =
-    () => new IllegalStateException("BatchWriteItem left 1 unprocessed items")
+    () => new BatchWriteUnprocessedItemsException(1)
 
   "SnapshotStore" - {
     "writes the key and the row columns" in {
@@ -312,7 +312,7 @@ final class SnapshotStoreSpec extends AnyFreeSpec with Matchers with ScalaFuture
     }
 
     "fails with a retryable exception when a batch delete keeps failing" in {
-      val unprocessed = new IllegalStateException("BatchWriteItem left 1 unprocessed items")
+      val unprocessed = new BatchWriteUnprocessedItemsException(1)
       val adapter     = new FailingBatchAdapter(Vector(legacyItem), failures = Int.MaxValue, () => unprocessed)
       val store =
         new SnapshotStore(adapter, new SnapshotRowCodec(schema, legacy), consistentRead = false, 25, writeBackoff)

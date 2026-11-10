@@ -149,13 +149,10 @@ final class SnapshotStore(
       .grouped(batchWriteLimit)
       .flatMapConcat(keys => deleteBatch(keys.toVector))
 
-  /** DynamoDB can leave a batch write partly unprocessed. The adapter fails the stream with an `IllegalStateException`
-    * for that transient condition, so retry only that failure. Other failures propagate unchanged, because a permanent
-    * service error is not retryable. The write path has no other retry, so the bound and timings from write-backoff
-    * apply even when its `enabled` flag is false.
-    *
-    * Issue #887 replaces the adapter's `IllegalStateException` signal with a typed failure. When it lands, update this
-    * predicate and the response tests in base-v1 and base-v2.
+  /** DynamoDB can leave a batch write partly unprocessed. The adapter reports that transient condition as a
+    * `BatchWriteUnprocessedItemsException`, so retry only that failure. Other failures propagate unchanged, because a
+    * permanent service error is not retryable. The write path has no other retry, so the bound and timings from
+    * write-backoff apply even when its `enabled` flag is false.
     */
   private def deleteBatch(keys: Vector[RowKey]): Source[Unit, NotUsed] = {
     val operation   = Operation.BatchWrite(tableSpec.table.table, Vector.empty, keys)
@@ -166,9 +163,9 @@ final class SnapshotStore(
         .run(operation).recoverWithRetries(
           1,
           {
-            case cause: IllegalStateException if attemptNo < maxAttempts =>
+            case _: BatchWriteUnprocessedItemsException if attemptNo < maxAttempts =>
               Source.single(()).delay(backoffDelay(attemptNo - 1)).flatMapConcat(_ => attempt(attemptNo + 1))
-            case cause: IllegalStateException =>
+            case cause: BatchWriteUnprocessedItemsException =>
               Source.failed(
                 new SnapshotStoreException.BatchWriteRetriesExhausted(
                   tableSpec.table.table,

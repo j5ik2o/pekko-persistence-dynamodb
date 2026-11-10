@@ -520,19 +520,30 @@ final class JournalRowStore(
       case other                          => throw new IllegalStateException(s"unexpected result for a write: $other")
     }
 
-  /** DynamoDB can leave a batch write partly unprocessed. The adapter reports that as a failed stream, so retry the
-    * whole batch, which is idempotent. The retry runs until DynamoDB accepts the batch, as the previous batch flow did;
-    * a batch has transient unprocessed items rather than a permanent rejection.
+  /** DynamoDB can leave a batch write partly unprocessed, which is a transient condition that the adapter reports as
+    * `BatchWriteUnprocessedItemsException`. Retry only that signal, because retrying every failure would also retry a
+    * bug or a permanent rejection. The write is idempotent, so the bound and timings of `write-backoff` apply even when
+    * its `enabled` flag is false. When the attempts are used up the failure is
+    * `JournalRowStoreException.BatchWriteRetriesExhausted`, which the caller can retry.
     */
   private def runBatch(operation: Operation.BatchWrite): Source[OperationResult, NotUsed] = {
-    def attempt: Source[OperationResult, NotUsed] =
-      run(operation, writeBackoffConfig).recoverWithRetries(
-        1,
-        { case _: IllegalStateException =>
-          attempt
-        }
-      )
-    attempt
+    val maxAttempts = math.max(0, writeBackoffConfig.maxRestarts) + 1
+
+    def attempt(attemptNo: Int): Source[OperationResult, NotUsed] =
+      adapter
+        .run(operation).recoverWithRetries(
+          1,
+          {
+            case _: BatchWriteUnprocessedItemsException if attemptNo < maxAttempts =>
+              Source.single(()).delay(backoffDelay(attemptNo)).flatMapConcat(_ => attempt(attemptNo + 1))
+            case cause: BatchWriteUnprocessedItemsException =>
+              Source.failed(
+                new JournalRowStoreException.BatchWriteRetriesExhausted(operation.table, maxAttempts, cause)
+              )
+          }
+        )
+
+    attempt(1)
   }
 
   private def run(operation: Operation, backoffConfig: BackoffConfig): Source[OperationResult, NotUsed] = {

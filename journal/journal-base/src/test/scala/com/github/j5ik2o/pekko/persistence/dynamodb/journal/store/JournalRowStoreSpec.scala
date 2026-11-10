@@ -24,6 +24,7 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.ddb.{
   AttributeMap,
   AttributeName,
   AttributeUpdate,
+  BatchWriteUnprocessedItemsException,
   CapabilityProfile,
   CompareOp,
   Condition,
@@ -74,7 +75,7 @@ final class JournalRowStoreSpec extends AnyFreeSpec with Matchers with BeforeAnd
   private final class FlakyBatchAdapter(
       delegate: InMemoryDdbAdapter,
       failures: Int,
-      failure: () => Throwable = () => new IllegalStateException("BatchWriteItem left 1 unprocessed items")
+      failure: () => Throwable = () => new BatchWriteUnprocessedItemsException(1)
   ) extends DdbClientAdapter {
     private val attempts = new AtomicInteger(0)
 
@@ -162,6 +163,9 @@ final class JournalRowStoreSpec extends AnyFreeSpec with Matchers with BeforeAnd
       eventMessageColumnName = "message"
     )
   )
+
+  private val fastBackoff: BackoffConfig =
+    disabledBackoff.copy(minBackoff = 1.millis, maxBackoff = 2.millis)
 
   private def storeWith(adapter: DdbClientAdapter, writeBackoffConfig: BackoffConfig): JournalRowStore =
     new JournalRowStore(
@@ -275,7 +279,7 @@ final class JournalRowStoreSpec extends AnyFreeSpec with Matchers with BeforeAnd
 
   "retry an unprocessed batch until the adapter accepts it" in {
     val fixture = newFixture()
-    val store   = storeWith(new FlakyBatchAdapter(fixture.adapter, failures = 2), disabledBackoff)
+    val store   = storeWith(new FlakyBatchAdapter(fixture.adapter, failures = 2), fastBackoff)
     val rows    = (1L to 3L).map(sequenceNr => JournalTestSupport.row(persistenceId, sequenceNr, s"e$sequenceNr"))
 
     run(store.write(rows)) shouldBe Vector(3L)
@@ -302,13 +306,32 @@ final class JournalRowStoreSpec extends AnyFreeSpec with Matchers with BeforeAnd
   "stop retrying an unprocessed batch after the configured attempts" in {
     val fixture = newFixture()
     val adapter = new FlakyBatchAdapter(fixture.adapter, failures = 2)
-    val store   = storeWith(adapter, disabledBackoff.copy(maxRestarts = 0))
+    val store   = storeWith(adapter, fastBackoff.copy(maxRestarts = 0))
     val rows    = (1L to 3L).map(sequenceNr => JournalTestSupport.row(persistenceId, sequenceNr, s"e$sequenceNr"))
 
     val failure = Await.result(store.write(rows).runWith(Sink.ignore).failed, 30.seconds)
 
-    failure should not be an[IllegalStateException]
+    failure shouldBe a[JournalRowStoreException.BatchWriteRetriesExhausted]
+    failure.asInstanceOf[JournalRowStoreException.BatchWriteRetriesExhausted].attempts shouldBe 1
     adapter.batchAttempts shouldBe 1
+  }
+
+  "fail with the retryable failure when an unprocessed batch keeps failing" in {
+    val fixture     = newFixture()
+    val unprocessed = new BatchWriteUnprocessedItemsException(1)
+    val adapter =
+      new FlakyBatchAdapter(fixture.adapter, failures = Int.MaxValue, failure = () => unprocessed)
+    val store = storeWith(adapter, fastBackoff)
+    val rows  = (1L to 3L).map(sequenceNr => JournalTestSupport.row(persistenceId, sequenceNr, s"e$sequenceNr"))
+
+    val failure = Await.result(store.write(rows).runWith(Sink.ignore).failed, 30.seconds)
+
+    failure shouldBe a[JournalRowStoreException.BatchWriteRetriesExhausted]
+    val exhausted = failure.asInstanceOf[JournalRowStoreException.BatchWriteRetriesExhausted]
+    exhausted.attempts shouldBe 4
+    exhausted.table shouldBe TableName("Journal")
+    exhausted.getCause should be theSameInstanceAs unprocessed
+    adapter.batchAttempts shouldBe 4
   }
 
   "reject two rows that resolve to the same key" in {
