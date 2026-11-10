@@ -141,7 +141,7 @@ def create(args):
     source = Path(absolute(args.source))
     cwd = os.path.normpath(absolute(args.expected_cwd))
     require(text(args.expected_session_id), "invalid_expected_session")
-    out = Path(os.path.abspath(args.out))
+    out = Path(args.out).absolute()
     require(not os.path.lexists(out), "output_exists")
     fd = os.open(source, os.O_RDONLY | os.O_NONBLOCK)
     with os.fdopen(fd, "rb", buffering=0) as stream:
@@ -212,7 +212,7 @@ def main():
     try:
         args = parser.parse_args()
         result = create(args) if args.command == "create" else verify(
-            Path(os.path.abspath(args.bundle)), args.expected_manifest_sha256)
+            Path(args.bundle).absolute(), args.expected_manifest_sha256)
         print(json.dumps(result, sort_keys=True))
         return 0
     except Rejected as error:

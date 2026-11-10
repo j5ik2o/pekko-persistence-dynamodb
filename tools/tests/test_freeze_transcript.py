@@ -88,6 +88,40 @@ class FreezeTest(unittest.TestCase):
                 self.assertEqual(result["source"]["resolved_path"], str(selected.resolve()))
                 self.ok(self.verify(result["manifest_sha256"]))
 
+    def test_output_symlink_parent_keeps_filesystem_semantics(self):
+        actual = self.root / "actual"
+        (actual / "nested").mkdir(parents=True)
+        alias = self.root / "alias"
+        alias.symlink_to(actual / "nested", target_is_directory=True)
+        relative_root = Path(os.path.relpath(self.root))
+        for name, out in [
+            ("absolute", alias / ".." / "absolute"),
+            ("relative", relative_root / "alias" / ".." / "relative"),
+        ]:
+            with self.subTest(path=name):
+                result = self.ok(self.create("--at-eof", extra=("--out", str(out))))
+                self.assertTrue((actual / name / "snapshot.json").is_file())
+                self.assertFalse((self.root / name).exists())
+                self.assertEqual(Path(result["artifact_path"]).resolve(),
+                                 (actual / name / "transcript.jsonl").resolve())
+                self.ok(self.cli("verify", "--bundle", str(out),
+                                 "--expected-manifest-sha256", result["manifest_sha256"]))
+
+    def test_verify_symlink_parent_keeps_filesystem_semantics(self):
+        actual = self.root / "actual"
+        (actual / "nested").mkdir(parents=True)
+        alias = self.root / "alias"
+        alias.symlink_to(actual / "nested", target_is_directory=True)
+        self.out = actual / "bundle"
+        created = self.ok(self.create("--at-eof"))
+        relative_root = Path(os.path.relpath(self.root))
+        for bundle in (alias / ".." / "bundle", relative_root / "alias" / ".." / "bundle"):
+            with self.subTest(path=str(bundle)):
+                result = self.ok(self.cli("verify", "--bundle", str(bundle),
+                                         "--expected-manifest-sha256", created["manifest_sha256"]))
+                self.assertEqual(Path(result["artifact_path"]).resolve(),
+                                 (actual / "bundle" / "transcript.jsonl").resolve())
+
     def test_before_and_saved_append(self):
         result = self.ok(self.create("--before-call-id", "cut"))
         saved = (self.out / "transcript.jsonl").read_bytes()
