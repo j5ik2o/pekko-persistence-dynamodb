@@ -365,11 +365,8 @@ final class JournalRowStore(
       case other => throw new IllegalStateException(s"unexpected result for a journal row read: $other")
     }
 
-  private def backoffDelay(attempt: Int): FiniteDuration = {
-    val base = math.min(writeBackoffConfig.maxBackoff.toMillis, writeBackoffConfig.minBackoff.toMillis << (attempt - 1))
-    val jitter = 1.0 + ThreadLocalRandom.current().nextDouble() * writeBackoffConfig.randomFactor
-    FiniteDuration(math.min(writeBackoffConfig.maxBackoff.toMillis, (base * jitter).toLong), TimeUnit.MILLISECONDS)
-  }
+  private def backoffDelay(attempt: Int): FiniteDuration =
+    JournalRowStore.backoffDelay(writeBackoffConfig, attempt)
 
   /** The condition that the head is still the one that was read, and the head item with the event of the row replaced
     * and its revision raised by one.
@@ -521,13 +518,20 @@ final class JournalRowStore(
     }
 
   /** DynamoDB can leave a batch write partly unprocessed, which is a transient condition that the adapter reports as
-    * `BatchWriteUnprocessedItemsException`. Retry only that signal, because retrying every failure would also retry a
-    * bug or a permanent rejection. The write is idempotent, so the bound and timings of `write-backoff` apply even when
-    * its `enabled` flag is false. When the attempts are used up the failure is
+    * `BatchWriteUnprocessedItemsException`. The write is idempotent, so the whole batch is sent again, at most
+    * `write-backoff.max-restarts` + 1 times. When the attempts are used up the failure is
     * `JournalRowStoreException.BatchWriteRetriesExhausted`, which the caller can retry.
+    *
+    * The retry follows the same contract as every other write. When `write-backoff` is enabled, `run` restarts the
+    * batch after any failure with a backoff, as it did before, and that restart is the only retry, so the attempts are
+    * not multiplied. When it is disabled the batch is sent again at once, and only the unprocessed-items signal is
+    * retried, because retrying every failure would also retry a bug or a permanent rejection.
     */
   private def runBatch(operation: Operation.BatchWrite): Source[OperationResult, NotUsed] = {
     val maxAttempts = math.max(0, writeBackoffConfig.maxRestarts) + 1
+
+    def exhausted(cause: BatchWriteUnprocessedItemsException): Throwable =
+      new JournalRowStoreException.BatchWriteRetriesExhausted(operation.table, maxAttempts, cause)
 
     def attempt(attemptNo: Int): Source[OperationResult, NotUsed] =
       adapter
@@ -535,15 +539,19 @@ final class JournalRowStore(
           1,
           {
             case _: BatchWriteUnprocessedItemsException if attemptNo < maxAttempts =>
-              Source.single(()).delay(backoffDelay(attemptNo)).flatMapConcat(_ => attempt(attemptNo + 1))
+              attempt(attemptNo + 1)
             case cause: BatchWriteUnprocessedItemsException =>
-              Source.failed(
-                new JournalRowStoreException.BatchWriteRetriesExhausted(operation.table, maxAttempts, cause)
-              )
+              Source.failed(exhausted(cause))
           }
         )
 
-    attempt(1)
+    if (writeBackoffConfig.enabled) {
+      run(operation, writeBackoffConfig).mapError { case cause: BatchWriteUnprocessedItemsException =>
+        exhausted(cause)
+      }
+    } else {
+      attempt(1)
+    }
   }
 
   private def run(operation: Operation, backoffConfig: BackoffConfig): Source[OperationResult, NotUsed] = {
@@ -576,6 +584,18 @@ final class JournalRowStore(
 }
 
 object JournalRowStore {
+
+  /** The wait before the attempt after `attempt`: `min-backoff` doubled for each earlier attempt, never above
+    * `max-backoff`, and spread by `random-factor`. The doubling is done in floating point and capped, so a large
+    * attempt number cannot overflow into a negative or zero wait.
+    */
+  private[store] def backoffDelay(config: BackoffConfig, attempt: Int): FiniteDuration = {
+    val maxMillis = config.maxBackoff.toMillis
+    val doubled   = config.minBackoff.toMillis.toDouble * math.pow(2.0, math.min(math.max(attempt - 1, 0), 62).toDouble)
+    val base      = math.min(maxMillis.toDouble, doubled)
+    val jitter    = 1.0 + ThreadLocalRandom.current().nextDouble() * config.randomFactor
+    FiniteDuration(math.min(maxMillis, (base * jitter).toLong), TimeUnit.MILLISECONDS)
+  }
 
   def fromPluginContext(pluginContext: JournalPluginContext, adapter: DdbClientAdapter): JournalRowStore = {
     val config = pluginContext.pluginConfig

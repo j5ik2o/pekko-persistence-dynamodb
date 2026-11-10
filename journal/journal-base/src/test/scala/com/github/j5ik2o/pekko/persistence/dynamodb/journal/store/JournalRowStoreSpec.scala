@@ -334,6 +334,68 @@ final class JournalRowStoreSpec extends AnyFreeSpec with Matchers with BeforeAnd
     adapter.batchAttempts shouldBe 4
   }
 
+  private def rows3 = (1L to 3L).map(sequenceNr => JournalTestSupport.row(persistenceId, sequenceNr, s"e$sequenceNr"))
+
+  "send an unprocessed batch again at once when the backoff is disabled" in {
+    val fixture                    = newFixture()
+    val adapter: FlakyBatchAdapter = new FlakyBatchAdapter(fixture.adapter, failures = 3)
+    val store = storeWith(adapter, disabledBackoff.copy(minBackoff = 2.seconds, maxBackoff = 2.seconds))
+
+    val elapsed = elapsedMillis(run(store.write(rows3)) shouldBe Vector(3L))
+
+    adapter.batchAttempts shouldBe 4
+    elapsed should be < 1500L
+  }
+
+  "restart a batch that failed for any reason when the backoff is enabled" in {
+    val fixture = newFixture()
+    val adapter: FlakyBatchAdapter = new FlakyBatchAdapter(
+      fixture.adapter,
+      failures = 2,
+      failure = () => new IllegalStateException("a service error")
+    )
+    val store = storeWith(adapter, fastBackoff.copy(enabled = true))
+
+    run(store.write(rows3)) shouldBe Vector(3L)
+    adapter.batchAttempts shouldBe 3
+  }
+
+  "restart an unprocessed batch with the backoff until the adapter accepts it" in {
+    val fixture                    = newFixture()
+    val adapter: FlakyBatchAdapter = new FlakyBatchAdapter(fixture.adapter, failures = 2)
+    val store                      = storeWith(adapter, fastBackoff.copy(enabled = true))
+
+    run(store.write(rows3)) shouldBe Vector(3L)
+    adapter.batchAttempts shouldBe 3
+  }
+
+  "count the attempts once when the backoff is enabled and an unprocessed batch keeps failing" in {
+    val fixture = newFixture()
+    val adapter: FlakyBatchAdapter =
+      new FlakyBatchAdapter(fixture.adapter, failures = Int.MaxValue)
+    val store = storeWith(adapter, fastBackoff.copy(enabled = true, maxRestarts = 3))
+
+    val failure = Await.result(store.write(rows3).runWith(Sink.ignore).failed, 30.seconds)
+
+    failure shouldBe a[JournalRowStoreException.BatchWriteRetriesExhausted]
+    val exhausted = failure.asInstanceOf[JournalRowStoreException.BatchWriteRetriesExhausted]
+    exhausted.attempts shouldBe 4
+    exhausted.getCause shouldBe a[BatchWriteUnprocessedItemsException]
+    adapter.batchAttempts shouldBe 4
+  }
+
+  "keep the backoff delay within the bounds for a large attempt number" in {
+    val config = fastBackoff.copy(minBackoff = 3.seconds, maxBackoff = 1.minute, randomFactor = 0.2)
+
+    Seq(1, 2, 5, 20, 53, 54, 64, 65, 1000, Int.MaxValue).foreach { attempt =>
+      val delay = JournalRowStore.backoffDelay(config, attempt)
+      withClue(s"attempt=$attempt: ") {
+        delay should be >= config.minBackoff
+        delay should be <= config.maxBackoff
+      }
+    }
+  }
+
   "reject two rows that resolve to the same key" in {
     val fixture = newFixture()
     val constantResolver: PartitionKeyResolver = new PartitionKeyResolver {

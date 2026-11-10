@@ -23,7 +23,8 @@ import org.apache.pekko.stream.scaladsl.Source
   * A transport or service failure fails the returned stream. A condition that did not hold is an `OperationResult`
   * value. An operation that the selected variant cannot carry, such as a transaction on a non-transactional variant,
   * also fails the stream before anything is rendered. A batch write that DynamoDB leaves partly unprocessed fails too,
-  * so the caller retries the whole idempotent batch instead of losing the unprocessed items.
+  * with `BatchWriteUnprocessedItemsException`, so the caller retries the whole idempotent batch instead of losing the
+  * unprocessed items.
   */
 trait DdbClientAdapter {
 
