@@ -150,6 +150,23 @@ final class SnapshotStoreSpec extends AnyFreeSpec with Matchers with ScalaFuture
       }
     }
 
+  private final class StatefulDeleteAdapter(initialRows: Map[RowKey, AttributeMap]) extends RecordingAdapter {
+    private var rows = initialRows
+
+    def remainingRows: Map[RowKey, AttributeMap] = synchronized(rows)
+
+    override def respond(operation: Operation): OperationResult = synchronized {
+      operation match {
+        case _: Operation.Query => OperationResult.Items(rows.values.toVector, None)
+        case Operation.BatchWrite(_, puts, deletes) if puts.isEmpty =>
+          rows --= deletes
+          // Like V1Responses/V2Responses.batch, count processed requests, including absent keys.
+          OperationResult.Written(deletes.size)
+        case other => fail(s"unexpected operation: $other")
+      }
+    }
+  }
+
   private final class FailingBatchAdapter(rows: Vector[AttributeMap], failures: Int, failure: () => Throwable)
       extends DdbClientAdapter {
     private val attempts = new AtomicInteger(0)
@@ -237,24 +254,48 @@ final class SnapshotStoreSpec extends AnyFreeSpec with Matchers with ScalaFuture
       )
     }
 
-    "deletes the found rows by their sharded key" in {
-      val adapter = adapterReturning(Vector(shardedItem))
-      val store =
-        new SnapshotStore(adapter, new SnapshotRowCodec(schema, sharded), consistentRead = false, 25, writeBackoff)
-
-      store.delete(PersistenceId("sample"), SequenceNumber(5)).runWith(Sink.ignore).futureValue
-
-      adapter.operations should have size 2
-      adapter.operations(1) shouldBe Operation.BatchWrite(
-        TableName("Snapshot"),
-        Vector.empty,
-        Vector(
-          RowKey(
-            TableName("Snapshot"),
-            AttributeMap.of(schema.partitionKey -> DdbValue.Str("sample-1"), schema.sortKey -> DdbValue.Str("sample-5"))
+    Vector(
+      ("deletes a found row when its stored key matches the current resolver", "sample-5", true),
+      ("leaves an index-readable row with an old sort key until migration to the current resolver", "old-5", false)
+    ).foreach { case (name, storedSortKey, deleted) =>
+      name in {
+        val storedItem = shardedItem.updated(schema.sortKey, DdbValue.Str(storedSortKey))
+        val storedKey = RowKey(
+          TableName("Snapshot"),
+          AttributeMap.of(
+            schema.partitionKey -> DdbValue.Str("sample-1"),
+            schema.sortKey      -> DdbValue.Str(storedSortKey)
           )
         )
-      )
+        val initialRows = Map(storedKey -> storedItem)
+        val adapter     = new StatefulDeleteAdapter(initialRows)
+        val store =
+          new SnapshotStore(adapter, new SnapshotRowCodec(schema, sharded), consistentRead = false, 25, writeBackoff)
+
+        val loaded = store.latest(PersistenceId("sample")).runWith(Sink.head).futureValue
+        loaded.map(_.persistenceId) shouldBe Some(row.persistenceId)
+        loaded.map(_.sequenceNumber) shouldBe Some(row.sequenceNumber)
+        loaded.map(_.snapshot.toVector) shouldBe Some(row.snapshot.toVector)
+        adapter.operations.head.asInstanceOf[Operation.Query].index shouldBe Some(IndexName("GetSnapshotRowsIndex"))
+
+        store.delete(PersistenceId("sample"), SequenceNumber(5)).runWith(Sink.ignore).futureValue
+
+        adapter.operations should have size 3
+        adapter.operations.last shouldBe Operation.BatchWrite(
+          TableName("Snapshot"),
+          Vector.empty,
+          Vector(
+            RowKey(
+              TableName("Snapshot"),
+              AttributeMap.of(
+                schema.partitionKey -> DdbValue.Str("sample-1"),
+                schema.sortKey      -> DdbValue.Str("sample-5")
+              )
+            )
+          )
+        )
+        adapter.remainingRows shouldBe (if (deleted) Map.empty[RowKey, AttributeMap] else initialRows)
+      }
     }
 
     "deletes a single row by its identity key in the legacy format" in {
