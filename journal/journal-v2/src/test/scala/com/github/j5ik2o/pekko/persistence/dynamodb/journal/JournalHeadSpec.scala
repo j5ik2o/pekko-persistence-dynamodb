@@ -1332,6 +1332,61 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
       headSequenceNr(pid) shouldBe Some(4L)
     }
 
+    "preserve a head-only aggregate through migration and recover above its retained watermark" in {
+      val pid = "head-only-hard-delete-migration-1"
+      withActor(headEnabledHardDeleteSystem, pid) { (actor, probe) =>
+        actor.tell(PersistAllPayloads(immutable.Seq("e1", "e2", "e3")), probe.ref)
+        probe.expectMsg(60.seconds, PersistedAll(3))
+        updateEvent(headEnabledHardDeleteSystem, pid, 3L, "updated-e3") shouldBe Done
+        actor.tell(DeleteTo(3L), probe.ref)
+        probe.expectMsg(60.seconds, Deleted())
+        headEnabledHardDeleteSystem.stop(actor)
+        expectStopped(probe, actor)
+      }
+
+      journalRows(pid) shouldBe empty
+      val snapshots = dynamoDBClient.scan(
+        new ScanRequest()
+          .withTableName(snapshotTableName)
+          .withConsistentRead(true)
+          .withFilterExpression("#pid = :pid")
+          .withExpressionAttributeNames(Map("#pid" -> "persistence-id").asJava)
+          .withExpressionAttributeValues(Map(":pid" -> new AttributeValue().withS(pid)).asJava)
+      )
+      snapshots.getItems.asScala shouldBe empty
+      val retainedHead = headItem(pid).get
+      retainedHead("sequence-nr").getN shouldBe "3"
+      retainedHead("revision").getN shouldBe "1"
+      headPayloads(headEnabledHardDeleteSystem, pid) shouldBe Seq(1L -> "e1", 2L -> "e2", 3L -> "updated-e3")
+
+      val client = newV2Client()
+      try {
+        Seq(false, true, true).foreach { execute =>
+          val result = JournalHeadMigration.run(
+            client,
+            journalTableName,
+            journalColumnsDefConfig,
+            headConfig,
+            execute = execute,
+            snapshotTable = Some(JournalHeadMigration.SnapshotTable(snapshotTableName, "persistence-id", "sequence-nr"))
+          )
+          result.snapshotTableScanned shouldBe true
+          result.raisedPersistenceIds should not contain pid
+          result.createdJournalHeads + result.updatedJournalHeads + result.existingJournalHeads shouldBe
+          result.scannedPersistenceIds
+          headItem(pid) shouldBe Some(retainedHead)
+          journalRows(pid) shouldBe empty
+          info(s"head-only migration execute=$execute result=$result; retained sequence=3 revision=1 events=1,2,3")
+        }
+      } finally client.close()
+
+      persistOk(headEnabledHardDeleteSystem, pid, "e4") shouldBe Persisted("e4")
+      journalPayloads(headEnabledHardDeleteSystem, pid) shouldBe Seq(4L -> "e4")
+      headSequenceNr(pid) shouldBe Some(4L)
+      headPayloads(headEnabledHardDeleteSystem, pid) shouldBe Seq(4L -> "e4")
+      info(s"head-only recovery journal=${journalSequenceNrs(pid)} head=${headSequenceNr(pid)}")
+    }
+
     "report the same counts in dry-run and execute and converge on a rerun" in {
       val journalOnlyPid  = "head-plan-journal-only-1"
       val snapshotOnlyPid = "head-plan-snapshot-only-1"
