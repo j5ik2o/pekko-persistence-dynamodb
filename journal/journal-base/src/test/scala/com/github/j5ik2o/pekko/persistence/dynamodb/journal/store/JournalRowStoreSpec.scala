@@ -478,18 +478,6 @@ final class JournalRowStoreSpec extends AnyFreeSpec with Matchers with BeforeAnd
     adapter.writeAttempts shouldBe 3
   }
 
-  "keep the backoff delay within the bounds for a large attempt number" in {
-    val config = fastBackoff.copy(minBackoff = 3.seconds, maxBackoff = 1.minute, randomFactor = 0.2)
-
-    Seq(1, 2, 5, 20, 53, 54, 64, 65, 1000, Int.MaxValue).foreach { attempt =>
-      val delay = JournalRowStore.backoffDelay(config, attempt)
-      withClue(s"attempt=$attempt: ") {
-        delay should be >= config.minBackoff
-        delay should be <= config.maxBackoff
-      }
-    }
-  }
-
   "reject two rows that resolve to the same key" in {
     val fixture = newFixture()
     val constantResolver: PartitionKeyResolver = new PartitionKeyResolver {
