@@ -94,7 +94,7 @@ trait DockerControllerHelperUtil extends DockerControllerHelper {
       catch {
         case scala.util.control.NonFatal(error) =>
           controller.removeContainer(_.withForce(true))
-          dockerClient.close()
+          if (controller.isDockerClientAutoClose) controller.dockerClient.close()
           throw error
       }
     }
