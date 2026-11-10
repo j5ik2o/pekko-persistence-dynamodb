@@ -150,7 +150,8 @@ final class JournalHeadConcurrentUpdateException(
   * DynamoDB throttled the request.
   *
   * The cancelled transaction wrote nothing. The plugin sent the same transaction again `attempts` times, so this
-  * failure means the contention or throttling lasted through every attempt. The caller can send the write again.
+  * failure means the contention or throttling lasted through every attempt. A direct caller can send the write again.
+  * The journal actor reports the failure through `onPersistFailure` and stops, so restart it before retrying.
   *
   * @param reason
   *   the last cancellation reason DynamoDB reported, for example `TransactionConflict` or

@@ -141,8 +141,9 @@ final class V2JournalRowWriteDriver(
   /** Sends the transaction and retries the cancellations DynamoDB reports as transient.
     *
     * A transaction that DynamoDB cancelled wrote nothing, so sending the same request again is safe. `write-backoff`
-    * bounds the retries and their delay. A cancellation this code cannot recover from fails immediately with a typed
-    * `JournalHeadException`, so the caller never sees the SDK exception for a reason it is expected to handle.
+    * bounds the retries; its `enabled` flag decides whether they wait between attempts, as on the update path. A
+    * cancellation this code cannot recover from fails immediately with a typed `JournalHeadException`, so the caller
+    * never sees the SDK exception for a reason it is expected to handle.
     */
   private def executeTransaction(
       request: JournalHeadWriteRequest,
@@ -169,10 +170,10 @@ final class V2JournalRowWriteDriver(
               case TransactionCancellation.Rejected(journalHeadException) =>
                 Source.failed(journalHeadException)
               case TransactionCancellation.Retryable(_) if attempt < maxWriteAttempts =>
-                Source
-                  .single(())
-                  .initialDelay(backoffDelay(attempt))
-                  .flatMapConcat(_ => executeTransaction(request, transactWriteItemsRequest, attempt + 1))
+                val next = executeTransaction(request, transactWriteItemsRequest, attempt + 1)
+                if (pluginConfig.writeBackoffConfig.enabled)
+                  Source.single(()).initialDelay(backoffDelay(attempt)).flatMapConcat(_ => next)
+                else next
               case TransactionCancellation.Retryable(reason) =>
                 Source.failed(
                   new JournalHeadConcurrentWriteException(
