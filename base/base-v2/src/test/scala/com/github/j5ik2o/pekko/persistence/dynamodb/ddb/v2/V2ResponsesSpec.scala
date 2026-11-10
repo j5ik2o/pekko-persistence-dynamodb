@@ -15,7 +15,13 @@
  */
 package com.github.j5ik2o.pekko.persistence.dynamodb.ddb.v2
 
-import com.github.j5ik2o.pekko.persistence.dynamodb.ddb.{ AttributeMap, AttributeName, DdbValue, OperationResult }
+import com.github.j5ik2o.pekko.persistence.dynamodb.ddb.{
+  AttributeMap,
+  AttributeName,
+  BatchWriteUnprocessedItemsException,
+  DdbValue,
+  OperationResult
+}
 import org.scalatest.freespec.AnyFreeSpec
 import org.scalatest.matchers.should.Matchers
 import software.amazon.awssdk.services.dynamodb.model.{
@@ -66,7 +72,7 @@ final class V2ResponsesSpec extends AnyFreeSpec with Matchers {
     OperationResult.Items(Vector.empty, Some(AttributeMap.of(AttributeName("k") -> DdbValue.Str("v"))))
   }
 
-  "an unprocessed batch item fails with the signal that SnapshotStore retries" in {
+  "an unprocessed batch item fails with the typed recoverable failure" in {
     val request = BatchWriteItemRequest
       .builder()
       .requestItems(Map("t" -> Vector(write()).asJava).asJava)
@@ -76,9 +82,10 @@ final class V2ResponsesSpec extends AnyFreeSpec with Matchers {
       .unprocessedItems(Map("t" -> Vector(write()).asJava).asJava)
       .build()
 
-    // SnapshotStore retries this type. Issue #887 replaces it, so update both places together.
     V2Responses.batch(request, response) match {
-      case Left(cause)   => cause shouldBe a[IllegalStateException]
+      case Left(cause) =>
+        cause shouldBe a[BatchWriteUnprocessedItemsException]
+        cause.asInstanceOf[BatchWriteUnprocessedItemsException].unprocessedItems shouldBe 1
       case Right(result) => fail(s"expected a batch failure, got $result")
     }
   }
