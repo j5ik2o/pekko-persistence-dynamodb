@@ -65,6 +65,29 @@ class FreezeTest(unittest.TestCase):
         for name in ("transcript.jsonl", "snapshot.json"):
             self.assertEqual((self.out / name).stat().st_mode & 0o777, 0o600)
 
+    def test_source_symlink_parent_keeps_filesystem_semantics(self):
+        actual = self.root / "actual"
+        (actual / "nested").mkdir(parents=True)
+        alias = self.root / "alias"
+        alias.symlink_to(actual / "nested", target_is_directory=True)
+        selected = actual / "source.jsonl"
+        prefix = META + line({"type": "message", "text": "selected explicit source"})
+        selected.write_bytes(prefix + CALL + MESSAGE)
+        explicit = alias / ".." / "source.jsonl"
+        self.assertNotEqual(selected.read_bytes(), self.source.read_bytes())
+        for name, mode, expected in [
+            ("eof", ("--at-eof",), selected.read_bytes()),
+            ("before", ("--before-call-id", "cut"), prefix),
+        ]:
+            with self.subTest(mode=name):
+                self.out = self.root / name
+                result = self.ok(self.create(*mode, extra=("--source", str(explicit),
+                    "--expected-cwd", "/synthetic/../synthetic")))
+                self.assertEqual((self.out / "transcript.jsonl").read_bytes(), expected)
+                self.assertEqual(result["source"]["input_path"], str(explicit))
+                self.assertEqual(result["source"]["resolved_path"], str(selected.resolve()))
+                self.ok(self.verify(result["manifest_sha256"]))
+
     def test_before_and_saved_append(self):
         result = self.ok(self.create("--before-call-id", "cut"))
         saved = (self.out / "transcript.jsonl").read_bytes()

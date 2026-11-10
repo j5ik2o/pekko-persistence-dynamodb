@@ -51,7 +51,7 @@ def sha(data):
 
 def absolute(value):
     require(isinstance(value, str) and os.path.isabs(value), "absolute_path_required")
-    return os.path.normpath(value)
+    return value
 
 
 def text(value):
@@ -66,7 +66,7 @@ def records(data):
     require(sum(e.get("type") == "session_meta" for e in events) == 1, "duplicate_session_meta")
     session = events[0].get("payload")
     require(isinstance(session, dict) and text(session.get("id")), "invalid_session_meta")
-    return lines, events, {"id": session["id"], "cwd": absolute(session.get("cwd"))}
+    return lines, events, {"id": session["id"], "cwd": os.path.normpath(absolute(session.get("cwd")))}
 
 
 def regular_read(path):
@@ -139,7 +139,7 @@ def verify(bundle, expected):
 
 def create(args):
     source = Path(absolute(args.source))
-    cwd = absolute(args.expected_cwd)
+    cwd = os.path.normpath(absolute(args.expected_cwd))
     require(text(args.expected_session_id), "invalid_expected_session")
     out = Path(os.path.abspath(args.out))
     require(not os.path.lexists(out), "output_exists")
