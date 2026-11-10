@@ -129,7 +129,7 @@ store supports transactions. Compare a record with the checkpoint in this order:
 | `events` is empty                                         | written by the migration tool: do not apply it and do not move the checkpoint, rebuild from the journal |
 | `sequence-nr` is lower                                    | discard the record, it was applied before                                   |
 | `sequence-nr` is equal and `revision` is not higher       | discard the record, it was applied before                                   |
-| `sequence-nr` is equal and `revision` is higher           | an in-place update of an event of that write: replace the stored events with the same sequence numbers by the events of the record, or rebuild them from the journal |
+| `sequence-nr` is equal and `revision` is higher           | an in-place update of an event of that write: replace the stored events with the same sequence numbers by the events of the record, or rebuild them from the journal, then move the checkpoint to (`sequence-nr`, `revision`) |
 | `sequence-nr` is higher                                   | a new write: apply its events and move the checkpoint to (`sequence-nr`, `revision`) |
 
 Each element of `events` is the bytes of a serialized `PersistentRepr`, the same value the journal row stores in
