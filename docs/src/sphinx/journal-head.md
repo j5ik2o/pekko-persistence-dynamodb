@@ -306,11 +306,33 @@ at most 400 KB for the `JournalHead` item) after the restart.
 
 ## In-place event updates
 
-`DynamoDBJournal.InPlaceUpdateEvent` rewrites the `message` column of one journal row and does not touch the
-`JournalHead` item. When `head.enabled` is true, the plugin refuses the update and the caller receives a
-`JournalHeadAsyncUpdateEventUnsupportedException`. The refusal keeps the journal and the head from disagreeing, so a
-consumer of the head stream never applies the old event after an update. Disable head mode for the journal, or persist a
-new event, instead of updating an event in place. Updating the head in the same transaction is a future change.
+`DynamoDBJournal.InPlaceUpdateEvent` rewrites one journal row. When `head.enabled` is true, the plugin also rewrites the
+matching event of the `JournalHead` item, and it writes both in one `TransactWriteItems` call. Either both change or
+neither does, so the head stream delivers the updated event and never disagrees with the journal.
+
+The `JournalHead` item holds only the events of its latest write, and its stream has already delivered every older
+event. The plugin therefore refuses an update of an event outside the latest write with a
+`JournalHeadAsyncUpdateEventUnsupportedException` and changes nothing. The other failures also leave both tables
+unchanged:
+
+| Failure                                   | Meaning                                                                                  |
+|:------------------------------------------|:-----------------------------------------------------------------------------------------|
+| `JournalHeadMissingException`             | the aggregate has no `JournalHead` item — run the migration                              |
+| `JournalHeadItemTooLargeException`        | the `JournalHead` item would exceed 400 KB with the new event                            |
+| `IllegalStateException`                   | the journal row does not exist although the head holds the event, or the head changed during three attempts |
+
+The transaction is conditional on the head events being the ones the plugin read, so a write that lands between the
+read and the transaction makes the plugin read the head again and retry, up to three attempts. Any other reason for
+which DynamoDB cancels the transaction is reported as an `IllegalStateException` without a retry.
+
+An update changes the message of an event and keeps its sequence number and the `sequence-nr` of the head. The
+stream therefore carries a record whose events have sequence numbers the consumer may already have applied. A consumer
+that skips events at or below its checkpoint ignores the update. Apply each event as an upsert by its sequence number,
+so that a record that carries the same sequence number with a new message replaces the stored event.
+
+A failure of the update itself, such as a DynamoDB error, now reaches the caller with its own type. Before, the head-less
+path relabelled every failure of `InPlaceUpdateEvent` as an `IllegalArgumentException` about serialization. Only a
+serialization failure keeps that type.
 
 ## Deleting events
 

@@ -2,25 +2,25 @@
 
 ## いまの状態
 
-テストが赤になった。head モードで `DynamoDBJournal.InPlaceUpdateEvent` を送ると、今は
-`JournalHeadAsyncUpdateEventUnsupportedException` で拒否される。そのため 6 件の新しいテストのうち 4 件が、この拒否の例外で失敗する。
-拒否が正しい 2 件 (最新でない番号、head なし) は、頭出しの確認として拒否のまま通る。
+直した。`head.enabled=true` の `InPlaceUpdateEvent` は、ジャーナル行と JournalHead のイベントを `TransactWriteItems` 1 回で更新する。
+変更の中心は `JournalRowStore.update` (journal-base)。deprecated ドライバと公開 API は変えていない。
 
-- テスト: `journal/journal-v2/src/test/scala/.../journal/JournalHeadSpec.scala` の `in-place` を含む 7 件
-- 赤の実行: `sbt -batch "journal-v2/testOnly *JournalHeadSpec -- -z in-place"` (Docker が必要)
+- 追加した結果: `JournalHeadSpec` の `in-place` 7 件が通る (修正前は 5 件が拒否の例外で失敗)
+- `JournalRowStoreSpec` に再試行と取り消しの 7 件を追加
+- `sbt test` 全体、`lint`、Scala 2.12 と 3.6 のコンパイル、sphinx の `-W` ビルドが通る
+- 独立レビューの指摘は 1 件ずつ仕分け済み (PR 本文に記載)
 
 ## 次の一手
 
-`JournalRowStore.update` を head 対応にする。head が有効なら、head を読み、対象イベントを差し替え、
-ジャーナル行の更新と head の置き換えを `TransactWrite` 1 回で送る。`DynamoDBJournal.asyncUpdateEvent` の拒否分岐は外す。
-deprecated ドライバと公開 API は変えない。
+PR のレビューコメント (Cursor Bugbot など) を待つ。届いたら「直す」「理由をつけて直さない」「聞く」に分ける。マージはしない。
 
 ## 未決の判断
 
-- 対象の番号が head の最新の書き込みに含まれない場合は、既存の `JournalHeadAsyncUpdateEventUnsupportedException` で拒否する想定。
-  head ストリームは古いイベントを配信済みで、書き換えを伝えられないため。
-- 同時更新で head が変わった場合の再試行回数と、使い切ったときの例外。新しい `JournalHeadException` の子クラスは公開 API の追加になるので作らない。
+- head ストリームの購読側が、チェックポイント以下のイベント番号を捨てる作りだと、更新を受け取れない。
+  ドキュメントに「イベント番号をキーに upsert する」と書いて対応した。head に版番号を足す案は、スキーマの変更になるので、この PR ではやらない。
+- head の最新の書き込みに含まれない番号は、既存の `JournalHeadAsyncUpdateEventUnsupportedException` で拒否している。古いイベントの更新も通したいなら別の設計になる。
+- 同時更新の再試行は 3 回で打ち切り、`IllegalStateException` で失敗する。専用の例外 (公開 API の追加) は作っていない。
 
 ## PR
 
-まだない。
+(PR を出したらここに URL を書く)

@@ -113,15 +113,16 @@ final class JournalHeadSequenceMismatchException(
       null
     )
 
-/** An in-place event update is not supported while head mode is enabled.
+/** An in-place event update was refused because the event is not in the latest write of the JournalHead item.
   *
-  * `asyncUpdateEvent` rewrites the `message` column of one journal row and does not touch the JournalHead item, so the
-  * head stream would keep the old event and the two tables would disagree. The update is refused instead of leaving the
-  * head stale. Updating the head in the same transaction is a future change.
+  * With head mode enabled, `asyncUpdateEvent` rewrites the journal row and the matching JournalHead event in one
+  * transaction. The JournalHead item keeps only the events of its latest write, and its stream has already delivered
+  * every older event, so the head cannot carry a change to an older event. The update is refused instead of changing
+  * only the journal row and leaving the head stream with the old event.
   */
 final class JournalHeadAsyncUpdateEventUnsupportedException(val persistenceId: String, val sequenceNr: Long)
     extends JournalHeadException(
-      s"persistenceId=[$persistenceId]: asyncUpdateEvent at sequence number $sequenceNr is not supported when head.enabled is true, because the JournalHead item would keep the old event. Disable head.enabled for this journal or persist a new event.",
+      s"persistenceId=[$persistenceId]: asyncUpdateEvent at sequence number $sequenceNr is refused when head.enabled is true, because the event is not in the latest write of the JournalHead item and the head stream would keep the old event.",
       null
     )
 

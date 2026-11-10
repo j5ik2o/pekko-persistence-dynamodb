@@ -20,8 +20,16 @@ import org.apache.pekko.stream.RestartSettings
 import org.apache.pekko.stream.scaladsl.{ RestartSource, Source }
 import com.github.j5ik2o.pekko.persistence.dynamodb.config.BackoffConfig
 import com.github.j5ik2o.pekko.persistence.dynamodb.ddb._
-import com.github.j5ik2o.pekko.persistence.dynamodb.journal.config.JournalHeadConfig
+import com.github.j5ik2o.pekko.persistence.dynamodb.journal.config.{ JournalHeadColumnsDefConfig, JournalHeadConfig }
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.dao.PersistenceIdWithSeqNr
+import com.github.j5ik2o.pekko.persistence.dynamodb.journal.head.{
+  DynamoDBItemSizeCalculator,
+  JournalHeadAsyncUpdateEventUnsupportedException,
+  JournalHeadEvent,
+  JournalHeadLimits,
+  JournalHeadMissingException,
+  JournalHeadRow
+}
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.schema.{ JournalKeyCodec, JournalRowCodec, JournalSchema }
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.write.WriteRejection
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.{
@@ -45,6 +53,11 @@ final class JournalRowStore(
     headConfig: Option[JournalHeadConfig]
 ) {
 
+  private val UpdateAttempts: Int    = 3
+  private val JournalRowIndex: Int   = 0
+  private val HeadIndex: Int         = 1
+  private val ConditionalCheckFailed = "ConditionalCheckFailed"
+
   val rowCodec: JournalRowCodec = new JournalRowCodec(schema)
   val keyCodec: JournalKeyCodec = new JournalKeyCodec(schema)
 
@@ -60,7 +73,11 @@ final class JournalRowStore(
         stream = Some(StreamView.NewImage)
       ),
       idColumn,
-      AttributeName(columns.sequenceNrColumnName)
+      AttributeName(columns.sequenceNrColumnName),
+      AttributeName(columns.eventsColumnName),
+      columns.eventSequenceNrColumnName,
+      columns.eventMessageColumnName,
+      columns
     )
   }
 
@@ -155,41 +172,165 @@ final class JournalRowStore(
     }
   }
 
-  def update(row: JournalRow): Source[Unit, NotUsed] = {
-    val updates = Vector(
-      AttributeUpdate.Set(schema.message, DdbValue.Bin(row.message.toVector)),
-      AttributeUpdate.Set(schema.ordering, DdbValue.Num(BigDecimal(row.ordering))),
-      AttributeUpdate.Set(schema.deleted, DdbValue.Bool(row.deleted))
-    ) ++ row.tags.map(tag => AttributeUpdate.Set(schema.tags, DdbValue.Str(tag))).toVector
+  /** Rewrites one journal row. With `head.enabled`, the JournalHead event of the same sequence number is rewritten in
+    * the same transaction, so the journal and the head stream cannot disagree about the event.
+    */
+  def update(row: JournalRow): Source[Unit, NotUsed] =
+    headTable match {
+      case None       => updateRow(row)
+      case Some(head) => updateRowAndHead(head, row, UpdateAttempts)
+    }
+
+  private def updateRow(row: JournalRow): Source[Unit, NotUsed] =
     run(
-      Operation.Update(schema.table, keyOf(row.persistenceId, row.sequenceNumber), updates),
+      Operation.Update(schema.table, keyOf(row.persistenceId, row.sequenceNumber), rowUpdates(row)),
       writeBackoffConfig
     ).map { result =>
       expectWritten(result)
       ()
     }
+
+  private def rowUpdates(row: JournalRow): Vector[AttributeUpdate] =
+    Vector(
+      AttributeUpdate.Set(schema.message, DdbValue.Bin(row.message.toVector)),
+      AttributeUpdate.Set(schema.ordering, DdbValue.Num(BigDecimal(row.ordering))),
+      AttributeUpdate.Set(schema.deleted, DdbValue.Bool(row.deleted))
+    ) ++ row.tags.map(tag => AttributeUpdate.Set(schema.tags, DdbValue.Str(tag))).toVector
+
+  /** The head keeps only the events of its latest write, so an event outside that write cannot be changed there. The
+    * update is refused for such an event, because the head stream has already delivered it.
+    *
+    * The head is read, replaced with the new event, and written back under the condition that its events are still the
+    * ones that were read. A concurrent write or update of another event fails that condition, and the whole read and
+    * write is tried again against the new head.
+    */
+  private def updateRowAndHead(head: HeadTable, row: JournalRow, attemptsLeft: Int): Source[Unit, NotUsed] = {
+    val persistenceId = row.persistenceId.asString
+    readHead(head, row.persistenceId).flatMapConcat {
+      case None =>
+        Source.failed(new JournalHeadMissingException(persistenceId, row.sequenceNumber.value))
+      case Some(headItem) =>
+        replaceHeadEvent(head, headItem, row) match {
+          case Left(failure) =>
+            Source.failed(failure)
+          case Right((observedEvents, newHeadItem)) =>
+            val transaction = Operation.TransactWrite(
+              Vector(
+                TransactItem.Update(
+                  schema.table,
+                  keyOf(row.persistenceId, row.sequenceNumber),
+                  rowUpdates(row),
+                  Some(Condition.AttributeExists(schema.partitionKey))
+                ),
+                TransactItem.Put(
+                  head.spec.table,
+                  newHeadItem,
+                  Some(Condition.Compare(Operand.Column(head.events), CompareOp.Eq, Operand.Literal(observedEvents)))
+                )
+              )
+            )
+            run(transaction, writeBackoffConfig).flatMapConcat {
+              case OperationResult.TransactionCommitted(_) =>
+                Source.single(())
+              case OperationResult.TransactionRejected(reasons) =>
+                val conditionFailed = reasons.collect { case ConditionFailure(index, ConditionalCheckFailed) => index }
+                def cannotUpdate(why: String): Source[Unit, NotUsed] =
+                  Source.failed(
+                    new IllegalStateException(
+                      s"persistenceId=[$persistenceId]: cannot update the event at sequence number ${row.sequenceNumber.value} because $why"
+                    )
+                  )
+                if (conditionFailed.contains(JournalRowIndex)) {
+                  cannotUpdate("its journal row does not exist, although the JournalHead item holds the event")
+                } else if (conditionFailed.contains(HeadIndex)) {
+                  // Only a failed condition on the head means the head changed after it was read. Any other
+                  // cancellation reason (a validation error, throttling, a transaction conflict) is not cured by
+                  // reading the head again at once, so it is reported as it is.
+                  if (attemptsLeft > 1) updateRowAndHead(head, row, attemptsLeft - 1)
+                  else cannotUpdate(s"the JournalHead item kept changing during $UpdateAttempts attempts")
+                } else {
+                  cannotUpdate(
+                    s"DynamoDB cancelled the transaction: ${reasons.filter(_.code != "None").mkString(", ")}"
+                  )
+                }
+              case other =>
+                Source.failed(new IllegalStateException(s"unexpected result for a transactional write: $other"))
+            }
+        }
+    }
   }
+
+  /** The events as they were read, and the head item with the event of the row replaced. */
+  private def replaceHeadEvent(
+      head: HeadTable,
+      headItem: AttributeMap,
+      row: JournalRow
+  ): Either[Throwable, (DdbValue, AttributeMap)] = {
+    val persistenceId = row.persistenceId.asString
+    val target        = BigDecimal(row.sequenceNumber.value)
+    def sequenceNrOf(event: DdbValue): Option[BigDecimal] = event match {
+      case DdbValue.M(entries) =>
+        entries.collectFirst { case (name, DdbValue.Num(value)) if name == head.eventSequenceNr => value }
+      case _ => None
+    }
+    headItem.get(head.events) match {
+      case Some(observed @ DdbValue.L(events)) if events.exists(event => sequenceNrOf(event).contains(target)) =>
+        val replaced = events.map {
+          case event @ DdbValue.M(entries) if sequenceNrOf(event).contains(target) =>
+            DdbValue.M(entries.map {
+              case (name, _) if name == head.eventMessage => name -> DdbValue.Bin(row.message.toVector)
+              case entry                                  => entry
+            })
+          case event => event
+        }
+        val headSequenceNr = headItem.get(head.sequenceNr).collect { case DdbValue.Num(value) => value.toLong }
+        val headRow = JournalHeadRow(
+          row.persistenceId,
+          SequenceNumber(headSequenceNr.getOrElse(row.sequenceNumber.value)),
+          replaced.collect { case event @ DdbValue.M(entries) =>
+            JournalHeadEvent(
+              SequenceNumber(sequenceNrOf(event).get.toLong),
+              entries
+                .collectFirst { case (name, DdbValue.Bin(bytes)) if name == head.eventMessage => bytes.toArray }
+                .getOrElse(Array.emptyByteArray)
+            )
+          }
+        )
+        val headSize = DynamoDBItemSizeCalculator.journalHeadItemSize(headRow, head.columns)
+        if (headSize > JournalHeadLimits.MaxItemSizeBytes) {
+          Left(
+            WriteRejection
+              .HeadItemTooLarge(persistenceId, headSize, JournalHeadLimits.MaxItemSizeBytes).toJournalHeadException
+          )
+        } else {
+          Right((observed, headItem.updated(head.events, DdbValue.L(replaced))))
+        }
+      case _ =>
+        Left(new JournalHeadAsyncUpdateEventUnsupportedException(persistenceId, row.sequenceNumber.value))
+    }
+  }
+
+  private def readHead(head: HeadTable, persistenceId: PersistenceId): Source[Option[AttributeMap], NotUsed] =
+    head.spec.keyOf(
+      AttributeMap.of(head.persistenceId -> DdbValue.Str(persistenceId.asString))
+    ) match {
+      case Left(error) =>
+        Source.failed(new IllegalArgumentException(s"cannot build the JournalHead row key: $error"))
+      case Right(key) =>
+        run(Operation.Get(head.spec.table, key, consistentRead = true), readBackoffConfig).map {
+          case OperationResult.Item(item) => item
+          case other => throw new IllegalStateException(s"unexpected result for a head read: $other")
+        }
+    }
 
   def headSequenceNr(persistenceId: PersistenceId): Source[Option[Long], NotUsed] =
     headTable match {
       case None =>
         Source.single(None)
       case Some(head) =>
-        head.spec.keyOf(
-          AttributeMap.of(head.persistenceId -> DdbValue.Str(persistenceId.asString))
-        ) match {
-          case Left(error) =>
-            Source.failed(new IllegalArgumentException(s"cannot build the JournalHead row key: $error"))
-          case Right(key) =>
-            run(Operation.Get(head.spec.table, key, consistentRead = true), readBackoffConfig).map {
-              case OperationResult.Item(Some(values)) =>
-                values.get(head.sequenceNr).collect { case DdbValue.Num(value) => value.toLong }
-              case OperationResult.Item(None) =>
-                None
-              case other =>
-                throw new IllegalStateException(s"unexpected result for a head read: $other")
-            }
-        }
+        readHead(head, persistenceId).map(
+          _.flatMap(_.get(head.sequenceNr).collect { case DdbValue.Num(value) => value.toLong })
+        )
     }
 
   private def readQuery(
@@ -298,7 +439,11 @@ final class JournalRowStore(
   private final class HeadTable(
       val spec: TableSpec,
       val persistenceId: AttributeName,
-      val sequenceNr: AttributeName
+      val sequenceNr: AttributeName,
+      val events: AttributeName,
+      val eventSequenceNr: String,
+      val eventMessage: String,
+      val columns: JournalHeadColumnsDefConfig
   )
 }
 
