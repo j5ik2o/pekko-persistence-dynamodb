@@ -100,7 +100,7 @@ of editing the JSON by hand.
 | `revision`       | `N`    | optional, raised by one on every in-place event update |
 
 Each element of `events` is a map of `sequence-nr` (`N`) and `message` (`B`), the bytes stored in the journal row's
-`message`.
+`message`. The item has no attribute for tags. See the Tags section.
 
 `events` holds all the events of one `persistAll(ev1, ev2, ...)` call, one `AtomicWrite`. Design the events so that
 their total size stays below 400 KB for the `JournalHead` item. See the Limits section.
@@ -164,6 +164,30 @@ model, and do not advance a checkpoint from it. The events between the old head 
 reached the stream. If the checkpoint of the consumer is behind the new `sequence-nr`, rebuild the read model for
 that persistence id from the journal before you continue. When the tool raises an existing item, it also removes
 `revision`, so the raised item reads as revision 0.
+
+## Tags
+
+The `JournalHead` item does not carry tags. A record of the head stream tells the consumer the persistence id, the
+sequence numbers, and the events of one write. It does not tell which tags those events had. This is by design: tags
+would make every `JournalHead` item larger, and the item size sets the write rate of an aggregate (see Capacity and
+cost).
+
+The tags of an event are stored in the `tags` attribute of its journal row only. The plugin removes the `Tagged`
+wrapper before it serializes the event. The journal row and the `JournalHead` item then store the same bytes in
+`message`, and those bytes hold the event without the wrapper and without the tags. The plugin joins the tags with
+`tag-separator` (default `,`) into one string. A row of an event without tags has no `tags` attribute.
+
+A consumer that routes or filters events by tag has two ways to get the tags:
+
+- **Derive the tags from the event.** If your event adapter chooses the tags from the event alone, deserialize the
+  `message` of the record as described in "Consuming the stream" and apply the same rule in the consumer.
+- **Read the journal row.** Query the `GetJournalRowsIndex` index of the journal table with the `persistence-id` and the
+  `sequence-nr` of the event, and read the `tags` attribute. The index projects all attributes. DynamoDB updates a
+  [global secondary index asynchronously](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/GSI.html#GSI.Writes),
+  so the row of a new record can be missing for a short time. The consumer must retry the query. This makes the
+  consumer depend on the journal table and adds a read for each record, or for each range of sequence numbers.
+
+The plugin does not provide a Pekko Persistence Query read journal, so `eventsByTag` is not available.
 
 ## Configuration
 
