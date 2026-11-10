@@ -39,6 +39,7 @@ import software.amazon.awssdk.services.dynamodb.{ DynamoDbClient => JavaDynamoDb
 import scala.collection.mutable
 import scala.jdk.CollectionConverters._
 import scala.util.Try
+import scala.util.control.NonFatal
 
 /** Creates the JournalHead items of the aggregates that were written before `head.enabled` was turned on.
   *
@@ -60,6 +61,47 @@ import scala.util.Try
   * the tool can be run as often as needed. Nothing is written unless `execute` is true.
   */
 object JournalHeadMigration {
+
+  private[journal] sealed trait Source
+  private[journal] case object Journal extends Source
+  private[journal] case object Snapshot extends Source
+  private[journal] sealed trait Progress
+  private[journal] final case class SourceStarted(source: Source) extends Progress
+  private[journal] final case class ScanPage(
+      source: Source,
+      pages: Long,
+      rowsObserved: Long,
+      distinctIdsObserved: Long,
+      sourceExhausted: Boolean
+  ) extends Progress
+  private[journal] case object SnapshotUnavailable extends Progress
+  private[journal] case object SnapshotSkipped extends Progress
+  private[journal] final case class PhaseStarted(phase: String) extends Progress
+
+  private[journal] def renderProgress(progress: Progress, execute: Boolean): String = {
+    def sourceName(source: Source): String = source match {
+      case Journal  => "journal"
+      case Snapshot => "snapshot"
+    }
+    val detail = progress match {
+      case SourceStarted(source) => s"phase=scan source=${sourceName(source)} started"
+      case ScanPage(source, pages, rows, ids, exhausted) =>
+        s"phase=scan source=${sourceName(source)} pages=$pages rows-observed=$rows ids-observed=$ids source-exhausted=$exhausted"
+      case SnapshotUnavailable => "phase=scan source=snapshot unavailable"
+      case SnapshotSkipped     => "phase=scan source=snapshot skipped"
+      case PhaseStarted(phase) => s"phase=$phase started"
+    }
+    val prefix = if (execute) "" else "[dry-run] "
+    s"${prefix}JournalHead migration progress $detail"
+  }
+
+  private[journal] def notifyProgress(emit: Progress => Unit, progress: Progress): Unit =
+    try emit(progress)
+    catch { case NonFatal(_) => () }
+
+  private[journal] def progressSink(args: Array[String], execute: Boolean): Progress => Unit =
+    if (args.contains("--progress")) progress => Console.err.println(renderProgress(progress, execute))
+    else _ => ()
 
   /** The snapshot table scanned by the migration, for aggregates whose journal events were all hard deleted. */
   final case class SnapshotTable(
@@ -102,21 +144,49 @@ object JournalHeadMigration {
       headConfig: JournalHeadConfig,
       execute: Boolean,
       snapshotTable: Option[SnapshotTable] = Some(SnapshotTable.default)
+  ): Result = runObserved(
+    syncClient,
+    journalTableName,
+    journalColumnsDefConfig,
+    headConfig,
+    execute,
+    snapshotTable,
+    _ => ()
+  )
+
+  private[journal] def runObserved(
+      syncClient: JavaDynamoDbSyncClient,
+      journalTableName: String,
+      journalColumnsDefConfig: JournalColumnsDefConfig,
+      headConfig: JournalHeadConfig,
+      execute: Boolean,
+      snapshotTable: Option[SnapshotTable],
+      emit: Progress => Unit
   ): Result = {
     val journalVersions = scanHighestSequenceNrs(
       syncClient,
       journalTableName,
       journalColumnsDefConfig.persistenceIdColumnName,
-      journalColumnsDefConfig.sequenceNrColumnName
+      journalColumnsDefConfig.sequenceNrColumnName,
+      Journal,
+      emit
     )
-    val snapshotVersions = snapshotTable.flatMap(table => scanSnapshotHighestSequenceNrs(syncClient, table))
+    val snapshotVersions = snapshotTable match {
+      case Some(table) => scanSnapshotHighestSequenceNrs(syncClient, table, emit)
+      case None =>
+        notifyProgress(emit, SnapshotSkipped)
+        None
+    }
     val persistenceIds =
       journalVersions.keySet ++ snapshotVersions.getOrElse(Map.empty[PersistenceId, SequenceNumber]).keySet
+    notifyProgress(emit, PhaseStarted("read-heads"))
     val currentHeads = persistenceIds.iterator
       .flatMap(persistenceId => readHeadSequenceNr(syncClient, headConfig, persistenceId).map(persistenceId -> _))
       .toMap
+    notifyProgress(emit, PhaseStarted("plan"))
     val plan = MigrationPlanner.plan(journalVersions, snapshotVersions, currentHeads)
     if (execute) {
+      notifyProgress(emit, PhaseStarted("execute"))
       val result = MigrationExecutor.execute(plan, headWriter(syncClient, headConfig))
       Result(
         plan.scannedPersistenceIds,
@@ -154,7 +224,8 @@ object JournalHeadMigration {
     */
   private def scanSnapshotHighestSequenceNrs(
       syncClient: JavaDynamoDbSyncClient,
-      snapshotTable: SnapshotTable
+      snapshotTable: SnapshotTable,
+      emit: Progress => Unit
   ): Option[Map[PersistenceId, SequenceNumber]] =
     try {
       Some(
@@ -162,19 +233,28 @@ object JournalHeadMigration {
           syncClient,
           snapshotTable.tableName,
           snapshotTable.persistenceIdColumnName,
-          snapshotTable.sequenceNrColumnName
+          snapshotTable.sequenceNrColumnName,
+          Snapshot,
+          emit
         )
       )
     } catch {
-      case _: ResourceNotFoundException => None
+      case _: ResourceNotFoundException =>
+        notifyProgress(emit, SnapshotUnavailable)
+        None
     }
 
   private def scanHighestSequenceNrs(
       syncClient: JavaDynamoDbSyncClient,
       tableName: String,
       persistenceIdColumnName: String,
-      sequenceNrColumnName: String
+      sequenceNrColumnName: String,
+      source: Source,
+      emit: Progress => Unit
   ): Map[PersistenceId, SequenceNumber] = {
+    notifyProgress(emit, SourceStarted(source))
+    var pages              = 0L
+    var rows               = 0L
     val result             = mutable.Map.empty[PersistenceId, SequenceNumber]
     var exclusiveStartKey  = Option.empty[java.util.Map[String, AttributeValue]]
     var hasMoreItemsToRead = true
@@ -200,6 +280,9 @@ object JournalHeadMigration {
       }
       exclusiveStartKey = Option(response.lastEvaluatedKey()).filterNot(_.isEmpty)
       hasMoreItemsToRead = exclusiveStartKey.nonEmpty
+      pages += 1L
+      rows += response.items().size().toLong
+      notifyProgress(emit, ScanPage(source, pages, rows, result.size.toLong, !hasMoreItemsToRead))
     }
     result.toMap
   }
@@ -358,13 +441,14 @@ object JournalHeadMigration {
         .createThrow(pluginConfig.v2SyncClientFactoryClassName)
         .create
       try {
-        val result = run(
+        val result = runObserved(
           client,
           pluginConfig.tableName,
           pluginConfig.columnsDefConfig,
           pluginConfig.headConfig,
           execute,
-          resolveSnapshotTable(args, config)
+          resolveSnapshotTable(args, config),
+          progressSink(args, execute)
         )
         val prefix = if (execute) "" else "[dry-run] "
         println(

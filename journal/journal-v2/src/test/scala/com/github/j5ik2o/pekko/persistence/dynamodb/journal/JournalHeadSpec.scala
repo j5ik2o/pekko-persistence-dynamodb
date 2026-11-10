@@ -502,7 +502,194 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
       .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create("x", "x")))
       .build()
 
+  private def migrationFixture(
+      execute: Boolean,
+      observe: Boolean,
+      fail: String = "",
+      throwingSink: Boolean = false,
+      snapshots: Boolean = true,
+      reverse: Boolean = false,
+      onFailure: (Vector[AnyRef], Vector[JournalHeadMigration.Progress]) => Unit = (_, _) => ()
+  ): (JournalHeadMigration.Result, Vector[AnyRef], Vector[JournalHeadMigration.Progress]) = {
+    import JournalHeadMigration._
+    import software.amazon.awssdk.services.dynamodb.model.{
+      ScanRequest => V2ScanRequest,
+      ScanResponse,
+      PutItemRequest => V2PutItemRequest,
+      PutItemResponse,
+      UpdateItemRequest,
+      UpdateItemResponse,
+      ResourceNotFoundException
+    }
+    val requests = scala.collection.mutable.ArrayBuffer.empty[AnyRef]
+    val progress = scala.collection.mutable.ArrayBuffer.empty[Progress]
+    var page     = 0
+    def row(id: String, sequence: String): java.util.Map[String, V2AttributeValue] = Map(
+      "persistence-id" -> V2AttributeValue.builder().s(id).build(),
+      "sequence-nr"    -> V2AttributeValue.builder().n(sequence).build()
+    ).asJava
+    val client = java.lang.reflect.Proxy
+      .newProxyInstance(
+        classOf[V2DynamoDbClient].getClassLoader,
+        Array(classOf[V2DynamoDbClient]),
+        new java.lang.reflect.InvocationHandler {
+          override def invoke(proxy: Any, method: java.lang.reflect.Method, args: Array[AnyRef]): AnyRef = {
+            val request = args(0)
+            requests += request
+            request match {
+              case scan: V2ScanRequest =>
+                scan.consistentRead().booleanValue() shouldBe true
+                scan.projectionExpression() shouldBe "#persistenceId, #sequenceNr"
+                if (scan.tableName() == "fixture-journal") {
+                  page += 1
+                  if (page == 2 && fail == "scan") throw new IllegalStateException("scan failure")
+                  val items = page match {
+                    case 1                     => List(row("p", if (reverse) "9" else "2"))
+                    case 2 if fail == "decode" => List(row("p", "bad"))
+                    case 2                     => List.empty[java.util.Map[String, V2AttributeValue]]
+                    case 3                     => List(row("p", if (reverse) "2" else "9"))
+                    case _                     => throw new AssertionError("unexpected extra page")
+                  }
+                  val response = ScanResponse.builder().items(items.asJava)
+                  if (page < 3) response.lastEvaluatedKey(row("cursor", page.toString))
+                  response.build()
+                } else {
+                  page shouldBe 3
+                  if (fail == "missing") throw ResourceNotFoundException.builder().message("missing").build()
+                  ScanResponse.builder().items(List(row("p", "12"), row("snapshot-only", "4")).asJava).build()
+                }
+              case get: GetItemRequest =>
+                page shouldBe 3
+                get.consistentRead().booleanValue() shouldBe true
+                val id = get.key().get("persistence-id").s()
+                id should not be "head-only"
+                if (id == "p") GetItemResponse.builder().item(row("p", "5")).build()
+                else GetItemResponse.builder().build()
+              case put: V2PutItemRequest =>
+                execute shouldBe true
+                put.conditionExpression() shouldBe "attribute_not_exists(#persistenceId)"
+                PutItemResponse.builder().build()
+              case update: UpdateItemRequest =>
+                execute shouldBe true
+                update.conditionExpression() shouldBe "#sequenceNr < :latest"
+                update.expressionAttributeValues().get(":latest").n() shouldBe (if (snapshots && fail != "missing") "12"
+                                                                                else "9")
+                UpdateItemResponse.builder().build()
+              case other => throw new AssertionError(s"unexpected request $other")
+            }
+          }
+        }
+      ).asInstanceOf[V2DynamoDbClient]
+    val snapshot = if (snapshots) Some(SnapshotTable("fixture-snapshot", "persistence-id", "sequence-nr")) else None
+    val result =
+      try {
+        if (observe) {
+          runObserved(
+            client,
+            "fixture-journal",
+            journalColumnsDefConfig,
+            headConfig,
+            execute,
+            snapshot,
+            event => {
+              progress += event
+              if (throwingSink) throw new IllegalStateException("sink failure")
+            }
+          )
+        } else
+          JournalHeadMigration.run(client, "fixture-journal", journalColumnsDefConfig, headConfig, execute, snapshot)
+      } catch {
+        case error: RuntimeException =>
+          onFailure(requests.toVector, progress.toVector)
+          throw error
+      }
+    (result, requests.toVector, progress.toVector)
+  }
+
   "JournalHead" should {
+    "observe complete migration scans without changing results or SDK requests" in {
+      import JournalHeadMigration._
+      for (execute <- Seq(false, true)) {
+        val silent   = migrationFixture(execute, observe = false)
+        val observed = migrationFixture(execute, observe = true)
+        observed._1 shouldBe silent._1
+        observed._2 shouldBe silent._2
+        val brokenSink = migrationFixture(execute, observe = true, throwingSink = true)
+        brokenSink._1 shouldBe silent._1
+        brokenSink._2 shouldBe silent._2
+        observed._1 shouldBe Result(2, 1, 1, 0, Seq("p"), snapshotTableScanned = true)
+        observed._3 shouldBe Vector(
+          SourceStarted(Journal),
+          ScanPage(Journal, 1L, 1L, 1L, false),
+          ScanPage(Journal, 2L, 1L, 1L, false),
+          ScanPage(Journal, 3L, 2L, 1L, true),
+          SourceStarted(Snapshot),
+          ScanPage(Snapshot, 1L, 2L, 2L, true),
+          PhaseStarted("read-heads"),
+          PhaseStarted("plan")
+        ) ++ (if (execute) Vector(PhaseStarted("execute")) else Vector.empty)
+        migrationFixture(execute, observe = true, reverse = true)._1 shouldBe observed._1
+        val skipped = migrationFixture(execute, observe = true, snapshots = false)
+        skipped._1 shouldBe Result(1, 0, 1, 0, Seq("p"), snapshotTableScanned = false)
+        skipped._3 should contain(SnapshotSkipped)
+        skipped._3 should not contain SnapshotUnavailable
+        val missing = migrationFixture(execute, observe = true, fail = "missing")
+        missing._1 shouldBe skipped._1
+        missing._3 should contain(SnapshotUnavailable)
+        missing._3 should not contain SnapshotSkipped
+      }
+    }
+
+    "stop before head reads and writes when a scan page fails or cannot decode" in {
+      import JournalHeadMigration._
+      for (failure <- Seq("scan", "decode")) {
+        var checked = false
+        val error = intercept[RuntimeException] {
+          migrationFixture(
+            execute = true,
+            observe = true,
+            fail = failure,
+            onFailure = (requests, progress) => {
+              requests.size shouldBe 2
+              progress shouldBe Vector(SourceStarted(Journal), ScanPage(Journal, 1L, 1L, 1L, false))
+              checked = true
+            }
+          )
+        }
+        if (failure == "scan") error.getMessage shouldBe "scan failure"
+        else error shouldBe a[NumberFormatException]
+        checked shouldBe true
+      }
+    }
+
+    "preserve a head-only watermark and attributes with progress enabled" in {
+      val pid = "migration-progress-head-only"
+      dynamoDBClient.putItem(
+        new PutItemRequest()
+          .withTableName(journalHeadTableName).withItem(
+            Map(
+              "persistence-id" -> new AttributeValue().withS(pid),
+              "sequence-nr"    -> new AttributeValue().withN("42"),
+              "events"         -> new AttributeValue().withL(java.util.Collections.emptyList[AttributeValue]()),
+              "revision"       -> new AttributeValue().withN("7")
+            ).asJava
+          )
+      )
+      val before = headItem(pid)
+      val client = newV2Client()
+      try {
+        JournalHeadMigration.runObserved(
+          client,
+          journalTableName,
+          journalColumnsDefConfig,
+          headConfig,
+          true,
+          None,
+          _ => ()
+        )
+        headItem(pid) shouldBe before
+      } finally client.close()
+    }
 
     "not write any JournalHead item when head.enabled is false" in {
       val pid = "head-disabled-1"
