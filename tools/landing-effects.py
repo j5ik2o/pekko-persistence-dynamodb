@@ -183,10 +183,14 @@ def load_yaml(raw):
     except yaml.YAMLError as exc:
         raise ValueError(f"invalid YAML: {exc}") from exc
 
+    seen = set()
     def check(node, ancestors):
         if isinstance(node, (list, dict)):
             if id(node) in ancestors:
                 raise ValueError("cyclic YAML")
+            if id(node) in seen:
+                raise ValueError("shared YAML alias expansion is unsupported")
+            seen.add(id(node))
             for child in (node.values() if isinstance(node, dict) else node):
                 check(child, ancestors | {id(node)})
     check(value, set())

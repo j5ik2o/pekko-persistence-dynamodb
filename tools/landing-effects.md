@@ -29,7 +29,7 @@ Numbered `.stdout` and `.stderr` files retain each API response. Source records 
 
 `analysis.json` records each workflow's direct push trigger as `excluded`, `potential`, or `unknown`, with the raw `on` configuration and JSON pointer. Definition-level trigger analysis remains separate from the observed enabled/disabled state. Disabling Bump therefore cannot remove an active Publish candidate.
 
-The parser uses PyYAML `BaseLoader` to preserve an unquoted `on` key. Duplicate keys, cycles, malformed YAML, and unsupported job/step shapes produce unknown evidence. A missing PyYAML dependency produces an explicit diagnostic. There is no regex YAML fallback.
+The parser uses PyYAML `BaseLoader` to preserve an unquoted `on` key. Duplicate keys, cycles, shared container aliases, malformed YAML, and unsupported job/step shapes produce unknown evidence. Shared aliases are not expanded, so nested alias fanout cannot multiply analysis work. A missing PyYAML dependency produces an explicit diagnostic. There is no regex YAML fallback.
 
 ## Analysis limits
 
@@ -46,3 +46,5 @@ Exit 0 means the requested evidence was saved and parsed. Unknowns normally rema
 ## Regression observations
 
 The fixtures preserve two contrasting inventories. PPD has an active main-push Publish with `sbt +publishSigned` even when Bump is disabled. Example has only a CI workflow, with opaque external actions and a local script. Neither inventory proves absence of external effects. The tests also cover literal triggers, unsupported filters, managed-workflow 404, missing collection, drift, reusable cycles, and malformed YAML. Live evidence belongs in local `target/` snapshots, with actual sources and observation times, rather than frozen claims about current repository settings.
+
+When checking temporary mutations, use a fresh `PYTHONPYCACHEPREFIX` for each run. Timestamp-based bytecode caching can otherwise load an earlier source version after its source has been restored.

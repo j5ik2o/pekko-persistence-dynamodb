@@ -117,6 +117,30 @@ class EvidenceTests(unittest.TestCase):
         report = self.report([], collection_complete=False)
         self.assertIn("missing_collection", {x["kind"] for x in report["unknowns"]})
 
+    def test_shared_aliases_remain_unknown(self):
+        raw = "on: push\njobs:\n  test:\n    steps:\n      - &step {run: echo hello}\n      - *step\n"
+        report = self.report([("shared", "active", raw)])
+        self.assertTrue(report["parse_failures"])
+        self.assertEqual(report["workflows"][0]["trigger"]["status"], "unknown")
+        self.assertIn("shared YAML alias", report["workflows"][0]["trigger"]["reason"])
+
+    def test_alias_fanout_returns_unknown_without_expansion(self):
+        raw = "on: push\njobs: {}\na0: &a0 [leaf]\n" + "".join(
+            f"a{i}: &a{i} [*a{i - 1}, *a{i - 1}]\n" for i in range(1, 28))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "raw.yaml").write_text(raw)
+            le.save(root / "snapshot.json", dict(collection_complete=True, destination_branch="main",
+                inventories={"base": [dict(path="fanout.yml", state="active", raw_file="raw.yaml",
+                    raw_sha256=le.digest(raw.encode()))]}))
+            process = subprocess.run([sys.executable, str(Path(le.__file__)), "analyze",
+                str(root / "snapshot.json")], capture_output=True, text=True, timeout=3)
+            self.assertEqual(process.returncode, 1, process.stdout + process.stderr)
+            report = json.loads(process.stdout)
+            self.assertTrue(report["parse_failures"])
+            self.assertEqual(report["workflows"][0]["trigger"]["status"], "unknown")
+            self.assertIn("shared YAML alias", report["workflows"][0]["trigger"]["reason"])
+
     def test_drift_and_changed_workflow_remain_visible(self):
         report = self.report([("publish", "active", PUBLISH)],
                              unknowns=[dict(kind="observation_drift")], inventories={"base": []})
