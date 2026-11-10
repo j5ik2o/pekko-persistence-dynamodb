@@ -190,6 +190,36 @@ final class CompiledSubtypesSpec extends AnyFreeSpec with Matchers {
     }
   }
 
+  "a different defining loader fails even when the artifact is the same" in {
+    withDirectory { directory =>
+      withRoot(directory) { parentRoot =>
+        val shadowed = prefix + "NonFinal"
+        val loader = new URLClassLoader(Array(directory.toUri.toURL), parentRoot.getClassLoader) {
+          override def loadClass(name: String, resolve: Boolean): Class[_] = synchronized {
+            if (name.startsWith(prefix) && name != shadowed) {
+              val loaded = Option(findLoadedClass(name)).getOrElse(findClass(name))
+              if (resolve) resolveClass(loaded)
+              loaded
+            } else super.loadClass(name, resolve)
+          }
+        }
+        try {
+          val root      = Class.forName(rootName, false, loader)
+          val collision = Class.forName(shadowed, false, loader)
+          Files.isSameFile(
+            Paths.get(root.getProtectionDomain.getCodeSource.getLocation.toURI),
+            Paths.get(collision.getProtectionDomain.getCodeSource.getLocation.toURI)
+          ) shouldBe true
+          root.getClassLoader should not be collision.getClassLoader
+          root.isAssignableFrom(collision) shouldBe false
+          val failure = intercept[IllegalStateException] { CompiledSubtypes.of(root) }
+          failure.getMessage should include(shadowed)
+          failure.getMessage should include("ClassLoader mismatch")
+        } finally loader.close()
+      }
+    }
+  }
+
   "missing and unsupported CodeSources fail with an actionable diagnostic" in {
     val bytes = {
       val stream = getClass.getClassLoader.getResourceAsStream(rootName.replace('.', '/') + ".class")
