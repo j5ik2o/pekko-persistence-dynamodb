@@ -25,10 +25,10 @@ def timestamp(value):
     require(text(value), 'missing_timestamp')
     try:
         result = datetime.fromisoformat(value.replace('Z', '+00:00'))
-        require(result.utcoffset() is not None, 'ambiguous_timestamp')
-        return result
     except ValueError:
         raise Unknown('invalid_timestamp') from None
+    require(result.utcoffset() is not None, 'ambiguous_timestamp')
+    return result
 
 
 def canonical(value):

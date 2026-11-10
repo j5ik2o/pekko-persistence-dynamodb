@@ -77,6 +77,17 @@ class CanaryTest(unittest.TestCase):
     def test_expiry(self):
         self.assessment('needs-canary', 'expired', age=10)
 
+    def test_timezone_missing_has_distinct_reason(self):
+        for key in ['requestedAt', 'startedAt', 'endedAt']:
+            with self.subTest(key=key):
+                export = copy.deepcopy(self.export)
+                export['records'][0]['identity'][key] = self.record['identity'][key].removesuffix('Z')
+                self.assessment('unknown', 'ambiguous_timestamp', export)
+
+    def test_malformed_timestamp_has_invalid_reason(self):
+        self.record['identity']['startedAt'] = 'not-a-date'
+        self.assessment('unknown', 'invalid_timestamp')
+
     def test_ambiguous_models_and_missing_config(self):
         for value in [None, '', 'auto', 'ambiguous', 'unknown']:
             with self.subTest(value=value):
