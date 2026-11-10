@@ -995,6 +995,9 @@ journal-base	journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persist
 journal-base	journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/dao/JournalRowDriver.scala	JournalRowWriteDriver	def singleDeleteJournalRowFlow: Flow[PersistenceIdWithSeqNr, Long, NotUsed]
 journal-base	journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/dao/JournalRowDriver.scala	JournalRowWriteDriver	def singlePutJournalRowFlow: Flow[JournalRow, Long, NotUsed]
 journal-base	journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/dao/JournalRowDriver.scala	JournalRowWriteDriver	def updateMessage(journalRow: JournalRow): Source[Unit, NotUsed]
+journal-base	journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/dao/JournalWriteQueueException.scala		final class JournalWriteQueueClosedException
+journal-base	journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/dao/JournalWriteQueueException.scala		final class JournalWriteQueueFullException(val bufferSize: Int)
+journal-base	journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/dao/JournalWriteQueueException.scala		sealed abstract class JournalWriteQueueException(message: String) extends RuntimeException(message, null)
 journal-base	journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/dao/PersistenceIdWithSeqNr.scala		final case class PersistenceIdWithSeqNr(persistenceId: PersistenceId, sequenceNumber: SequenceNumber)
 journal-base	journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/dao/WriteJournalDao.scala		trait JournalDaoWithReadMessages
 journal-base	journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/dao/WriteJournalDao.scala		trait JournalDaoWithUpdates extends WriteJournalDao

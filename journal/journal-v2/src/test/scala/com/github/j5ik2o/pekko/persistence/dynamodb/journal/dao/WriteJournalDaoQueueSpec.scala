@@ -37,15 +37,10 @@ import scala.concurrent.duration._
 import scala.concurrent.{ Await, ExecutionContext, Future, Promise, TimeoutException }
 import scala.util.{ Failure, Try }
 
-/** The failure types are asserted by name so that this spec compiles before the typed failures exist. The fix replaces
-  * each name with the type it imports.
+/** Exercises the two ways the bounded write queue can refuse a write without reaching a row driver: a full buffer and a
+  * closed queue. The driver doubles keep the spec local to the plugin, so it starts no DynamoDB container.
   */
 object WriteJournalDaoQueueSpec {
-
-  val fullQueueFailureClassName: String =
-    "com.github.j5ik2o.pekko.persistence.dynamodb.journal.dao.JournalWriteQueueFullException"
-  val closedQueueFailureClassName: String =
-    "com.github.j5ik2o.pekko.persistence.dynamodb.journal.dao.JournalWriteQueueClosedException"
 
   /** Creates the driver that `JournalPluginContext` needs. The queue spec passes its own driver to the DAO. */
   final class NoopJournalRowWriteDriverFactory(pluginContext: JournalPluginContext)
@@ -92,7 +87,8 @@ object WriteJournalDaoQueueSpec {
       Flow[Seq[PersistenceIdWithSeqNr]].map(_.size.toLong)
   }
 
-  /** Holds the single write of the queue in flight until the spec releases it, so the queue has no downstream demand. */
+  /** Holds the single write of the queue in flight until the spec releases it, so the queue has no downstream demand.
+    */
   final class BlockingJournalRowWriteDriver(actorSystem: ActorSystem) extends NoopJournalRowWriteDriver(actorSystem) {
     private implicit val ec: ExecutionContext = actorSystem.dispatcher
     private val startedPromise                = Promise[Unit]()
@@ -114,13 +110,13 @@ final class WriteJournalDaoQueueSpec extends AnyFreeSpec with Matchers with Befo
 
   import WriteJournalDaoQueueSpec._
 
-  private implicit val system: ActorSystem        = ActorSystem("write-journal-dao-queue-spec")
-  private implicit val ec: ExecutionContext       = system.dispatcher
+  private implicit val system: ActorSystem  = ActorSystem("write-journal-dao-queue-spec")
+  private implicit val ec: ExecutionContext = system.dispatcher
 
   private val testFactoryClassName = classOf[NoopJournalRowWriteDriverFactory].getName
-  private val persistenceId       = PersistenceId("write-journal-dao-queue-spec")
+  private val persistenceId        = PersistenceId("write-journal-dao-queue-spec")
   private val row =
-    JournalRow(persistenceId, SequenceNumber(1L), deleted = false, message = Array.emptyByteArray, ordering = 0L)
+    JournalRow(persistenceId, SequenceNumber(1L), deleted = false, message = Array.empty[Byte], ordering = 0L)
 
   override def afterAll(): Unit = {
     if (system != null) Await.result(system.terminate(), 30.seconds)
@@ -168,7 +164,8 @@ final class WriteJournalDaoQueueSpec extends AnyFreeSpec with Matchers with Befo
     new WriteJournalDaoImpl(pluginContext, driver, serializer)(pluginContext.pluginExecutor, system)
   }
 
-  /** Offers writes until the shut-down queue refuses one. A write accepted just before the queue completes is retried. */
+  /** Offers writes until the shut-down queue refuses one. A write accepted just before the queue completes is retried.
+    */
   private def awaitClosedQueueFailure(dao: WriteJournalDaoImpl): Throwable = {
     val deadline = 10.seconds.fromNow
     @tailrec
@@ -193,7 +190,7 @@ final class WriteJournalDaoQueueSpec extends AnyFreeSpec with Matchers with Befo
       val overflow = Vector.fill(10)(dao.putMessages(Seq(row)).runWith(Sink.head))
       val failure  = Await.result(Future.firstCompletedOf(overflow.map(_.failed)), 10.seconds)
 
-      failure.getClass.getName shouldBe fullQueueFailureClassName
+      failure shouldBe a[JournalWriteQueueFullException]
       failure.getMessage should include("queue-buffer-size")
 
       driver.release()
@@ -211,7 +208,7 @@ final class WriteJournalDaoQueueSpec extends AnyFreeSpec with Matchers with Befo
 
       val failure = awaitClosedQueueFailure(dao)
 
-      failure.getClass.getName shouldBe closedQueueFailureClassName
+      failure shouldBe a[JournalWriteQueueClosedException]
     } finally dao.dispose()
   }
 
