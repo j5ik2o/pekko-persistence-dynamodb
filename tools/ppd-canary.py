@@ -163,7 +163,7 @@ def assess(export, as_of, max_age, directory):
     except Unknown as error:
         result['reason_codes'] = [str(error)]
         result['unobserved_items'].append('sufficient_matching_completion_evidence')
-    except (AttributeError, TypeError, KeyError):
+    except (AttributeError, TypeError, KeyError, ValueError):
         result['reason_codes'] = ['invalid_export_shape']
         result['unobserved_items'].append('sufficient_matching_completion_evidence')
     return result
@@ -195,7 +195,7 @@ def main():
     except (OSError, ValueError):
         parser.exit(2, 'Cannot read export or invalid JSON/time/age. No file contents displayed.\n')
     print(json.dumps(assess(data, as_of, args.max_age_seconds, args.export.parent),
-                     sort_keys=True, ensure_ascii=False, allow_nan=False))
+                     sort_keys=True, ensure_ascii=True, allow_nan=False))
 
 
 if __name__ == '__main__':

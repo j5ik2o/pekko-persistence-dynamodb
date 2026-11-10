@@ -88,6 +88,26 @@ class CanaryTest(unittest.TestCase):
         self.record['identity']['startedAt'] = 'not-a-date'
         self.assessment('unknown', 'invalid_timestamp')
 
+    def test_invalid_configuration_unicode_is_unknown(self):
+        self.export['target']['requested_config']['modelSelector'] = '\ud800'
+        self.assessment('unknown', 'invalid_export_shape')
+
+    def test_nul_evidence_path_is_unknown(self):
+        for kind in ['artifact', 'log']:
+            with self.subTest(kind=kind):
+                export = copy.deepcopy(self.export)
+                record = export['records'][0]
+                item = record['artifact'] if kind == 'artifact' else record['verification']['log']
+                item['path'] = 'bad\0path'
+                self.assessment('unknown', 'invalid_export_shape', export)
+
+    def test_echoed_metadata_unicode_does_not_abort_json(self):
+        self.record['identity']['task'] = '\ud800'
+        self.record['observed']['executedModel'] = '\ud800'
+        result = self.assessment('pass')
+        self.assertEqual(result['adopted_record']['task'], '\ud800')
+        self.assertEqual(result['actual_model'], 'unknown')
+
     def test_ambiguous_models_and_missing_config(self):
         for value in [None, '', 'auto', 'ambiguous', 'unknown']:
             with self.subTest(value=value):
