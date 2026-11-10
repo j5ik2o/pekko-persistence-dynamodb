@@ -47,14 +47,19 @@ final class InMemoryDdbAdapter(keyColumns: Map[TableName, Vector[AttributeName]]
     case Operation.Delete(table, key, _) =>
       tables.get(table).foreach(_.remove(id(key.values.entries)))
       OperationResult.Written(1)
-    case Operation.Update(table, key, updates, _) =>
-      val current = tables.get(table).flatMap(_.get(id(key.values.entries))).getOrElse(key.values)
-      val updated = updates.foldLeft(current) {
-        case (item, AttributeUpdate.Set(name, value)) => item.updated(name, value)
-        case (item, AttributeUpdate.Remove(name))     => item.removed(name)
+    case Operation.Update(table, key, updates, condition) =>
+      val existing = tables.get(table).flatMap(_.get(id(key.values.entries)))
+      val current  = existing.getOrElse(key.values)
+      if (condition.exists(c => !matchesCondition(existing.getOrElse(AttributeMap.empty), c))) {
+        OperationResult.ConditionRejected(Vector(ConditionFailure(0, "ConditionalCheckFailed")))
+      } else {
+        val updated = updates.foldLeft(current) {
+          case (item, AttributeUpdate.Set(name, value)) => item.updated(name, value)
+          case (item, AttributeUpdate.Remove(name))     => item.removed(name)
+        }
+        tableItems(table).update(id(key.values.entries), updated)
+        OperationResult.Written(1)
       }
-      tableItems(table).update(id(key.values.entries), updated)
-      OperationResult.Written(1)
     case query: Operation.Query =>
       select(query)
     case Operation.BatchWrite(table, puts, deletes) =>
