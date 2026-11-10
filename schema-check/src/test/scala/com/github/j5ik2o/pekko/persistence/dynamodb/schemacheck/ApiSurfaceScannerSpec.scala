@@ -47,6 +47,101 @@ final class ApiSurfaceScannerSpec extends AnyFreeSpec with Matchers {
     PublicApiSurface.missing(before, after).map(_.header) should contain("def decodeTags(value: String): String")
   }
 
+  "multiline implementations keep local declarations opaque and preserve following members" in {
+    val declarations = scan("""class Store {
+      |  def load: Int =
+      |    List(1).map { value =>
+      |      val localDef = value
+      |      localDef
+      |    }.head
+      |  val cached: Int =
+      |    List(1).map { value =>
+      |      val localVal = value
+      |      localVal
+      |    }.head
+      |  var updated: Int =
+      |    {
+      |      val localVar = 1
+      |      localVar
+      |    }
+      |  def following: Int = 1
+      |}
+      |""".stripMargin)
+    declarations.map(d => (d.owner, d.header)) should contain theSameElementsAs Vector(
+      "" -> "class Store",
+      "Store" -> "def load: Int",
+      "Store" -> "val cached: Int",
+      "Store" -> "var updated: Int",
+      "Store" -> "def following: Int"
+    )
+  }
+
+  "multiline type headers retain inheritance and distinct member owners" in {
+    val source = """object Rejections {
+      |  case class First(value: Int)
+      |      extends Rejection {
+      |    override def convert: Int = value
+      |  }
+      |  case class Second(
+      |      value: Int
+      |  )
+      |      extends Rejection
+      |      with Product {
+      |    override def convert: Int = value
+      |  }
+      |  class Store[A] extends Parent[
+      |    A
+      |  ] {
+      |    def get: A
+      |  }
+      |  class Separate
+      |  class Next
+      |  {
+      |    val member: Int = 1
+      |  }
+      |}
+      |""".stripMargin
+    val before = scan(source)
+    before.map(d => (d.owner, d.header)) should contain allOf (
+      "Rejections" -> "case class First(value: Int) extends Rejection",
+      "Rejections" -> "case class Second( value: Int ) extends Rejection with Product",
+      "Rejections.First" -> "override def convert: Int",
+      "Rejections.Second" -> "override def convert: Int",
+      "Rejections.Store" -> "def get: A",
+      "Rejections" -> "class Separate",
+      "Rejections.Next" -> "val member: Int"
+    )
+    val after = scan(source.replace("override def convert: Int = value", ""))
+    PublicApiSurface.missing(before, after).map(_.owner) should contain allOf (
+      "Rejections.First", "Rejections.Second"
+    )
+  }
+
+  "abstract signatures and type aliases do not swallow following declarations" in {
+    val declarations = scan("""trait Api {
+      |  def abstractMethod[A](value: A): A
+      |  val abstractValue: Int
+      |  type Alias = List[
+      |    String
+      |  ]
+      |  def concrete: String = "value"
+      |  def following: Int = 1
+      |}
+      |""".stripMargin)
+    declarations.map(_.header) should contain allOf (
+      "def abstractMethod[A](value: A): A", "val abstractValue: Int", "type Alias",
+      "def concrete: String", "def following: Int"
+    )
+  }
+
+  private def scan(source: String): Vector[ApiDeclaration] = {
+    val root = Files.createTempDirectory("api-surface-")
+    val file = root.resolve("base/base/src/main/scala/example/Api.scala")
+    Files.createDirectories(file.getParent)
+    write(file, source)
+    PublicApiSurface.of(root)
+  }
+
   private def write(path: Path, text: String): Unit =
     Files.write(path, text.getBytes(StandardCharsets.UTF_8))
 }
