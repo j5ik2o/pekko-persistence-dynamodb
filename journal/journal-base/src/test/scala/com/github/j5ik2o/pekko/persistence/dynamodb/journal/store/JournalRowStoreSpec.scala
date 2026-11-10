@@ -421,6 +421,63 @@ final class JournalRowStoreSpec extends AnyFreeSpec with Matchers with BeforeAnd
     attempts.get shouldBe 3
   }
 
+  /** Fails every single-row write after `attemptDuration`, which is longer than `min-backoff`. */
+  private final class SlowFailingWriteAdapter(delegate: InMemoryDdbAdapter, attemptDuration: FiniteDuration)
+      extends DdbClientAdapter {
+    private val attempts = new AtomicInteger(0)
+
+    def writeAttempts: Int = attempts.get()
+
+    override val capabilities: CapabilityProfile = delegate.capabilities
+
+    override def run(operation: Operation): Source[OperationResult, NotUsed] = operation match {
+      case _: Operation.Put | _: Operation.Delete =>
+        attempts.incrementAndGet()
+        Source
+          .single(()).initialDelay(attemptDuration).flatMapConcat(_ => Source.failed(new IllegalStateException("slow")))
+      case _ => delegate.run(operation)
+    }
+
+    override def queryAll(query: Operation.Query): Source[AttributeMap, NotUsed] = delegate.queryAll(query)
+
+    override def close(): Unit = delegate.close()
+  }
+
+  private def slowBackoffOf(maxRestarts: Int): BackoffConfig =
+    fastBackoff.copy(
+      enabled = true,
+      minBackoff = 20.millis,
+      maxBackoff = 30.millis,
+      randomFactor = 0.0,
+      maxRestarts = maxRestarts
+    )
+
+  "stop a single-row write after the configured restarts when each attempt is slower than the minimum backoff" in {
+    val adapter = new SlowFailingWriteAdapter(newFixture().adapter, 150.millis)
+    val store   = storeWith(adapter, slowBackoffOf(maxRestarts = 2))
+
+    val failure = Await.result(
+      store.write(Seq(JournalTestSupport.row(persistenceId, 1L, "e1"))).runWith(Sink.ignore).failed,
+      10.seconds
+    )
+
+    failure shouldBe an[IllegalStateException]
+    adapter.writeAttempts shouldBe 3
+  }
+
+  "stop a single-row delete after the configured restarts when each attempt is slower than the minimum backoff" in {
+    val adapter = new SlowFailingWriteAdapter(newFixture().adapter, 150.millis)
+    val store   = storeWith(adapter, slowBackoffOf(maxRestarts = 2))
+
+    val failure = Await.result(
+      store.delete(Seq(PersistenceIdWithSeqNr(persistenceId, SequenceNumber(1)))).runWith(Sink.ignore).failed,
+      10.seconds
+    )
+
+    failure shouldBe an[IllegalStateException]
+    adapter.writeAttempts shouldBe 3
+  }
+
   "keep the backoff delay within the bounds for a large attempt number" in {
     val config = fastBackoff.copy(minBackoff = 3.seconds, maxBackoff = 1.minute, randomFactor = 0.2)
 
