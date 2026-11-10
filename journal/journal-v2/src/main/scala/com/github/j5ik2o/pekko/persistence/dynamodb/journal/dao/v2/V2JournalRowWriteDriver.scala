@@ -19,6 +19,7 @@ import org.apache.pekko.NotUsed
 import org.apache.pekko.actor.ActorSystem
 import org.apache.pekko.stream.{ Materializer, SystemMaterializer }
 import org.apache.pekko.stream.scaladsl.{ Flow, Sink, Source }
+import com.github.j5ik2o.pekko.persistence.dynamodb.client.Backoff
 import com.github.j5ik2o.pekko.persistence.dynamodb.client.v2.StreamWriteClient
 import com.github.j5ik2o.pekko.persistence.dynamodb.ddb._
 import com.github.j5ik2o.pekko.persistence.dynamodb.ddb.v2.{ V2ClientAdapter, V2OperationRenderer, V2RenderedOperation }
@@ -40,7 +41,6 @@ import scala.concurrent.{ ExecutionContext, Future }
 import scala.jdk.CollectionConverters._
 
 import java.io.IOException
-import java.util.concurrent.{ ThreadLocalRandom, TimeUnit }
 
 @deprecated(
   "Use com.github.j5ik2o.pekko.persistence.dynamodb.journal.store.JournalRowStore; this driver delegates to it.",
@@ -198,13 +198,8 @@ final class V2JournalRowWriteDriver(
 
   private val maxWriteAttempts: Int = math.max(0, pluginConfig.writeBackoffConfig.maxRestarts) + 1
 
-  private def backoffDelay(attempt: Int): FiniteDuration = {
-    val writeBackoffConfig = pluginConfig.writeBackoffConfig
-    val base =
-      math.min(writeBackoffConfig.maxBackoff.toMillis, writeBackoffConfig.minBackoff.toMillis << (attempt - 1))
-    val jitter = 1.0 + ThreadLocalRandom.current().nextDouble() * writeBackoffConfig.randomFactor
-    FiniteDuration(math.min(writeBackoffConfig.maxBackoff.toMillis, (base * jitter).toLong), TimeUnit.MILLISECONDS)
-  }
+  private def backoffDelay(attempt: Int): FiniteDuration =
+    Backoff.backoffDelay(pluginConfig.writeBackoffConfig, attempt)
 
   /** The async client fails the future with the SDK exception, sometimes wrapped in another exception. */
   @scala.annotation.tailrec
@@ -258,7 +253,8 @@ final class V2JournalRowWriteDriver(
       // The head is written only if it is behind the first sequence number of this write, or if it does not exist
       // and this write starts at sequence number 1. A head that is ahead (a rewind, or another writer that already
       // wrote these sequence numbers) fails. The gap is allowed on purpose: Pekko does not rewind the sequence
-      // number of a rejected write, so the write after a rejection starts above the head by more than one.
+      // number of a write that it rejects itself (an event that cannot be serialized), so the write after that
+      // rejection starts above the head by more than one.
       //
       // This is not optimistic locking. It checks that the assumption "there is only one writer per aggregate"
       // (kept by Cluster Sharding and Split Brain Resolver) still holds.

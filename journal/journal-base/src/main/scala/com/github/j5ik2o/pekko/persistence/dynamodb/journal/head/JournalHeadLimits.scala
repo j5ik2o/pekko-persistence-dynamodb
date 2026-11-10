@@ -17,9 +17,9 @@ package com.github.j5ik2o.pekko.persistence.dynamodb.journal.head
 
 /** Limits of the JournalHead write path.
   *
-  * The limits are fixed on purpose. A write that exceeds them is rejected with a reason; it is neither split into
-  * several transactions nor written without a transaction, because both would weaken the ordering guarantee the
-  * JournalHead table exists for.
+  * The limits are fixed on purpose. A write that exceeds them fails with a reason; it is neither split into several
+  * transactions nor written without a transaction, because both would weaken the ordering guarantee the JournalHead
+  * table exists for.
   */
 object JournalHeadLimits {
 

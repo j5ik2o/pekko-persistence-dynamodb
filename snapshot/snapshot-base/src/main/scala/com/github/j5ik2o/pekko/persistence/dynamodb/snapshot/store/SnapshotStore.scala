@@ -15,9 +15,9 @@
  */
 package com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.store
 
-import java.util.concurrent.ThreadLocalRandom
 import org.apache.pekko.NotUsed
 import org.apache.pekko.stream.scaladsl.Source
+import com.github.j5ik2o.pekko.persistence.dynamodb.client.Backoff
 import com.github.j5ik2o.pekko.persistence.dynamodb.config.BackoffConfig
 import com.github.j5ik2o.pekko.persistence.dynamodb.ddb._
 import com.github.j5ik2o.pekko.persistence.dynamodb.model.{ PersistenceId, SequenceNumber }
@@ -28,8 +28,6 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.schema.{
   SnapshotSchema,
   SnapshotTableSpec
 }
-
-import scala.concurrent.duration.{ DurationLong, FiniteDuration }
 
 final class SnapshotStore(
     adapter: DdbClientAdapter,
@@ -151,8 +149,9 @@ final class SnapshotStore(
 
   /** DynamoDB can leave a batch write partly unprocessed. The adapter reports that transient condition as a
     * `BatchWriteUnprocessedItemsException`, so retry only that failure. Other failures propagate unchanged, because a
-    * permanent service error is not retryable. The write path has no other retry, so the bound and timings from
-    * write-backoff apply even when its `enabled` flag is false.
+    * permanent service error is not retryable. The write path has no other retry, so the bound from write-backoff
+    * (`max-restarts`) applies even when its `enabled` flag is false. The flag decides only whether the retries wait:
+    * enabled waits the backoff between attempts, disabled sends the batch again at once, as the journal does.
     */
   private def deleteBatch(keys: Vector[RowKey]): Source[Unit, NotUsed] = {
     val operation   = Operation.BatchWrite(tableSpec.table.table, Vector.empty, keys)
@@ -164,7 +163,12 @@ final class SnapshotStore(
           1,
           {
             case _: BatchWriteUnprocessedItemsException if attemptNo < maxAttempts =>
-              Source.single(()).delay(backoffDelay(attemptNo - 1)).flatMapConcat(_ => attempt(attemptNo + 1))
+              if (writeBackoffConfig.enabled)
+                Source
+                  .single(()).initialDelay(Backoff.backoffDelay(writeBackoffConfig, attemptNo)).flatMapConcat(_ =>
+                    attempt(attemptNo + 1)
+                  )
+              else attempt(attemptNo + 1)
             case cause: BatchWriteUnprocessedItemsException =>
               Source.failed(
                 new SnapshotStoreException.BatchWriteRetriesExhausted(
@@ -180,15 +184,6 @@ final class SnapshotStore(
       case OperationResult.Written(_) => Source.single(())
       case other                      => Source.failed(new IllegalStateException(s"unexpected write result: $other"))
     }
-  }
-
-  private def backoffDelay(retryIndex: Int): FiniteDuration = {
-    val baseMillis = math.min(
-      writeBackoffConfig.maxBackoff.toMillis.toDouble,
-      writeBackoffConfig.minBackoff.toMillis.toDouble * math.pow(2.0, retryIndex.toDouble)
-    )
-    val jitter = 1.0 + writeBackoffConfig.randomFactor * ThreadLocalRandom.current().nextDouble()
-    (baseMillis * jitter).toLong.millis
   }
 
   private def written(operation: Operation): Source[Unit, NotUsed] =
