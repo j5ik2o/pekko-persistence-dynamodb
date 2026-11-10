@@ -90,6 +90,8 @@ final class SnapshotStoreSpec extends AnyFreeSpec with Matchers with ScalaFuture
       maxRestarts = 3
     )
 
+  private val noRestartBackoff: BackoffConfig = writeBackoff.copy(maxRestarts = 0)
+
   private val row = SnapshotRow(
     persistenceId = PersistenceId("sample"),
     sequenceNumber = SequenceNumber(5),
@@ -310,7 +312,8 @@ final class SnapshotStoreSpec extends AnyFreeSpec with Matchers with ScalaFuture
     }
 
     "fails with a retryable exception when a batch delete keeps failing" in {
-      val adapter = new FailingBatchAdapter(Vector(legacyItem), failures = Int.MaxValue, unprocessedBatchFailure)
+      val unprocessed = new IllegalStateException("BatchWriteItem left 1 unprocessed items")
+      val adapter     = new FailingBatchAdapter(Vector(legacyItem), failures = Int.MaxValue, () => unprocessed)
       val store =
         new SnapshotStore(adapter, new SnapshotRowCodec(schema, legacy), consistentRead = false, 25, writeBackoff)
 
@@ -320,22 +323,32 @@ final class SnapshotStoreSpec extends AnyFreeSpec with Matchers with ScalaFuture
       val exhausted = failure.asInstanceOf[SnapshotStoreException.BatchWriteRetriesExhausted]
       exhausted.attempts shouldBe 4
       exhausted.table shouldBe TableName("Snapshot")
+      exhausted.getCause should be theSameInstanceAs unprocessed
       adapter.batchAttempts shouldBe 4
     }
 
     "does not retry a permanent batch delete failure" in {
+      val permanent = new IllegalArgumentException("permanent")
       val adapter =
-        new FailingBatchAdapter(
-          Vector(legacyItem),
-          failures = Int.MaxValue,
-          () => new IllegalArgumentException("permanent")
-        )
+        new FailingBatchAdapter(Vector(legacyItem), failures = Int.MaxValue, () => permanent)
       val store =
         new SnapshotStore(adapter, new SnapshotRowCodec(schema, legacy), consistentRead = false, 25, writeBackoff)
 
       val failure = store.deleteAll(PersistenceId("sample")).runWith(Sink.ignore).failed.futureValue
 
-      failure shouldBe a[IllegalArgumentException]
+      failure should be theSameInstanceAs permanent
+      adapter.batchAttempts shouldBe 1
+    }
+
+    "does not retry when max-restarts is zero" in {
+      val adapter = new FailingBatchAdapter(Vector(legacyItem), failures = Int.MaxValue, unprocessedBatchFailure)
+      val store =
+        new SnapshotStore(adapter, new SnapshotRowCodec(schema, legacy), consistentRead = false, 25, noRestartBackoff)
+
+      val failure = store.deleteAll(PersistenceId("sample")).runWith(Sink.ignore).failed.futureValue
+
+      failure shouldBe a[SnapshotStoreException.BatchWriteRetriesExhausted]
+      failure.asInstanceOf[SnapshotStoreException.BatchWriteRetriesExhausted].attempts shouldBe 1
       adapter.batchAttempts shouldBe 1
     }
 

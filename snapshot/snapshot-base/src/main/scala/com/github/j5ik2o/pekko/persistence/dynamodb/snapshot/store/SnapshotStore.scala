@@ -153,6 +153,9 @@ final class SnapshotStore(
     * for that transient condition, so retry only that failure. Other failures propagate unchanged, because a permanent
     * service error is not retryable. The write path has no other retry, so the bound and timings from write-backoff
     * apply even when its `enabled` flag is false.
+    *
+    * Issue #887 replaces the adapter's `IllegalStateException` signal with a typed failure. When it lands, update this
+    * predicate and the response tests in base-v1 and base-v2.
     */
   private def deleteBatch(keys: Vector[RowKey]): Source[Unit, NotUsed] = {
     val operation   = Operation.BatchWrite(tableSpec.table.table, Vector.empty, keys)
