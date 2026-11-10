@@ -126,6 +126,53 @@ final class JournalHeadAsyncUpdateEventUnsupportedException(val persistenceId: S
       null
     )
 
+/** An in-place event update could not be applied because other writers kept changing the same items.
+  *
+  * Neither the journal row nor the JournalHead item was changed. The failure is recoverable: the caller can send the
+  * update again. It is returned after the plugin has already tried `attempts` times, so it also means that the
+  * aggregate is being written or updated at that moment.
+  *
+  * @param reason
+  *   the last cause of the retry, for example that the head changed or that DynamoDB reported a transaction conflict or
+  *   throttling
+  */
+final class JournalHeadConcurrentUpdateException(
+    val persistenceId: String,
+    val sequenceNr: Long,
+    val attempts: Int,
+    val reason: String
+) extends JournalHeadException(
+      s"persistenceId=[$persistenceId]: could not update the event at sequence number $sequenceNr after $attempts attempts because $reason. Nothing was changed; send the update again.",
+      null
+    )
+
+/** Why the journal row of an in-place event update cannot be updated. */
+sealed abstract class JournalRowUpdateRejection(val description: String)
+
+object JournalRowUpdateRejection {
+
+  /** The journal row does not exist. The JournalHead item still holds the event, for example after a hard delete. */
+  case object RowDoesNotExist extends JournalRowUpdateRejection("the journal row does not exist")
+
+  /** The journal row is soft deleted. An update does not bring a deleted event back. */
+  case object RowDeleted extends JournalRowUpdateRejection("the journal row is deleted")
+
+}
+
+/** An in-place event update was refused because its journal row cannot be updated.
+  *
+  * This is a legitimate state, not a data inconsistency: a hard delete removes the journal rows and leaves the
+  * JournalHead item alone, and a soft delete marks the rows as deleted. Nothing was changed.
+  */
+final class JournalHeadRowUpdateRejectedException(
+    val persistenceId: String,
+    val sequenceNr: Long,
+    val reason: JournalRowUpdateRejection
+) extends JournalHeadException(
+      s"persistenceId=[$persistenceId]: asyncUpdateEvent at sequence number $sequenceNr is refused because ${reason.description}.",
+      null
+    )
+
 /** The journal already contains some of the rows of this write. */
 final class DuplicateJournalEventsException(val persistenceId: String, val sequenceNrs: Seq[Long])
     extends JournalHeadException(
