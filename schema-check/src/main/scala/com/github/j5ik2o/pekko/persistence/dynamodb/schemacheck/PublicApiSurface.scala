@@ -20,8 +20,8 @@ object ApiDeclaration {
 /** Extracts the public declaration surface of the published modules from their Scala sources.
   *
   * The gate protects the declarations that existed before a change. A declaration that disappears from a module is a
-  * binary compatibility break for the callers that compiled against it. New declarations are compatible and are only
-  * reported.
+  * potential compatibility break for callers. New declarations must also be registered so subsequent removals cannot
+  * escape the gate.
   */
 object PublicApiSurface {
 
@@ -74,7 +74,7 @@ object PublicApiSurface {
 
   def render(declarations: Vector[ApiDeclaration]): String = {
     val header =
-      "# Public declarations of the published modules. The compatibility check fails when one of these disappears.\n" +
+      "# Public declarations of the published modules. The check fails on removed or unregistered declarations.\n" +
       "# Format: module<TAB>path<TAB>owner<TAB>declaration\n" +
       "# Regenerate with: sbt \"schema-check/runMain com.github.j5ik2o.pekko.persistence.dynamodb.schemacheck.ApiBaseline <repo-root> schema-check/public-api-baseline.txt\"\n"
     header + declarations.map(_.render).mkString("\n") + "\n"
@@ -182,83 +182,112 @@ object PublicApiSurface {
   }
 
   private def capture(text: String, start: Int, keyword: String): Captured = {
-    val header      = new StringBuilder
-    var index       = start
-    var paren       = 0
-    var square      = 0
-    var done        = false
-    var body        = false
-    var afterEquals = false
-    val isType      = keyword == "class" || keyword == "trait" || keyword == "object"
+    val header = new StringBuilder
+    var index  = start
+    var paren  = 0
+    var square = 0
+    var done   = false
+    var body   = false
+    val isType = keyword == "class" || keyword == "trait" || keyword == "object"
 
     while (index < text.length && !done) {
       val c = text.charAt(index)
-      if (afterEquals) {
-        c match {
-          case '"' =>
-            index = skipString(text, index)
-          case '\'' if isCharLiteral(text, index) =>
-            index = skipCharLiteral(text, index)
-          case '{' =>
-            body = true
+      c match {
+        case '"' =>
+          val next = skipString(text, index)
+          header.append(text.substring(index, next))
+          index = next
+        case '\'' if isCharLiteral(text, index) =>
+          val next = skipCharLiteral(text, index)
+          header.append(text.substring(index, next))
+          index = next
+        case '(' =>
+          paren += 1
+          header.append(c)
+          index += 1
+        case ')' =>
+          paren -= 1
+          header.append(c)
+          index += 1
+        case '[' =>
+          square += 1
+          header.append(c)
+          index += 1
+        case ']' =>
+          square -= 1
+          header.append(c)
+          index += 1
+        case '{' if paren == 0 && square == 0 =>
+          body = true
+          done = true
+          index += 1
+        case '=' if paren == 0 && square == 0 && !isArrow(text, index) =>
+          if (isType) {
             done = true
+          } else {
+            return Captured(header.toString, implementationEnd(text, index + 1), bodyOpen = false)
+          }
+          index += 1
+        case '\n' if paren == 0 && square == 0 =>
+          if (continues(header.toString) || (isType && typeHeaderContinues(text, index + 1))) {
+            header.append(' ')
             index += 1
-          case '\n' =>
+          } else {
             done = true
-          case _ =>
-            index += 1
-        }
-      } else {
-        c match {
-          case '"' =>
-            val next = skipString(text, index)
-            header.append(text.substring(index, next))
-            index = next
-          case '\'' if isCharLiteral(text, index) =>
-            val next = skipCharLiteral(text, index)
-            header.append(text.substring(index, next))
-            index = next
-          case '(' =>
-            paren += 1
-            header.append(c)
-            index += 1
-          case ')' =>
-            paren -= 1
-            header.append(c)
-            index += 1
-          case '[' =>
-            square += 1
-            header.append(c)
-            index += 1
-          case ']' =>
-            square -= 1
-            header.append(c)
-            index += 1
-          case '{' if paren == 0 && square == 0 =>
-            body = true
-            done = true
-            index += 1
-          case '=' if paren == 0 && square == 0 && !isArrow(text, index) =>
-            if (isType) {
-              done = true
-            } else {
-              afterEquals = true
-            }
-            index += 1
-          case '\n' if paren == 0 && square == 0 =>
-            if (continues(header.toString)) {
-              header.append(' ')
-              index += 1
-            } else {
-              done = true
-            }
-          case _ =>
-            header.append(c)
-            index += 1
-        }
+          }
+        case _ =>
+          header.append(c)
+          index += 1
       }
     }
     Captured(header.toString, index, body)
+  }
+
+  private def typeHeaderContinues(text: String, start: Int): Boolean = {
+    val next = text.substring(start).dropWhile(_.isWhitespace)
+    next.startsWith("{") || next.startsWith("(") || next.startsWith("[") ||
+    next.matches("(?s)^(extends|with)\\b.*")
+  }
+
+  private def implementationEnd(text: String, start: Int): Int = {
+    var index               = start
+    var nesting             = 0
+    var started             = false
+    var expressionLineStart = start
+    while (index < text.length) {
+      val c = text.charAt(index)
+      c match {
+        case '"' =>
+          index = skipString(text, index)
+          started = true
+        case '\'' if isCharLiteral(text, index) =>
+          index = skipCharLiteral(text, index)
+          started = true
+        case '(' | '[' | '{' =>
+          nesting += 1
+          started = true
+          index += 1
+        case '}' if nesting == 0 => return index
+        case ')' | ']' | '}' =>
+          nesting -= 1
+          index += 1
+        case ';' if nesting == 0 => return index + 1
+        case '\n' =>
+          var next = index + 1
+          while (next < text.length && text.charAt(next).isWhitespace) next += 1
+          val tail     = text.substring(next)
+          val previous = text.substring(expressionLineStart, index).trim
+          val continuation = tail.startsWith(".") || tail.startsWith("{") ||
+            tail.matches("(?s)^(else|catch|finally|yield|match)\\b.*") || continues(previous)
+          if (nesting == 0 && started && !continuation) return index
+          expressionLineStart = index + 1
+          index += 1
+        case _ =>
+          if (!c.isWhitespace) started = true
+          index += 1
+      }
+    }
+    index
   }
 
   private def continues(header: String): Boolean = {

@@ -68,7 +68,7 @@ final class ApiSurfaceScannerSpec extends AnyFreeSpec with Matchers {
       |}
       |""".stripMargin)
     declarations.map(d => (d.owner, d.header)) should contain theSameElementsAs Vector(
-      "" -> "class Store",
+      ""      -> "class Store",
       "Store" -> "def load: Int",
       "Store" -> "val cached: Int",
       "Store" -> "var updated: Int",
@@ -103,18 +103,22 @@ final class ApiSurfaceScannerSpec extends AnyFreeSpec with Matchers {
       |""".stripMargin
     val before = scan(source)
     before.map(d => (d.owner, d.header)) should contain allOf (
-      "Rejections" -> "case class First(value: Int) extends Rejection",
-      "Rejections" -> "case class Second( value: Int ) extends Rejection with Product",
-      "Rejections.First" -> "override def convert: Int",
+      "Rejections"        -> "case class First(value: Int) extends Rejection",
+      "Rejections"        -> "case class Second( value: Int ) extends Rejection with Product",
+      "Rejections.First"  -> "override def convert: Int",
       "Rejections.Second" -> "override def convert: Int",
-      "Rejections.Store" -> "def get: A",
-      "Rejections" -> "class Separate",
-      "Rejections.Next" -> "val member: Int"
+      "Rejections.Store"  -> "def get: A",
+      "Rejections"        -> "class Separate",
+      "Rejections.Next"   -> "val member: Int"
     )
-    val after = scan(source.replace("override def convert: Int = value", ""))
-    PublicApiSurface.missing(before, after).map(_.owner) should contain allOf (
-      "Rejections.First", "Rejections.Second"
-    )
+    val method = "override def convert: Int = value"
+    Vector(source.indexOf(method), source.lastIndexOf(method))
+      .zip(
+        Vector("Rejections.First", "Rejections.Second")
+      ).foreach { case (offset, owner) =>
+        val after = scan(source.patch(offset, "", method.length))
+        PublicApiSurface.missing(before, after).map(_.owner) shouldBe Vector(owner)
+      }
   }
 
   "abstract signatures and type aliases do not swallow following declarations" in {
@@ -129,9 +133,61 @@ final class ApiSurfaceScannerSpec extends AnyFreeSpec with Matchers {
       |}
       |""".stripMargin)
     declarations.map(_.header) should contain allOf (
-      "def abstractMethod[A](value: A): A", "val abstractValue: Int", "type Alias",
-      "def concrete: String", "def following: Int"
+      "def abstractMethod[A](value: A): A",
+      "val abstractValue: Int",
+      "type Alias",
+      "def concrete: String",
+      "def following: Int"
     )
+  }
+
+  "implementation delimiters, strings, lambdas and hidden owners preserve sibling declarations" in {
+    val declarations = scan("""class Api[A](default: String = "}") {
+      |  def parenthesized: Int =
+      |    List(1).map(value => {
+      |      val local = value
+      |      local
+      |    }).head
+      |  val chained: Int = List(1)
+      |    .map { value =>
+      |      val local = value
+      |      local
+      |    }.head
+      |  def strings: String = "{not a body}"
+      |    def character: Char = '{'
+      |  private class Hidden[
+      |    B
+      |  ]
+      |      extends Parent[B] {
+      |    def hidden: B
+      |  }
+      |  def following: A
+      |}
+      |""".stripMargin)
+    declarations.map(d => (d.owner, d.header)) should contain theSameElementsAs Vector(
+      ""    -> "class Api[A](default: String = \"}\")",
+      "Api" -> "def parenthesized: Int",
+      "Api" -> "val chained: Int",
+      "Api" -> "def strings: String",
+      "Api" -> "def character: Char",
+      "Api" -> "def following: A"
+    )
+  }
+
+  "the repository records the affected WriteRejection and durable store members under their owners" in {
+    val declarations = PublicApiSurface.of(Repo.locate().root)
+    Vector("NonContiguousSequenceNumbers", "TransactionTooLarge").foreach { name =>
+      declarations.filter(d => d.owner == s"WriteRejection.$name").map(_.header) should contain(
+        "override def toJournalHeadException: JournalHeadException"
+      )
+    }
+    Vector("V1", "V2").foreach { version =>
+      val members = declarations.filter(_.owner == s"DynamoDBDurableStateStore$version").map(_.header)
+      Vector("getRawObject", "getObject", "upsertObject").foreach { name =>
+        members.exists(_.startsWith(s"override def $name(")) shouldBe true
+      }
+      members.count(_.startsWith("override def deleteObject(")) shouldBe 2
+    }
   }
 
   private def scan(source: String): Vector[ApiDeclaration] = {
