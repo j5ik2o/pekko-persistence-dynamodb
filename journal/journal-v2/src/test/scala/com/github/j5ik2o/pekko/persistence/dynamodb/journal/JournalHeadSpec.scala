@@ -719,11 +719,73 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
       val pid = "head-in-place-update-1"
       persistOk(headEnabledSystem, pid, "e1")
 
+      headItem(pid).get.contains("revision") shouldBe false
+
       updateEvent(headEnabledSystem, pid, 1L, "updated") shouldBe Done
 
       journalPayloads(headEnabledSystem, pid) shouldBe Seq(1L -> "updated")
       headPayloads(headEnabledSystem, pid) shouldBe Seq(1L -> "updated")
       headSequenceNr(pid) shouldBe Some(1L)
+      headItem(pid).get("revision").getN shouldBe "1"
+      journalRows(pid).map(_("deleted").getBOOL.booleanValue()) shouldBe Seq(false)
+    }
+
+    "raise the revision of the JournalHead item by one on every in-place event update and keep the sequence number" in {
+      val pid = "head-in-place-update-revision-1"
+      persistAllOk(headEnabledSystem, pid, immutable.Seq("e1", "e2"))
+
+      updateEvent(headEnabledSystem, pid, 1L, "first") shouldBe Done
+      updateEvent(headEnabledSystem, pid, 2L, "second") shouldBe Done
+      updateEvent(headEnabledSystem, pid, 2L, "third") shouldBe Done
+
+      headItem(pid).get("revision").getN shouldBe "3"
+      headSequenceNr(pid) shouldBe Some(2L)
+      headPayloads(headEnabledSystem, pid) shouldBe Seq(1L -> "first", 2L -> "third")
+    }
+
+    "write no revision when the next write replaces the JournalHead item after an in-place event update" in {
+      val pid = "head-in-place-update-revision-2"
+      persistOk(headEnabledSystem, pid, "e1")
+      updateEvent(headEnabledSystem, pid, 1L, "updated") shouldBe Done
+      headItem(pid).get("revision").getN shouldBe "1"
+
+      persistOk(headEnabledSystem, pid, "e2")
+
+      headItem(pid).get.contains("revision") shouldBe false
+      headSequenceNr(pid) shouldBe Some(2L)
+    }
+
+    "deliver an in-place event update as a stream record with the same sequence number and a higher revision" in {
+      val pid = "head-in-place-update-stream-1"
+      persistOk(headEnabledSystem, pid, "e1")
+      updateEvent(headEnabledSystem, pid, 1L, "updated") shouldBe Done
+
+      val images = headStreamRecords(pid, 2)
+        .map(_.dynamodb().newImage())
+        .filter(_.get("persistence-id").s() == pid)
+
+      images.map(_.get("sequence-nr").n().toLong) shouldBe Seq(1L, 1L)
+      images.map(image => Option(image.get("revision")).map(_.n().toLong)) shouldBe Seq(None, Some(1L))
+      images.map(image =>
+        payloadOf(headEnabledSystem, image.get("events").l().get(0).m().get("message").b().asByteArray)
+      ) shouldBe Seq("e1", "updated")
+    }
+
+    "refuse an in-place update of a soft deleted event and keep it deleted" in {
+      val pid = "head-in-place-update-deleted-1"
+      persistOk(headEnabledSystem, pid, "e1")
+      withActor(headEnabledSystem, pid) { (actor, probe) =>
+        actor.tell(DeleteTo(1L), probe.ref)
+        probe.expectMsg(60.seconds, Deleted())
+      }
+      val headBefore = headItem(pid)
+
+      val failure = updateEventFails(headEnabledSystem, pid, 1L, "updated")
+      failure shouldBe an[IllegalStateException]
+
+      journalRows(pid).map(_("deleted").getBOOL.booleanValue()) shouldBe Seq(true)
+      journalPayloads(headEnabledSystem, pid) shouldBe Seq(1L -> "e1")
+      headItem(pid) shouldBe headBefore
     }
 
     "keep the other events of the JournalHead item on an in-place event update of one event of a persistAll write" in {

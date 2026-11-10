@@ -22,11 +22,14 @@ import org.apache.pekko.stream.scaladsl.{ Sink, Source }
 import com.github.j5ik2o.pekko.persistence.dynamodb.ddb.{
   AttributeMap,
   AttributeName,
+  AttributeUpdate,
   CapabilityProfile,
+  CompareOp,
   Condition,
   ConditionFailure,
   DdbClientAdapter,
   DdbValue,
+  Operand,
   Operation,
   OperationResult,
   TableName,
@@ -314,13 +317,15 @@ final class JournalRowStoreSpec extends AnyFreeSpec with Matchers with BeforeAnd
       )
     )
 
-  private def seedHead(fixture: Fixture, events: DdbValue*): Unit =
+  private def seedHead(fixture: Fixture, revision: Option[Long], events: DdbValue*): Unit =
     fixture.adapter.seed(
       TableName("JournalHead"),
-      AttributeMap.of(
-        AttributeName("persistence-id") -> DdbValue.Str(persistenceId.asString),
-        AttributeName("sequence-nr")    -> DdbValue.Num(BigDecimal(2)),
-        AttributeName("events")         -> DdbValue.L(events.toVector)
+      AttributeMap(
+        Vector(
+          AttributeName("persistence-id") -> (DdbValue.Str(persistenceId.asString): DdbValue),
+          AttributeName("sequence-nr")    -> (DdbValue.Num(BigDecimal(2)): DdbValue),
+          AttributeName("events")         -> (DdbValue.L(events.toVector): DdbValue)
+        ) ++ revision.map(value => AttributeName("revision") -> (DdbValue.Num(BigDecimal(value)): DdbValue))
       )
     )
 
@@ -338,9 +343,15 @@ final class JournalRowStoreSpec extends AnyFreeSpec with Matchers with BeforeAnd
     Vector(ConditionFailure(0, "None"), ConditionFailure(1, "TransactionConflict"))
   )
 
-  private def scriptedStore(results: OperationResult*): (ScriptedTransactionAdapter, JournalRowStore) = {
+  private def scriptedStore(results: OperationResult*): (ScriptedTransactionAdapter, JournalRowStore) =
+    scriptedStore(None, results: _*)
+
+  private def scriptedStore(
+      revision: Option[Long],
+      results: OperationResult*
+  ): (ScriptedTransactionAdapter, JournalRowStore) = {
     val inMemory = newFixture(headConfig = Some(headModeConfig))
-    seedHead(inMemory, headEvent(1, "old1"), headEvent(2, "old2"))
+    seedHead(inMemory, revision, headEvent(1, "old1"), headEvent(2, "old2"))
     val adapter = new ScriptedTransactionAdapter(inMemory.adapter, results)
     val store = new JournalRowStore(
       schema = schema,
@@ -364,12 +375,53 @@ final class JournalRowStoreSpec extends AnyFreeSpec with Matchers with BeforeAnd
 
     adapter.transactions.size shouldBe 1
     val Vector(rowUpdate: TransactItem.Update, headPut: TransactItem.Put) = adapter.transactions.head.items
-    rowUpdate.condition shouldBe Some(Condition.AttributeExists(schema.partitionKey))
+    rowUpdate.updates.collect { case AttributeUpdate.Set(name, _) => name } should not contain schema.deleted
+    rowUpdate.condition shouldBe Some(
+      Condition.And(
+        Condition.AttributeExists(schema.partitionKey),
+        Condition.Not(
+          Condition.Compare(Operand.Column(schema.deleted), CompareOp.Eq, Operand.Literal(DdbValue.Bool(true)))
+        )
+      )
+    )
     headPut.table shouldBe TableName("JournalHead")
     headPut.item.get(AttributeName("events")) shouldBe Some(
       DdbValue.L(Vector(headEvent(1, "old1"), headEvent(2, "new2")))
     )
-    headPut.condition.isDefined shouldBe true
+    headPut.item.get(AttributeName("revision")) shouldBe Some(DdbValue.Num(BigDecimal(1)))
+    headPut.condition shouldBe Some(
+      Condition.And(
+        Condition.Compare(
+          Operand.Column(AttributeName("sequence-nr")),
+          CompareOp.Eq,
+          Operand.Literal(DdbValue.Num(BigDecimal(2)))
+        ),
+        Condition.AttributeNotExists(AttributeName("revision"))
+      )
+    )
+  }
+
+  "update with head mode raises the revision that it read and conditions the head on it" in {
+    val (adapter, store) = scriptedStore(Some(3L), OperationResult.TransactionCommitted(2))
+
+    run(store.update(JournalTestSupport.row(persistenceId, 2L, "new2", ordering = 2L)))
+
+    val Vector(_, headPut: TransactItem.Put) = adapter.transactions.head.items
+    headPut.item.get(AttributeName("revision")) shouldBe Some(DdbValue.Num(BigDecimal(4)))
+    headPut.condition shouldBe Some(
+      Condition.And(
+        Condition.Compare(
+          Operand.Column(AttributeName("sequence-nr")),
+          CompareOp.Eq,
+          Operand.Literal(DdbValue.Num(BigDecimal(2)))
+        ),
+        Condition.Compare(
+          Operand.Column(AttributeName("revision")),
+          CompareOp.Eq,
+          Operand.Literal(DdbValue.Num(BigDecimal(3)))
+        )
+      )
+    )
   }
 
   "update with head mode reads the head again and retries when the head changed before the transaction" in {

@@ -2,17 +2,20 @@
 
 ## いまの状態
 
-直した。`head.enabled=true` の `InPlaceUpdateEvent` は、ジャーナル行と JournalHead のイベントを `TransactWriteItems` 1 回で更新する。
-変更の中心は `JournalRowStore.update` (journal-base)。deprecated ドライバと公開 API は変えていない。
+#886 の追加作業 2 点のうち、テストが赤になった段階。
 
-- 追加した結果: `JournalHeadSpec` の `in-place` 7 件が通る (修正前は 5 件が拒否の例外で失敗)
-- `JournalRowStoreSpec` に再試行と取り消しの 7 件を追加
-- `sbt test` 全体、`lint`、Scala 2.12 と 3.6 のコンパイル、sphinx の `-W` ビルドが通る
-- 独立レビューの指摘は 1 件ずつ仕分け済み (PR 本文に記載)
+1. head に省略できる版番号 `revision` を足す。通常の書き込みは書かない。属性がなければ版 0。`asyncUpdateEvent` が head を更新するたびに 1 増やす。
+   列名は固定で、`JournalHeadColumnsDefConfig` の引数は増やさない。head の Put の条件は「`sequence-nr` と `revision` が一致」にする。
+2. soft-delete された行の復活を防ぐ。head モードの行の更新は `deleted` を書き換えず、条件に「`deleted` が true でない」を足す。
+
+赤の理由: `revision` 属性がない。soft-delete した最新のイベントを更新すると `Done` で成功し、`deleted=false` に戻る。
+
+- 赤の実行: `sbt -batch "journal-v2/testOnly *JournalHeadSpec -- -z in-place"` (Docker が必要)、`sbt -batch "journal-base/testOnly *JournalRowStoreSpec"`
 
 ## 次の一手
 
-PR #886 のレビューコメント (Cursor Bugbot など) と CI を確認する。届いたら「直す」「理由をつけて直さない」「聞く」に分ける。マージはしない。
+`JournalRowStore.updateRowAndHead` に revision と条件を足し、行の更新を head モード用に分ける。`journal-head.md` の購読側の約束を
+`(sequence-nr, revision)` のチェックポイントに書き直す。`table-format.md` と `journal-head.md` の属性表に `revision` を足す。
 
 ## 未決の判断
 
