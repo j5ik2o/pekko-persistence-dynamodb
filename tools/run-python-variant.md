@@ -25,6 +25,8 @@ outputs, are never reused, overwritten, or automatically removed.
 
 The runner compares path/byte-count/SHA256 manifests before and after copying,
 and checks the staged manifest after execution, including fixture files.
+Directory entries are recorded as `{"kind": "directory"}`, including empty
+directories; their creation or removal during execution makes the record incomplete.
 Detected input changes during copying make the record incomplete. These checks
 are not an atomic snapshot: transient changes between reads may escape detection.
 Keep prepared inputs quiescent while copying. After copying, changes to original

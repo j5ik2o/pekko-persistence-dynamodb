@@ -60,6 +60,7 @@ def manifest(root):
         if path.name in {".git", "__pycache__"} or path.suffix == ".pyc":
             raise InvalidInput("forbidden input: " + str(rel))
         if stat.S_ISDIR(mode.st_mode):
+            files[str(rel)] = {"kind": "directory"}
             continue
         if not stat.S_ISREG(mode.st_mode):
             raise InvalidInput("input must contain only regular files/directories: " + str(rel))
@@ -126,6 +127,9 @@ def execute(args, root, out, source, test, before):
         stage.mkdir()
         cache.mkdir()
         for rel, expected in before.items():
+            if expected == {"kind": "directory"}:
+                (stage / rel).mkdir(parents=True, exist_ok=True)
+                continue
             raw = (root / rel).read_bytes()
             if {"bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()} != expected:
                 raise ValueError("input changed during copy: " + rel)

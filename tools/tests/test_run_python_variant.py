@@ -94,6 +94,27 @@ class VariantTests(unittest.TestCase):
         self.assertEqual(len({r["observed"]["pid"] for r in records}), 3)
         self.assertEqual(len({r["run_id"] for r in records}), 3)
 
+    def test_empty_directory_fixture_is_preserved(self):
+        (self.input / "fixtures/empty/nested").mkdir(parents=True)
+        (self.input / "test_subject.py").write_text(
+            'from pathlib import Path\n'
+            'assert Path("fixtures/empty/nested").is_dir(), "prepared empty directory disappeared"\n')
+        out, result, _ = self.run_cli()
+        self.assertEqual(result["child_exit"], 0)
+        self.assertTrue((out / "input/fixtures/empty/nested").is_dir())
+        self.assertEqual(result["input_files"]["fixtures/empty/nested"], {"kind": "directory"})
+        self.assertEqual(result["post_files"], result["input_files"])
+
+    def test_staged_directory_changes_make_record_incomplete(self):
+        for command in ['Path("new-empty").mkdir()', 'Path("fixtures/empty").rmdir()']:
+            (self.input / "fixtures/empty").mkdir(parents=True, exist_ok=True)
+            (self.input / "test_subject.py").write_text('from pathlib import Path\n' + command + '\n')
+            with self.subTest(command=command):
+                _, result, _ = self.run_cli(expected=1)
+                self.assertEqual(result["child_exit"], 0)
+                self.assertEqual(result["status"], "incomplete")
+                self.assertIn("staged files changed after execution", result["errors"])
+
     def test_nested_import_layout_and_descendant_cache(self):
         nested = self.input / "tests"
         nested.mkdir()
