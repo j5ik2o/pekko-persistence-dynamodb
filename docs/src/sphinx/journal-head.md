@@ -427,11 +427,23 @@ $ aws dynamodb describe-continuous-backups --table-name JournalHead
        --stream-specification StreamEnabled=true,StreamViewType=NEW_IMAGE
    ```
 
-8. Rebuild the read model. The restore does not touch the read model, and the events after the restore time are gone
-   from the journal. If the read model is newer than the restore time, rebuild it from the restored journal as
-   described in "Consuming the stream". Rebuild the aggregates that the tool printed in step 4 or 6 in any case, and
-   point the consumer at the stream of the restored `JournalHead` table. A repaired head has an empty event list, which
-   the consumer must not apply.
+8. Recover the read model and its checkpoints to a state consistent with the restored tables. Restoring the source
+   tables does not roll back the read model. If it contains changes after the restore time, those changes must not
+   remain in the recovered projection.
+
+   Rebuild from the restored journal as described in "Consuming the stream" only when it retains all the events
+   needed for that rebuild. Verify that history before erasing the existing projection. If required events were
+   hard deleted, restore a backup of the read model and its checkpoints from the same recovery point instead.
+   A snapshot or a head watermark cannot replace the missing event history.
+
+   Apply this check to every aggregate printed in step 4 or 6 too. If a restored checkpoint is behind a created or
+   raised head, replay the missing range from the journal only if the entire range is retained. If neither the
+   journal nor a consistent read-model backup can recover the required state, stop. Do not erase the read model or
+   restart the application or consumer; select a recovery point with sufficient backups and history.
+
+   Point the consumer at the stream of the restored `JournalHead` table only after the projection and checkpoints
+   are consistent with the restored sources. A repaired head has an empty event list; do not apply it or use it to
+   advance a checkpoint.
 9. Set `head.enabled = true`, start every node, and then start the consumer.
 
 ## Limits
