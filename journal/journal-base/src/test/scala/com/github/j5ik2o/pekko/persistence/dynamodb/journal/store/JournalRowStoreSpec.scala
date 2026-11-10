@@ -289,7 +289,7 @@ final class JournalRowStoreSpec extends AnyFreeSpec with Matchers with BeforeAnd
 
   "do not retry a batch failure that is not the unprocessed-items signal" in {
     val fixture = newFixture()
-    val adapter = new FlakyBatchAdapter(
+    val adapter: FlakyBatchAdapter = new FlakyBatchAdapter(
       fixture.adapter,
       failures = 2,
       failure = () => new IllegalStateException("unexpected result for a write")
@@ -305,7 +305,7 @@ final class JournalRowStoreSpec extends AnyFreeSpec with Matchers with BeforeAnd
 
   "stop retrying an unprocessed batch after the configured attempts" in {
     val fixture = newFixture()
-    val adapter = new FlakyBatchAdapter(fixture.adapter, failures = 2)
+    val adapter: FlakyBatchAdapter = new FlakyBatchAdapter(fixture.adapter, failures = 2)
     val store   = storeWith(adapter, fastBackoff.copy(maxRestarts = 0))
     val rows    = (1L to 3L).map(sequenceNr => JournalTestSupport.row(persistenceId, sequenceNr, s"e$sequenceNr"))
 
@@ -319,7 +319,7 @@ final class JournalRowStoreSpec extends AnyFreeSpec with Matchers with BeforeAnd
   "fail with the retryable failure when an unprocessed batch keeps failing" in {
     val fixture     = newFixture()
     val unprocessed = new BatchWriteUnprocessedItemsException(1)
-    val adapter =
+    val adapter: FlakyBatchAdapter =
       new FlakyBatchAdapter(fixture.adapter, failures = Int.MaxValue, failure = () => unprocessed)
     val store = storeWith(adapter, fastBackoff)
     val rows  = (1L to 3L).map(sequenceNr => JournalTestSupport.row(persistenceId, sequenceNr, s"e$sequenceNr"))
