@@ -87,6 +87,7 @@ object JournalHeadSpec {
   final case class PersistRejectedThenPersist(overLimitCount: Int, after: String)
   final case class PersistThenOverLimit(first: String, overLimitCount: Int)
   final case class PersistTaggedAll(count: Int, tagLength: Int)
+  final case class PersistUnserializable()
   final case class DeleteTo(sequenceNr: Long)
   final case class PersistChain(count: Int, progress: java.util.concurrent.atomic.AtomicLong)
   final case class ChainDone()
@@ -96,6 +97,9 @@ object JournalHeadSpec {
   final case class Deleted()
   final case class PersistFailed(cause: Throwable)
   final case class PersistRejected(cause: Throwable)
+
+  /** No serializer is bound to this class, and it is not `java.io.Serializable`, so Pekko cannot serialize it. */
+  final class NotSerializableEvent
 
   class TestPersistentActor(val persistenceId: String, failureProbe: ActorRef) extends PersistentActor {
 
@@ -127,6 +131,8 @@ object JournalHeadSpec {
       case PersistTaggedAll(count, tagLength) =>
         val tag = "t" * tagLength
         persistAll((1 to count).map(index => Tagged(s"e$index", Set(tag)))) { _ => () }
+      case PersistUnserializable() =>
+        persist(new NotSerializableEvent) { _ => () }
       case PersistChain(count, progress) =>
         val replyTo = sender()
         def next(index: Int): Unit =
@@ -716,6 +722,45 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
 
       persistOk(headDisabledSystem, pid, "e2")
       journalSequenceNrs(pid) shouldBe Seq(1L, 2L)
+      headItem(pid) shouldBe None
+    }
+
+    "reject only the write whose event cannot be serialized, keep the actor alive, and accept the next write when head.enabled is true" in {
+      val pid = "head-serialization-rejected-1"
+      persistOk(headEnabledSystem, pid, "e1")
+
+      withActor(headEnabledSystem, pid) { (actor, probe) =>
+        actor.tell(PersistUnserializable(), probe.ref)
+        val rejected = probe.expectMsgType[PersistRejected](60.seconds)
+        rejected.cause should not be a[JournalHeadException]
+        probe.expectNoMessage(500.millis)
+
+        // the actor is the same one and still alive; Pekko does not hand back the rejected sequence number
+        actor.tell(Persist("after"), probe.ref)
+        probe.expectMsg(60.seconds, Persisted("after"))
+      }
+
+      info(s"observed journal sequence numbers: ${journalSequenceNrs(pid)}, head: ${headSequenceNr(pid)}")
+      journalSequenceNrs(pid) shouldBe Seq(1L, 3L)
+      headSequenceNr(pid) shouldBe Some(3L)
+    }
+
+    "reject only the write whose event cannot be serialized, keep the actor alive, and accept the next write when head.enabled is false" in {
+      val pid = "head-disabled-serialization-rejected-1"
+      persistOk(headDisabledSystem, pid, "e1")
+
+      withActor(headDisabledSystem, pid) { (actor, probe) =>
+        actor.tell(PersistUnserializable(), probe.ref)
+        val rejected = probe.expectMsgType[PersistRejected](60.seconds)
+        rejected.cause should not be a[JournalHeadException]
+        probe.expectNoMessage(500.millis)
+
+        actor.tell(Persist("after"), probe.ref)
+        probe.expectMsg(60.seconds, Persisted("after"))
+      }
+
+      info(s"observed journal sequence numbers: ${journalSequenceNrs(pid)}")
+      journalSequenceNrs(pid) shouldBe Seq(1L, 3L)
       headItem(pid) shouldBe None
     }
 
