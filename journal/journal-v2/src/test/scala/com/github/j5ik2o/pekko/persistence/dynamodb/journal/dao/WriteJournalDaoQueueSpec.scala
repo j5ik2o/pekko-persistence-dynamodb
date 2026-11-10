@@ -225,6 +225,30 @@ final class WriteJournalDaoQueueSpec extends AnyFreeSpec with Matchers with Befo
     }
   }
 
+  "the backpressure strategy reports too many concurrent offers as a typed failure that keeps the cause" in {
+    val driver = new BlockingJournalRowWriteDriver(system)
+    val dao    = newDao(driver, bufferSize = 1, overflowStrategy = Some("backpressure"))
+    try {
+      // The first write holds the single mapAsync slot and the second fills the buffer. The queue holds one offer
+      // back, and any further concurrent offer is refused.
+      val first = dao.putMessages(Seq(row)).runWith(Sink.head)
+      Await.result(driver.started, 10.seconds)
+
+      val overflow = Vector.fill(10)(dao.putMessages(Seq(row)).runWith(Sink.head))
+      val failure  = Await.result(Future.firstCompletedOf(overflow.map(_.failed)), 10.seconds)
+
+      failure shouldBe a[JournalWriteQueueBusyException]
+      failure.getCause shouldBe a[IllegalStateException]
+
+      // The queue is still open: the writes it accepted finish once the driver is released.
+      driver.release()
+      Await.result(first, 10.seconds) shouldBe 1L
+    } finally {
+      driver.release()
+      dao.dispose()
+    }
+  }
+
   "the default fail strategy reports a full queue as a typed failure with the overflow cause" in {
     val driver = new BlockingJournalRowWriteDriver(system)
     val dao    = newDao(driver, bufferSize = 1, overflowStrategy = None)

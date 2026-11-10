@@ -146,6 +146,28 @@ final class JournalHeadConcurrentUpdateException(
       null
     )
 
+/** A JournalHead write was cancelled by DynamoDB because another transaction touched the same items, because DynamoDB
+  * throttled the request, or because the `JournalHead` item changed after the plugin checked it.
+  *
+  * The cancelled transaction wrote nothing. The plugin made `attempts` attempts with the same transaction, so this
+  * failure means the contention, the throttling, or the changes to the `JournalHead` item lasted through every attempt.
+  * The journal reports the failure to the persistent actor through `onPersistFailure`, and the actor stops. After the
+  * restart, the actor can send the same write again. A caller that uses the journal directly can send the write again
+  * at once.
+  *
+  * @param reason
+  *   the reason of the last attempt. It is a DynamoDB cancellation code, for example `TransactionConflict` or
+  *   `ProvisionedThroughputExceeded`, or a sentence when the `JournalHead` item changed after the check
+  */
+final class JournalHeadConcurrentWriteException(
+    val persistenceId: String,
+    val attempts: Int,
+    val reason: String
+) extends JournalHeadException(
+      s"persistenceId=[$persistenceId]: could not write after $attempts attempt(s) because $reason. Nothing was written. A persistent actor stops after onPersistFailure; after the restart it can send the same write again.",
+      null
+    )
+
 /** Why the journal row of an in-place event update cannot be updated. */
 sealed abstract class JournalRowUpdateRejection(val description: String)
 
