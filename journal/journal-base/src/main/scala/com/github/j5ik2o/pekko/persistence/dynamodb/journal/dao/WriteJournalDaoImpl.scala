@@ -221,26 +221,37 @@ final class WriteJournalDaoImpl(
       }
   }
 
+  /** Offers one write to a queue and waits for the driver to finish it.
+    *
+    * A queue whose stream has been detached refuses offers with `StreamDetachedException`, and the fail overflow
+    * strategy refuses the overflowing offer with `Failure(BufferOverflowException)`. Both carry the reason a write was
+    * refused, so the typed failures keep it as their cause.
+    */
+  private def enqueue[A](queue: SourceQueueWithComplete[A], request: A, promise: Promise[Long]): Future[Long] =
+    queue
+      .offer(request)
+      .recoverWith { case t: StreamDetachedException =>
+        Future.failed(new JournalWriteQueueClosedException(t))
+      }
+      .flatMap {
+        case QueueOfferResult.Enqueued => promise.future
+        case QueueOfferResult.Failure(t: BufferOverflowException) =>
+          Future.failed(new JournalWriteQueueFullException(queueBufferSize, t))
+        case QueueOfferResult.Failure(t) =>
+          Future.failed(new Exception("Failed to write journal row batch", t))
+        case QueueOfferResult.Dropped     => Future.failed(new JournalWriteQueueFullException(queueBufferSize))
+        case QueueOfferResult.QueueClosed => Future.failed(new JournalWriteQueueClosedException)
+      }
+
   private def requestPutJournalRows: Flow[(Seq[JournalRow], Boolean), Long, NotUsed] =
     Flow[(Seq[JournalRow], Boolean)]
       .mapAsync(1) { case (messages, withHead) =>
         val promise = Promise[Long]()
-        selectPutQueue(messages.head.persistenceId)
-          .offer(PutJournalRowsRequest(promise, messages, withHead)).flatMap {
-            case QueueOfferResult.Enqueued =>
-              val future = promise.future
-              future
-            case QueueOfferResult.Failure(t) =>
-              Future.failed(new Exception("Failed to write journal row batch", t))
-            case QueueOfferResult.Dropped =>
-              Future.failed(
-                new Exception(
-                  s"Failed to enqueue journal row batch write, the queue buffer was full ($queueBufferSize elements) please check the jdbc-journal.bufferSize setting"
-                )
-              )
-            case QueueOfferResult.QueueClosed =>
-              Future.failed(new Exception("Failed to enqueue journal row batch write, the queue was closed"))
-          }
+        enqueue(
+          selectPutQueue(messages.head.persistenceId),
+          PutJournalRowsRequest(promise, messages, withHead),
+          promise
+        )
       }.withAttributes(logLevels)
 
   private def deleteBy(persistenceId: PersistenceId, sequenceNrs: Seq[SequenceNumber]): Source[Long, NotUsed] = {
@@ -270,21 +281,7 @@ final class WriteJournalDaoImpl(
     Flow[Seq[PersistenceIdWithSeqNr]]
       .mapAsync(writeParallelism) { messages =>
         val promise = Promise[Long]()
-        selectDeleteQueue(messages.head.persistenceId).offer(promise -> messages).flatMap {
-          case QueueOfferResult.Enqueued =>
-            val future = promise.future
-            future
-          case QueueOfferResult.Failure(t) =>
-            Future.failed(new Exception("Failed to write journal row batch", t))
-          case QueueOfferResult.Dropped =>
-            Future.failed(
-              new Exception(
-                s"Failed to enqueue journal row batch write, the queue buffer was full ($queueBufferSize elements) please check the jdbc-journal.bufferSize setting"
-              )
-            )
-          case QueueOfferResult.QueueClosed =>
-            Future.failed(new Exception("Failed to enqueue journal row batch write, the queue was closed"))
-        }
+        enqueue(selectDeleteQueue(messages.head.persistenceId), promise -> messages, promise)
       }.withAttributes(logLevels)
 
 }
