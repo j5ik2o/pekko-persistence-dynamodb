@@ -149,9 +149,10 @@ final class JournalHeadConcurrentUpdateException(
 /** A JournalHead write was cancelled by DynamoDB because another transaction touched the same items, or because
   * DynamoDB throttled the request.
   *
-  * The cancelled transaction wrote nothing. The plugin sent the same transaction again `attempts` times, so this
-  * failure means the contention or throttling lasted through every attempt. A direct caller can send the write again.
-  * The journal actor reports the failure through `onPersistFailure` and stops, so restart it before retrying.
+  * The cancelled transaction wrote nothing. The plugin made `attempts` attempts with the same transaction, so this
+  * failure means the contention or throttling lasted through every attempt. The journal reports the failure to the
+  * persistent actor through `onPersistFailure`, and the actor stops. After the restart, the actor can send the same
+  * write again. A caller that uses the journal directly can send the write again at once.
   *
   * @param reason
   *   the last cancellation reason DynamoDB reported, for example `TransactionConflict` or
@@ -162,7 +163,7 @@ final class JournalHeadConcurrentWriteException(
     val attempts: Int,
     val reason: String
 ) extends JournalHeadException(
-      s"persistenceId=[$persistenceId]: could not write after $attempts attempt(s) because $reason. Nothing was written; send the write again.",
+      s"persistenceId=[$persistenceId]: could not write after $attempts attempt(s) because $reason. Nothing was written. A persistent actor stops after onPersistFailure; after the restart it can send the same write again.",
       null
     )
 
