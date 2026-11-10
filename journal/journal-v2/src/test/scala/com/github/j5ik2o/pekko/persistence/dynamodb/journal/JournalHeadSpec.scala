@@ -1370,6 +1370,228 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
       } finally client.close()
     }
 
+    "preserve unselected and head-only attributes and raise a selected create race" in {
+      val selected     = "selection-race"
+      val snapshotOnly = "selection-snapshot-only"
+      val headOnly     = "selection-head-only"
+      val other        = "selection-other"
+      putJournalRow(selected, 9L)
+      putJournalRow(other, 11L)
+      putSnapshotRow(snapshotOnly, 12L)
+      val preserved = Map(
+        "persistence-id" -> new AttributeValue().withS(headOnly),
+        "sequence-nr"    -> new AttributeValue().withN("42"),
+        "events"         -> new AttributeValue().withL(new AttributeValue().withS("preserve")),
+        "revision"       -> new AttributeValue().withN("7"),
+        "custom"         -> new AttributeValue().withS("preserve")
+      )
+      dynamoDBClient.putItem(new PutItemRequest().withTableName(journalHeadTableName).withItem(preserved.asJava))
+      val beforeOther = headItem(other)
+      val delegate    = newV2Client()
+      val reads       = scala.collection.mutable.Set.empty[String]
+      val client = Proxy
+        .newProxyInstance(
+          classOf[V2DynamoDbClient].getClassLoader,
+          Array(classOf[V2DynamoDbClient]),
+          new InvocationHandler {
+            override def invoke(proxy: Any, method: Method, args: Array[AnyRef]): AnyRef = {
+              if (method.getName == "getItem")
+                reads += args(0).asInstanceOf[GetItemRequest].key().get("persistence-id").s()
+              if (method.getName == "putItem") {
+                val request = args(0).asInstanceOf[software.amazon.awssdk.services.dynamodb.model.PutItemRequest]
+                if (request.item().get("persistence-id").s() == selected) {
+                  dynamoDBClient.putItem(
+                    new PutItemRequest()
+                      .withTableName(journalHeadTableName).withItem(
+                        Map(
+                          "persistence-id" -> new AttributeValue().withS(selected),
+                          "sequence-nr"    -> new AttributeValue().withN("3"),
+                          "events"         -> new AttributeValue().withL(new AttributeValue().withS("old")),
+                          "revision"       -> new AttributeValue().withN("2")
+                        ).asJava
+                      )
+                  )
+                }
+              }
+              try method.invoke(delegate, args: _*)
+              catch { case error: java.lang.reflect.InvocationTargetException => throw error.getCause }
+            }
+          }
+        ).asInstanceOf[V2DynamoDbClient]
+      try {
+        def migrate(execute: Boolean): JournalHeadMigration.Result = JournalHeadMigration.runSelected(
+          client,
+          journalTableName,
+          journalColumnsDefConfig,
+          headConfig,
+          execute,
+          Some(JournalHeadMigration.SnapshotTable(snapshotTableName, "persistence-id", "sequence-nr")),
+          Some(Set(selected, snapshotOnly, headOnly, "selection-unknown").map(PersistenceId(_))),
+          (_, _) => ()
+        )
+        migrate(false) shouldBe JournalHeadMigration.Result(2, 2, 0, 0, Seq.empty, true)
+        headItem(selected) shouldBe None
+        val executed = migrate(true)
+        executed.createdJournalHeads shouldBe 1
+        executed.updatedJournalHeads shouldBe 1
+        headSequenceNr(selected) shouldBe Some(9L)
+        headSequenceNr(snapshotOnly) shouldBe Some(12L)
+        headItem(selected).get("events").getL.isEmpty shouldBe true
+        headItem(selected).get.contains("revision") shouldBe false
+        migrate(true) shouldBe JournalHeadMigration.Result(2, 0, 0, 2, Seq.empty, true)
+        reads.toSet shouldBe Set(selected, snapshotOnly)
+        headItem(headOnly) shouldBe Some(preserved)
+        headItem(other) shouldBe beforeOther
+      } finally delegate.close()
+    }
+
+    "select only source-observed IDs after all pages and propagate migration failures" in {
+      import JournalHeadMigration._
+      import software.amazon.awssdk.services.dynamodb.model.{
+        ScanRequest,
+        ScanResponse,
+        PutItemRequest,
+        PutItemResponse,
+        UpdateItemRequest,
+        UpdateItemResponse,
+        ConditionalCheckFailedException,
+        ResourceNotFoundException
+      }
+      val columns = JournalColumnsDefConfig(
+        ConfigFactory.empty,
+        "pkey",
+        "skey",
+        "persistence-id",
+        "sequence-nr",
+        "deleted",
+        "message",
+        "ordering",
+        "tags"
+      )
+      val config = JournalHeadConfig.fromConfig(ConfigFactory.empty)
+      def row(id: String, n: Long) = Map(
+        "persistence-id" -> V2AttributeValue.builder.s(id).build,
+        "sequence-nr"    -> V2AttributeValue.builder.n(n.toString).build
+      ).asJava
+      class Fixture {
+        var jp                              = 0; var sp = 0
+        var requests                        = Vector.empty[AnyRef]
+        var heads                           = Map("p" -> 5L, "other" -> 1L, "head-only" -> 42L)
+        var summary                         = Option.empty[(Int, Int)]
+        var failure                         = ""
+        var snapshot: Option[SnapshotTable] = Some(SnapshotTable.default)
+        def reset(): Unit                   = { jp = 0; sp = 0; requests = Vector.empty; summary = None }
+        val client = java.lang.reflect.Proxy
+          .newProxyInstance(
+            classOf[V2DynamoDbClient].getClassLoader,
+            Array(classOf[V2DynamoDbClient]),
+            new java.lang.reflect.InvocationHandler {
+              def invoke(proxy: Any, m: java.lang.reflect.Method, a: Array[AnyRef]): AnyRef = {
+                val req = a(0); requests :+= req
+                if (m.getName == failure && failure != "scan") throw new IllegalStateException(failure + " failure")
+                req match {
+                  case r: ScanRequest =>
+                    assert(r.consistentRead.booleanValue && r.projectionExpression == "#persistenceId, #sequenceNr")
+                    assert(r.filterExpression == null && r.limit == null && r.segment == null)
+                    val isJournal = r.tableName == "Journal"
+                    val page = if (isJournal) { jp += 1; jp }
+                    else { sp += 1; sp }
+                    val cursor = Map("cursor" -> V2AttributeValue.builder.s((page - 1).toString).build).asJava
+                    if (page == 1) assert(r.exclusiveStartKey.isEmpty) else assert(r.exclusiveStartKey == cursor)
+                    if (failure == "scan" && page == 2) throw new IllegalStateException("scan failure")
+                    if (failure == "decode" && page == 2)
+                      return ScanResponse.builder.items(Map.empty[String, V2AttributeValue].asJava).build
+                    if (failure == "missing" && !isJournal) throw ResourceNotFoundException.builder.build
+                    val items = if (isJournal) page match {
+                      case 1 => List(row("p", 2), row("other", 99))
+                      case 2 => List.empty[java.util.Map[String, V2AttributeValue]]
+                      case 3 => List(row("p", 9))
+                    }
+                    else
+                      page match {
+                        case 1 => List(row("snapshot-only", 4), row("other", 101))
+                        case 2 => List.empty[java.util.Map[String, V2AttributeValue]]
+                        case 3 => List(row("snapshot-only", 12))
+                      }
+                    val b = ScanResponse.builder.items(items.asJava)
+                    if (page < 3)
+                      b.lastEvaluatedKey(Map("cursor" -> V2AttributeValue.builder.s(page.toString).build).asJava)
+                    b.build
+                  case r: GetItemRequest =>
+                    assert(
+                      jp == 3 && (sp == 3 || snapshot.isEmpty || failure == "missing"),
+                      "head read before final source page"
+                    )
+                    val id = r.key.get("persistence-id").s
+                    assert(id != "head-only" && id != "unknown", s"source-unobserved head read: $id")
+                    assert(r.consistentRead.booleanValue)
+                    heads
+                      .get(id).fold(GetItemResponse.builder.build)(n => GetItemResponse.builder.item(row(id, n)).build)
+                  case r: PutItemRequest =>
+                    assert(r.conditionExpression == "attribute_not_exists(#persistenceId)")
+                    val id = r.item.get("persistence-id").s
+                    if (heads.contains(id)) throw ConditionalCheckFailedException.builder.build
+                    heads += id -> r.item.get("sequence-nr").n.toLong
+                    PutItemResponse.builder.build
+                  case r: UpdateItemRequest =>
+                    assert(r.conditionExpression == "#sequenceNr < :latest")
+                    assert(r.updateExpression == "SET #sequenceNr = :latest, #events = :emptyEvents REMOVE #revision")
+                    val id = r.key.get("persistence-id").s;
+                    val n  = r.expressionAttributeValues.get(":latest").n.toLong
+                    if (!heads.get(id).exists(_ < n)) throw ConditionalCheckFailedException.builder.build
+                    heads += id -> n; UpdateItemResponse.builder.build
+                  case r => throw new AssertionError("unexpected request " + r)
+                }
+              }
+            }
+          ).asInstanceOf[V2DynamoDbClient]
+        def run(execute: Boolean, ids: Option[Set[PersistenceId]]): Result = {
+          runSelected(client, "Journal", columns, config, execute, snapshot, ids, (r, o) => summary = Some((r, o)))
+        }
+        def scans   = requests.collect { case x: ScanRequest => x }
+        def readIds = requests.collect { case x: GetItemRequest => x.key.get("persistence-id").s }.toSet
+      }
+
+      val all       = new Fixture
+      val allResult = all.run(false, None)
+      assert(allResult == Result(3, 1, 2, 0, Seq("other", "p"), true))
+      assert(all.summary.isEmpty)
+      val ids      = Some(Set("p", "snapshot-only", "head-only", "unknown").map(PersistenceId(_)))
+      val dry      = new Fixture
+      val expected = Result(2, 1, 1, 0, Seq("p"), true)
+      assert(dry.run(false, ids) == expected, "late-page max/selection mismatch")
+      assert(dry.scans == all.scans)
+      assert(dry.readIds == Set("p", "snapshot-only"))
+      assert(dry.summary.contains((4, 2)))
+      assert(dry.requests.forall(r => r.isInstanceOf[ScanRequest] || r.isInstanceOf[GetItemRequest]))
+      val ex = new Fixture
+      assert(ex.run(true, ids) == expected)
+      assert(ex.heads == Map("p" -> 9L, "snapshot-only" -> 12L, "other" -> 1L, "head-only" -> 42L))
+      assert(ex.scans == all.scans)
+      ex.reset()
+      assert(ex.run(true, ids) == Result(2, 0, 0, 2, Seq.empty, true))
+      assert(ex.requests.forall(r => r.isInstanceOf[ScanRequest] || r.isInstanceOf[GetItemRequest]))
+      for (selection <- Seq(Set.empty[PersistenceId], Set("unknown", "head-only").map(PersistenceId(_)))) {
+        val empty = new Fixture
+        assert(empty.run(true, Some(selection)) == Result(0, 0, 0, 0, Seq.empty, true))
+        assert(empty.requests.size == 6 && empty.summary.contains((selection.size, 0)))
+      }
+      for (missing <- Seq(false, true)) {
+        val unavailable = new Fixture
+        if (missing) unavailable.failure = "missing" else unavailable.snapshot = None
+        assert(unavailable.run(true, ids) == Result(1, 0, 1, 0, Seq("p"), false))
+        assert(unavailable.summary.contains((4, 1)))
+        assert(unavailable.readIds == Set("p"))
+      }
+      for (failure <- Seq("scan", "decode", "getItem", "putItem", "updateItem")) {
+        val broken = new Fixture
+        broken.failure = failure
+        val error = intercept[Exception](broken.run(true, ids))
+        if (failure != "decode") assert(error.getMessage == failure + " failure")
+        if (Set("scan", "decode")(failure)) assert(broken.requests.forall(_.isInstanceOf[ScanRequest]))
+      }
+    }
+
     "resolve the snapshot source from the config or the command line, and fail when neither is given" in {
       val configured = ConfigFactory.parseString(
         """

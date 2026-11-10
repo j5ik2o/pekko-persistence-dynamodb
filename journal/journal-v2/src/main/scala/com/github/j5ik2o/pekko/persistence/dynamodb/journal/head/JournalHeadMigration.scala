@@ -102,16 +102,63 @@ object JournalHeadMigration {
       headConfig: JournalHeadConfig,
       execute: Boolean,
       snapshotTable: Option[SnapshotTable] = Some(SnapshotTable.default)
+  ): Result =
+    runSelected(
+      syncClient,
+      journalTableName,
+      journalColumnsDefConfig,
+      headConfig,
+      execute,
+      snapshotTable,
+      None,
+      (_, _) => ()
+    )
+
+  private[journal] def resolvePersistenceIds(args: Array[String]): Option[Set[PersistenceId]] = {
+    val ids    = Set.newBuilder[PersistenceId]
+    val flags  = Set("--execute", "--without-snapshots")
+    val values = Set("--snapshot-table", "--snapshot-persistence-id-column", "--snapshot-sequence-nr-column")
+    var index  = 0
+    while (index < args.length) {
+      val name = args(index)
+      if (flags(name)) index += 1
+      else if (name == "--persistence-id" || values(name)) {
+        val value = args
+          .lift(index + 1).filterNot(_.startsWith("--"))
+          .getOrElse(throw new IllegalArgumentException(s"$name requires a value"))
+        if (name == "--persistence-id") ids += PersistenceId(value)
+        index += 2
+      } else throw new IllegalArgumentException(s"unknown migration argument: $name")
+    }
+    val result = ids.result()
+    if (result.isEmpty) None else Some(result)
+  }
+
+  private[journal] def runSelected(
+      syncClient: JavaDynamoDbSyncClient,
+      journalTableName: String,
+      journalColumnsDefConfig: JournalColumnsDefConfig,
+      headConfig: JournalHeadConfig,
+      execute: Boolean,
+      snapshotTable: Option[SnapshotTable],
+      selectedIds: Option[Set[PersistenceId]],
+      reportSelection: (Int, Int) => Unit
   ): Result = {
-    val journalVersions = scanHighestSequenceNrs(
+    val allJournalVersions = scanHighestSequenceNrs(
       syncClient,
       journalTableName,
       journalColumnsDefConfig.persistenceIdColumnName,
       journalColumnsDefConfig.sequenceNrColumnName
     )
-    val snapshotVersions = snapshotTable.flatMap(table => scanSnapshotHighestSequenceNrs(syncClient, table))
+    val allSnapshotVersions = snapshotTable.flatMap(table => scanSnapshotHighestSequenceNrs(syncClient, table))
+    val journalVersions =
+      selectedIds.fold(allJournalVersions)(ids => allJournalVersions.filter { case (id, _) => ids(id) })
+    val snapshotVersions = allSnapshotVersions.map(versions =>
+      selectedIds.fold(versions)(ids => versions.filter { case (id, _) => ids(id) })
+    )
     val persistenceIds =
       journalVersions.keySet ++ snapshotVersions.getOrElse(Map.empty[PersistenceId, SequenceNumber]).keySet
+    selectedIds.foreach(ids => reportSelection(ids.size, persistenceIds.size))
     val currentHeads = persistenceIds.iterator
       .flatMap(persistenceId => readHeadSequenceNr(syncClient, headConfig, persistenceId).map(persistenceId -> _))
       .toMap
@@ -339,8 +386,9 @@ object JournalHeadMigration {
 
   def main(args: Array[String]): Unit = {
     // Nothing is written unless --execute is given.
-    val execute = args.contains("--execute")
-    val system  = ActorSystem("journal-head-migration")
+    val selectedIds = resolvePersistenceIds(args)
+    val execute     = args.contains("--execute")
+    val system      = ActorSystem("journal-head-migration")
     try {
       val config = system.settings.config
       val pluginConfig =
@@ -358,13 +406,21 @@ object JournalHeadMigration {
         .createThrow(pluginConfig.v2SyncClientFactoryClassName)
         .create
       try {
-        val result = run(
+        val result = runSelected(
           client,
           pluginConfig.tableName,
           pluginConfig.columnsDefConfig,
           pluginConfig.headConfig,
           execute,
-          resolveSnapshotTable(args, config)
+          resolveSnapshotTable(args, config),
+          selectedIds,
+          (requested, observed) => {
+            val prefix = if (execute) "" else "[dry-run] "
+            Console.err.println(
+              s"${prefix}JournalHead migration selection requested=$requested observed-in-sources=$observed" +
+              s" not-observed-in-sources=${requested - observed}"
+            )
+          }
         )
         val prefix = if (execute) "" else "[dry-run] "
         println(
