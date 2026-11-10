@@ -304,10 +304,10 @@ final class JournalRowStoreSpec extends AnyFreeSpec with Matchers with BeforeAnd
   }
 
   "stop retrying an unprocessed batch after the configured attempts" in {
-    val fixture = newFixture()
+    val fixture                    = newFixture()
     val adapter: FlakyBatchAdapter = new FlakyBatchAdapter(fixture.adapter, failures = 2)
-    val store   = storeWith(adapter, fastBackoff.copy(maxRestarts = 0))
-    val rows    = (1L to 3L).map(sequenceNr => JournalTestSupport.row(persistenceId, sequenceNr, s"e$sequenceNr"))
+    val store                      = storeWith(adapter, fastBackoff.copy(maxRestarts = 0))
+    val rows = (1L to 3L).map(sequenceNr => JournalTestSupport.row(persistenceId, sequenceNr, s"e$sequenceNr"))
 
     val failure = Await.result(store.write(rows).runWith(Sink.ignore).failed, 30.seconds)
 
