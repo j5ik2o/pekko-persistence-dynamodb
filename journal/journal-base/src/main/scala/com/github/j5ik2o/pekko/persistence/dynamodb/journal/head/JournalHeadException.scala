@@ -60,8 +60,8 @@ final class JournalHeadItemTooLargeException(val persistenceId: String, val item
 /** A journal row of the write would be larger than the DynamoDB item size limit.
   *
   * A journal row carries the encoded event and its tags, so it can exceed the limit while the JournalHead item of the
-  * same write stays below it. The write is rejected before anything is sent, so the actor handles it with
-  * `onPersistRejected` instead of failing at DynamoDB and stopping.
+  * same write stays below it. The write fails before anything is sent: Pekko calls `onPersistFailure` and stops the
+  * actor, and the sequence numbers continue without a gap after the restart.
   */
 final class JournalHeadJournalRowTooLargeException(
     val persistenceId: String,
@@ -97,8 +97,8 @@ final class JournalHeadMissingException(val persistenceId: String, val firstSequ
   *
   * The head must be lower than the first sequence number of the write. A head that is equal or higher means a rewind,
   * or another writer that already wrote these sequence numbers. A head that is lower than the first sequence number by
-  * more than one is accepted on purpose: Pekko does not rewind the sequence number of a rejected write, so the write
-  * after a rejection starts above the head by more than one.
+  * more than one is accepted on purpose: Pekko does not rewind the sequence number of a write that it rejects itself
+  * (an event that cannot be serialized), so the write after that rejection starts above the head by more than one.
   *
   * This is a safety check that the assumption "there is only one writer per aggregate" (kept by Cluster Sharding and
   * Split Brain Resolver) still holds. It is not optimistic locking.
