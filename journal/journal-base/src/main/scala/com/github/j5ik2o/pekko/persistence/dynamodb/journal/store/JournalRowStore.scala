@@ -275,7 +275,8 @@ final class JournalRowStore(
                 def again(reason: String, delayed: Boolean): Source[Unit, NotUsed] =
                   if (attempt < UpdateAttempts) {
                     val next = updateAttempt(head, row, attempt + 1, Some(observed))
-                    if (delayed) Source.single(()).initialDelay(backoffDelay(attempt)).flatMapConcat(_ => next)
+                    if (delayed && writeBackoffConfig.enabled)
+                      Source.single(()).initialDelay(backoffDelay(attempt)).flatMapConcat(_ => next)
                     else next
                   } else {
                     Source.failed(

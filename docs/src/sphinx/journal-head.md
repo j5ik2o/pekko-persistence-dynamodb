@@ -348,7 +348,12 @@ The transaction is conditional on the `sequence-nr` and the `revision` of the he
 write or an update that lands between the read and the transaction makes the plugin read the head again and try again,
 up to three attempts. A transaction conflict and throttling are tried again after a backoff that grows from
 the `min-backoff` of `write-backoff` up to its `max-backoff`. When the attempts are used up, the caller gets
-`JournalHeadConcurrentUpdateException`.
+`JournalHeadConcurrentUpdateException`. When `write-backoff` is disabled, these attempts follow one another without a
+wait.
+
+A request-level failure of DynamoDB, such as a network error or a throttled request that is not reported as a
+cancellation of the transaction, is not one of these outcomes. The write backoff restarts it, and when the restarts are
+used up the caller gets the exception of the AWS SDK.
 
 An update changes the message of an event, keeps its sequence number and the `sequence-nr` of the head, and raises the
 `revision` of the head by one. The stream carries the update as a record with the same `sequence-nr` and a higher
