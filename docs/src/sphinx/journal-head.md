@@ -319,7 +319,7 @@ at most 400 KB for the `JournalHead` item) after the restart.
 | `JournalHeadJournalRowTooLargeException`     | a journal row would exceed 400 KB (the encoded event and tags)   |
 | `JournalHeadTransactionTooLargeException`    | the transaction would exceed 4 MB                                |
 | `JournalHeadInvalidWriteException`           | the rows of one write are empty, span several persistence ids, or are not contiguous |
-| `JournalHeadConcurrentWriteException`        | DynamoDB cancelled the write with a transaction conflict or throttling on every attempt; nothing was written — the actor stops through `onPersistFailure`; after the restart it can send the same write again |
+| `JournalHeadConcurrentWriteException`        | the write was cancelled on every attempt by a transaction conflict or throttling, or because the `JournalHead` item kept changing after the check; nothing was written — the actor stops through `onPersistFailure`; after the restart it can send the same write again |
 
 ## In-place event updates
 
