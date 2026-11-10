@@ -67,9 +67,11 @@ The write condition of the `JournalHead` item is:
 `:first` is the first sequence number of the write and `:one` is `1`. The item is written only if it is behind the
 first sequence number of this write, or if it does not exist yet and the write starts at sequence number `1`.
 
-A gap is accepted on purpose. When a write is rejected by the limits below, Pekko does not take the sequence numbers
-of that write back, so the next write of the same actor starts above the head by more than one. Recovery does not
-check the sequence numbers of an aggregate for gaps, so such a journal keeps working.
+A gap is accepted on purpose. The plugin never leaves one for a write that exceeds the limits below, because such a
+write fails and stops the actor before anything is written. A gap can still appear when Pekko itself refuses a write,
+for example when it cannot serialize an event: Pekko does not take the sequence numbers of that write back, so the next
+write of the same actor starts above the head by more than one. Recovery does not check the sequence numbers of an
+aggregate for gaps, so such a journal keeps working.
 
 This is **not** optimistic locking. It is a safety check that the assumption "there is only one writer per
 aggregate" — kept by Cluster Sharding and Split Brain Resolver — still holds. A head that is equal to or higher than
@@ -78,7 +80,8 @@ the transaction, and nothing is written.
 
 The assumption that there is one writer per persistence id is kept by Cluster Sharding; the plugin detects some cases
 where it no longer holds (for example, a delayed writer that tries to write a sequence number another writer has
-already written) and does not prevent a second writer.
+already written) and does not prevent a second writer. A delayed writer whose sequence numbers are above the head
+passes the condition, because the condition accepts a gap, so the plugin cannot detect it.
 
 The journal rows have their own condition: a row is written only if the key `(persistenceId, seqNr)` does not exist
 yet. A duplicate write fails.
@@ -98,6 +101,9 @@ of editing the JSON by hand.
 
 Each element of `events` is a map of `sequence-nr` (`N`) and `message` (`B`), the bytes stored in the journal row's
 `message`.
+
+`events` holds all the events of one `persistAll(ev1, ev2, ...)` call, one `AtomicWrite`. Design the events so that
+their total size stays below 400 KB for the `JournalHead` item. See the Limits section.
 
 A write does not write `revision`, so an item without it has revision 0. Only an in-place event update (see below)
 writes it. The attribute name is fixed and is not a column setting. A later write replaces the whole item, so the item
@@ -281,7 +287,7 @@ then rebuild the read model of the aggregates the tool reports.
 
 ## Limits
 
-A single write is rejected, before anything is sent to DynamoDB, when:
+A single write fails, before anything is sent to DynamoDB, when:
 
 - it carries more than 99 events (the transaction would contain more than 100 items, the DynamoDB limit), with
   `JournalHeadTooManyEventsException`;
@@ -290,28 +296,32 @@ A single write is rejected, before anything is sent to DynamoDB, when:
   event and its tags, so it can exceed the limit while the `JournalHead` item stays below it);
 - the whole transaction would exceed 4 MB, with `JournalHeadTransactionTooLargeException`.
 
-A rejected write is neither split into several transactions nor written without a transaction.
+The same applies to a write whose rows are empty, span several persistence ids, repeat a key, or are not contiguous,
+with `JournalHeadInvalidWriteException`.
 
-The rejection is returned as a failed write of that batch, so the actor handles it with `onPersistRejected` and stays
-alive. A write that reaches DynamoDB but fails there (a failed condition or a service error) is a journal failure and
-stops the actor with `onPersistFailure`.
+A write over a limit is neither split into several transactions nor written without a transaction.
 
-Pekko does not take the sequence numbers of a rejected write back: the next write of the same actor starts above the
-rejected sequence numbers, and the journal keeps a gap. The `JournalHead` condition accepts a gap, so the actor keeps
-working. The `JournalHead` item moves to the next written sequence number.
+Exceeding a limit is a design mistake, not an error to live with. The size and the number of events of one
+`persistAll` call are decided when you design the aggregate. The plugin therefore does not reject the write and keep
+the actor alive. It fails the whole `asyncWriteMessages` call with the typed exception, which carries the measured
+value and the limit. Pekko calls `onPersistFailure` and stops the actor. A Typed actor receives a
+`JournalFailureException` and stops by default.
 
-A new aggregate that has no `JournalHead` item yet is the exception. If its first write (starting at sequence number
-`1`) is rejected by these limits, the actor keeps the advanced sequence numbers, and the next write of that actor
-starts above `1`. The condition accepts a missing item only for a write that starts at `1`, so that next write fails
-and stops the actor with `onPersistFailure`. Restart the actor: recovery finds no event and no `JournalHead` item, so
-the aggregate starts again at sequence number `1` and the write is accepted. Write a smaller batch (at most 99 events,
-at most 400 KB for the `JournalHead` item) after the restart.
+The plugin checks every `AtomicWrite` of the call before it sends the first one, so a violation in a later write also
+leaves the earlier writes of the same call unwritten. Nothing is written and the sequence numbers are not used. After
+you fix the code and restart the actor, recovery finds the last written sequence number and the next write continues
+from the one after it. The journal has no gap, and a reader such as a read model updater does not need to handle one.
+
+The head-less path (`head.enabled = false`) applies the same rule to a journal row over 400 KB.
+
+A write that Pekko itself refuses, such as an event it cannot serialize, stays a failure of that one `AtomicWrite`. A
+write that reaches DynamoDB but fails there (a failed condition or a service error) is a journal failure too.
 
 ## Failures
 
 | Failure                                      | Meaning                                                          |
 |:---------------------------------------------|:-----------------------------------------------------------------|
-| `JournalHeadMissingException`                | the aggregate has events but no `JournalHead` item — run the migration; or this is the write after the rejected first write of a new aggregate — restart the actor |
+| `JournalHeadMissingException`                | the aggregate has events but no `JournalHead` item — run the migration |
 | `JournalHeadSequenceMismatchException`       | the head is equal to or higher than the first sequence number of this write (a rewind, or another writer) |
 | `DuplicateJournalEventsException`            | the journal already contains some of the written events          |
 | `JournalHeadTooManyEventsException`          | more than 99 events in one write                                 |
@@ -319,6 +329,10 @@ at most 400 KB for the `JournalHead` item) after the restart.
 | `JournalHeadJournalRowTooLargeException`     | a journal row would exceed 400 KB (the encoded event and tags)   |
 | `JournalHeadTransactionTooLargeException`    | the transaction would exceed 4 MB                                |
 | `JournalHeadInvalidWriteException`           | the rows of one write are empty, span several persistence ids, or are not contiguous |
+
+Every failure of this table reaches the actor as a failed write: Pekko calls `onPersistFailure` and the actor stops. The
+four limit exceptions are raised before anything is sent. Restart the actor after you fix the code, and the next write
+continues from the last written sequence number.
 
 ## In-place event updates
 
