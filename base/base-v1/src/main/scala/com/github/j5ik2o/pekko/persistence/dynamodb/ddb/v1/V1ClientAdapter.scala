@@ -23,7 +23,7 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.utils.CompletableFutureUtils
 import org.apache.pekko.NotUsed
 import org.apache.pekko.stream.scaladsl.Source
 
-import java.util.concurrent.{ Executor, Future => JavaFuture }
+import java.util.concurrent.{ CompletionException, Executor, Future => JavaFuture }
 import scala.compat.java8.FutureConverters._
 import scala.concurrent.{ ExecutionContext, Future }
 import scala.jdk.CollectionConverters._
@@ -117,7 +117,10 @@ final class V1ClientAdapter(
       asyncCall: AmazonDynamoDBAsync => JavaFuture[A],
       syncCall: AmazonDynamoDB => A
   ): Future[A] = asyncClient match {
-    case Some(client) => asyncCall(client).toCompletableFuture.toScala
+    case Some(client) =>
+      asyncCall(client).toCompletableFuture.toScala.recoverWith {
+        case wrapped: CompletionException if wrapped.getCause != null => Future.failed(wrapped.getCause)
+      }
     case None =>
       syncClient match {
         case Some(client) => Future(syncCall(client))
