@@ -153,12 +153,12 @@ final class DynamoDBJournal(config: Config) extends AsyncWriteJournal with Actor
             Future.traverse(serializedWrites) {
               case Success(rows) =>
                 journalDao
-                  .putMessages(rows).runWith(Sink.head).map(_ => Success(())).recoverWith { case ex =>
+                  .putMessages(rows).runWith(Sink.head).map(_ => Success(()): Try[Unit]).recoverWith { case ex =>
                     log.error(ex, "occurred error")
                     Future.failed(ex)
                   }
               case Failure(ex) =>
-                Future.successful(Failure(ex))
+                Future.successful(Failure(ex): Try[Unit])
             }
         }
       }
