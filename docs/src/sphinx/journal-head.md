@@ -319,12 +319,16 @@ The plugin does not reject two tables that disagree. With `head.enabled = true`,
 numbers after a restart: the highest `sequence-nr` in the journal and the `sequence-nr` of the `JournalHead` item. The write condition accepts every
 write whose first sequence number is above the head. The aggregate therefore keeps writing, and a mismatch shows up
 later as a gap in the journal or as a read model that missed events. `J` is the highest sequence number of an aggregate
-in the journal, and `H` is the `sequence-nr` of its head item.
+in the journal, including soft-deleted rows. `H` is the `sequence-nr` of its head item, and `S` is the highest
+snapshot sequence number, when a snapshot exists. A hard delete can leave `H > J` with no restore mismatch.
+Migration can also produce a valid `H = S > J`. The head can be the only remaining sequence watermark. The table below assumes `S` is absent or no higher than
+both `H` and `J`. If `S` is higher, recovery also uses the snapshot sequence number, and migration targets the
+higher of `J` and `S`.
 
 | State after the restore | The next write of the aggregate | Dry-run of the migration tool |
 |:--|:--|:--|
 | `H < J`, the head is behind | starts at `J + 1` and succeeds, the head moves to `J + 1`, and the events from `H + 1` to `J` never reach the head stream | lists the aggregate under "raised JournalHead items" |
-| `H > J`, the head is ahead | starts at `H + 1` and succeeds, and the journal has no events from `J + 1` to `H` | does not report it: the tool counts the item as "skipped existing" |
+| `H > J`, possibly after a normal hard delete or snapshot migration | starts at `H + 1` and succeeds, and the journal has no events from `J + 1` to `H` | does not report it; counts it as "skipped existing" only if the persistence id exists in the journal or snapshot |
 | no head item, and `J` is at least 1 | fails with `JournalHeadMissingException` | counts it as "created" |
 | `H = J` | continues at `J + 1` | counts it as "skipped existing" |
 
@@ -379,8 +383,10 @@ $ aws dynamodb describe-continuous-backups --table-name JournalHead
    ```
 
    `created` counts the aggregates that have no head item. `raised` counts the aggregates whose head is behind. Both
-   must be 0 before you continue, or you repair them in step 6.
-5. Look for heads that are ahead, because the tool does not report them. For one aggregate, compare the two numbers.
+   must be 0 before you continue, or you repair them in step 6. The tool scans only persistence ids found in the
+   journal or snapshot. It cannot recreate a head whose persistence id is absent from both sources.
+5. Check heads against the journal, snapshots, deletion history, and backup timestamps. The tool does not report
+   heads above both sources or heads whose persistence id is absent from both. For one aggregate, read `H` and `J`.
    The first command reads the head. The second reads the highest journal row.
 
    ```shell
@@ -394,23 +400,23 @@ $ aws dynamodb describe-continuous-backups --table-name JournalHead
    ```
 
    The commands use the default column names. To check every aggregate, scan the `JournalHead` table and run the
-   second command for each `persistence-id`. The head is ahead when its `sequence-nr` is higher than the one the query
-   returns. Steps 4 and 5 check the result instead of assuming that the two restored tables agree.
-6. Repair the aggregates before any node starts.
+   second command for each `persistence-id`. Include soft-deleted journal rows in `J`. Check `S` in the restored
+   snapshot table too. An empty journal is not proof of a mismatch. A normal hard delete can remove every journal
+   row while leaving a valid head. A snapshot can explain `H = S > J`.
 
-   - **The head is missing or behind.** Run the tool with `--execute`. It creates the missing items and raises the
-     items that are behind, and it clears their event lists. It never lowers a head. It prints the persistence ids it
-     raised.
-   - **The head is ahead.** The tool cannot lower a head. Delete the head item of the aggregate, and then run the tool
-     with `--execute`. The tool creates the item again at the highest sequence number of the journal or the snapshot,
-     whichever is higher, with an empty event list.
+   Preserve these valid heads. If no journal row or snapshot remains, deleting the head loses the only sequence
+   watermark, and migration cannot recreate it. If backup timestamps, deletion history, and snapshots cannot
+   establish consistency, stop and select backups from a consistent point in time. Do not infer corruption from
+   `H > J` alone.
+6. Repair a missing or lagging head only after you establish that the restored source tables are consistent.
+   Run the tool with `--execute`. It creates missing items and raises lagging items to the higher sequence number
+   in the journal or snapshot, and it clears their event lists. It never lowers a head.
 
-     ```shell
-     $ aws dynamodb delete-item --table-name JournalHead-restored --key '{"persistence-id":{"S":"order-17"}}'
-     ```
+   If you confirm a restore mismatch that requires lowering a head, stop and restore a consistent set of backups.
+   Do not delete a head to make its sequence number equal `J`.
 
-   Run the dry-run of step 4 again. Both `created` and `raised` must be 0. Run the commands of step 5 again for the
-   aggregates that were ahead. Their head must now equal the highest journal row.
+   Run the dry-run of step 4 again. Both `created` and `raised` must be 0. Confirm that the heads retained in step 5
+   agree with the backup timestamps, snapshots, and deletion history. `H = J` is not a requirement for restarting.
 7. Enable DynamoDB Streams on the restored `JournalHead` table, because the restore does not carry the setting over.
    Do it after the repairs, so that the stream holds no record of them. Then run the preflight (see the Preflight
    section). It checks that the head table has a stream with the view type `NEW_IMAGE` or `NEW_AND_OLD_IMAGES` and
