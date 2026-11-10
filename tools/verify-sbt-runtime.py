@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Run local sbt tests and verify launcher and fresh JUnit JVM evidence."""
+"""Run local sbt tests and verify launcher and self-observed test-fork JVM evidence."""
 
 import argparse
+import base64
 import hashlib
 import json
 from pathlib import Path
@@ -11,11 +12,12 @@ import sys
 import time
 import uuid
 import xml.etree.ElementTree as ET
+import zipfile
 
 
 VERSION = re.compile(r"(?:1\.)?([0-9]+)(?:[.u+_-][0-9A-Za-z.+_-]+)?")
 TEST_COMMAND = re.compile(
-    r"(?:[A-Za-z0-9_-]+/)?(?:Test/)?(?:test|testOnly(?: [A-Za-z0-9_.*$][A-Za-z0-9_.*$-]*)+)"
+    r"([A-Za-z0-9_-]+)/(?:Test/)?(?:test|testOnly(?: [A-Za-z0-9_.*$][A-Za-z0-9_.*$-]*)+)"
 )
 
 
@@ -36,37 +38,57 @@ def reports(repo):
     return sorted(repo.glob("**/target/test-reports/*.xml"))
 
 
-def fork_evidence(path):
+def test_evidence(path):
     root = ET.parse(path).getroot()
     suites = [root] if root.tag == "testsuite" else list(root.findall("testsuite"))
-    observations = []
-    if not suites:
-        raise ValueError("no JUnit suites")
-    for suite in suites:
-        if not suite.findall("testcase"):
-            raise ValueError("no test cases")
-        properties = suite.findall("./properties/property")
-        values = {}
-        for key in ("java.version", "java.home"):
-            found = [p.get("value", p.text or "") for p in properties if p.get("name") == key]
-            if len(found) != 1 or not found[0]:
-                raise ValueError("missing or ambiguous " + key)
-            values[key] = found[0]
-        if major(values["java.version"]) is None:
-            raise ValueError("unparseable java.version")
-        observations.append({"suite": suite.get("name"), **values})
-    return observations
+    if not suites or any(not s.findall("testcase") for s in suites):
+        raise ValueError("no test cases")
+    return [{"suite": s.get("name"), "cases": len(s.findall("testcase"))} for s in suites]
+
+
+def prepare_probe(java_home, directory, run_id):
+    source = Path(__file__).resolve().parent / "jvm-probe/RuntimeProbe.java"
+    classes = directory / "classes"
+    classes.mkdir()
+    subprocess.run([str(java_home / "bin/javac"), "--release", "11", "-d", str(classes),
+                    str(source)], check=True, capture_output=True, text=True)
+    jar = directory / "runtime-probe.jar"
+    with zipfile.ZipFile(jar, "w") as archive:
+        archive.writestr("META-INF/MANIFEST.MF", "Manifest-Version: 1.0\nPremain-Class: RuntimeProbe\n\n")
+        archive.write(classes / "RuntimeProbe.class", "RuntimeProbe.class")
+    output = directory / "forks"
+    output.mkdir()
+    encoded = base64.urlsafe_b64encode(str(output).encode()).decode()
+    return "-javaagent:" + str(jar) + "=" + run_id + ":" + encoded
+
+
+def instrumentation(project, agent, run_id):
+    scope = 'LocalProject(' + json.dumps(project) + ') / '
+    option = json.dumps(agent)
+    # Validate the actual group's options, which custom grouping may replace.
+    grouping = ('set ' + scope + 'Test / testGrouping := { '
+                'val gs = (' + scope + 'Test / testGrouping).value; '
+                'require(gs.size == 1, "unsupported fork grouping"); '
+                'gs.head.runPolicy match { case Tests.SubProcess(o) => '
+                'require(o.runJVMOptions.count(_ == ' + option + ') == 1, '
+                '"fork group ignores probe javaOptions"); '
+                'case _ => sys.error("non-fork tests unsupported") }; '
+                'println("PPD_GROUP_' + run_id + '"); gs }')
+    return ['set ' + scope + 'Test / javaOptions += ' + option,
+            'set ' + scope + 'Test / Keys.test / aggregate := false',
+            'set ' + scope + 'Test / Keys.testOnly / aggregate := false', grouping]
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sbt", help="explicit sbt executable; otherwise use mise which sbt")
     parser.add_argument("--java-home", required=True, type=Path)
+    parser.add_argument("--fork-java-home", type=Path, help="optional in-memory test fork JDK override")
     parser.add_argument("--expected-major", required=True, type=int)
-    parser.add_argument("commands", nargs="+", help="quoted test or testOnly commands")
+    parser.add_argument("commands", nargs=1, help="quoted test or testOnly commands")
     args = parser.parse_args()
     if args.expected_major < 1 or not all(TEST_COMMAND.fullmatch(c) for c in args.commands):
-        parser.error("only local test or testOnly commands are accepted")
+        parser.error("one explicit project/test or project/testOnly command is required")
     java_home = args.java_home.expanduser().resolve()
     if not (java_home / "bin/java").is_file():
         parser.error("--java-home must contain bin/java")
@@ -80,7 +102,8 @@ def main():
     result = {"run_id": run_id, "repo": str(repo), "head": head,
               "java_home": str(java_home), "expected_major": args.expected_major,
               "command": [], "command_exit": None, "launcher": [], "forks": [],
-              "ignored_stale_reports": [], "errors": []}
+              "runner_source": evidence(Path(__file__).resolve()),
+              "reports": [], "groups": [], "ignored_stale_reports": [], "errors": []}
     started = time.time_ns()
     result["started_ns"] = started
     try:
@@ -95,7 +118,17 @@ def main():
         marker = "PPD_JVM_" + run_id + "="
         probe = ('eval println("' + marker + '" + System.getProperty("java.version")'
                  ' + "\\t" + System.getProperty("java.home"))')
-        command = [str(sbt), "--java-home", str(java_home), "-batch", probe, *args.commands]
+        agent = prepare_probe(java_home, directory, run_id)
+        result["probe_source"] = evidence(Path(__file__).resolve().parent / "jvm-probe/RuntimeProbe.java")
+        project = TEST_COMMAND.fullmatch(args.commands[0])[1]
+        command = [str(sbt), "--java-home", str(java_home), "-batch", probe,
+                   *instrumentation(project, agent, run_id), *args.commands]
+        if args.fork_java_home:
+            fork_home = args.fork_java_home.expanduser().resolve()
+            if not (fork_home / "bin/java").is_file():
+                raise ValueError("--fork-java-home must contain bin/java")
+            command.insert(4, 'set LocalProject(' + json.dumps(project) +
+                           ') / Test / javaHome := Some(file(' + json.dumps(str(fork_home)) + '))')
         result["command"] = command
         started = time.time_ns()
         result["started_ns"] = started
@@ -107,6 +140,8 @@ def main():
                 sys.stdout.write(line)
                 log.write(line)
                 match = re.fullmatch(r"(?:\[info\] )?" + re.escape(marker) + r"([^\t\r\n]+)\t([^\r\n]+)\r?\n?", line)
+                if line.strip() == "PPD_GROUP_" + run_id:
+                    result["groups"].append(run_id)
                 if match:
                     result["launcher"].append({"java.version": match[1], "java.home": match[2]})
             result["command_exit"] = process.wait()
@@ -119,8 +154,21 @@ def main():
                 result["ignored_stale_reports"].append(str(path))
                 continue
             try:
-                result["forks"].append({"evidence": item, "jvms": fork_evidence(path)})
+                result["reports"].append({"evidence": item, "suites": test_evidence(path)})
             except (ET.ParseError, ValueError) as error:
+                result["errors"].append({"evidence": item, "error": str(error)})
+        for path in sorted((directory / "forks").glob("*.probe")):
+            item = evidence(path)
+            try:
+                lines = path.read_text().splitlines()
+                if len(lines) != 3 or lines[0] != run_id or not started <= item["mtime_ns"] <= finished:
+                    raise ValueError("invalid or stale fork probe")
+                values = [base64.b64decode(v, validate=True).decode() for v in lines[1:]]
+                if not all(values):
+                    raise ValueError("empty fork properties")
+                result["forks"].append({"evidence": item, "jvms": [
+                    {"java.version": values[0], "java.home": values[1]}]})
+            except (ValueError, UnicodeError) as error:
                 result["errors"].append({"evidence": item, "error": str(error)})
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         result["errors"].append({"error": str(error)})
@@ -128,7 +176,8 @@ def main():
     observed = launcher + [jvm for report in result["forks"] for jvm in report["jvms"]]
     if any(major(jvm["java.version"]) not in (None, args.expected_major) for jvm in observed):
         runtime = "mismatch"
-    elif (len(launcher) != 1 or not result["forks"] or result["errors"]
+    elif (len(launcher) != 1 or len(result["forks"]) != 1 or result["groups"] != [run_id]
+          or not result["reports"] or result["errors"]
           or any(major(jvm["java.version"]) is None for jvm in observed)):
         runtime = "unknown"
     else:
