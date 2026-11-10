@@ -75,6 +75,7 @@ final class JournalRowStore(
       idColumn,
       AttributeName(columns.sequenceNrColumnName),
       AttributeName(columns.eventsColumnName),
+      AttributeName(JournalHeadColumnsDefConfig.revisionColumnName),
       columns.eventSequenceNrColumnName,
       columns.eventMessageColumnName,
       columns
@@ -183,26 +184,30 @@ final class JournalRowStore(
 
   private def updateRow(row: JournalRow): Source[Unit, NotUsed] =
     run(
-      Operation.Update(schema.table, keyOf(row.persistenceId, row.sequenceNumber), rowUpdates(row)),
+      Operation.Update(
+        schema.table,
+        keyOf(row.persistenceId, row.sequenceNumber),
+        rowContentUpdates(row) :+ AttributeUpdate.Set(schema.deleted, DdbValue.Bool(row.deleted))
+      ),
       writeBackoffConfig
     ).map { result =>
       expectWritten(result)
       ()
     }
 
-  private def rowUpdates(row: JournalRow): Vector[AttributeUpdate] =
+  private def rowContentUpdates(row: JournalRow): Vector[AttributeUpdate] =
     Vector(
       AttributeUpdate.Set(schema.message, DdbValue.Bin(row.message.toVector)),
-      AttributeUpdate.Set(schema.ordering, DdbValue.Num(BigDecimal(row.ordering))),
-      AttributeUpdate.Set(schema.deleted, DdbValue.Bool(row.deleted))
+      AttributeUpdate.Set(schema.ordering, DdbValue.Num(BigDecimal(row.ordering)))
     ) ++ row.tags.map(tag => AttributeUpdate.Set(schema.tags, DdbValue.Str(tag))).toVector
 
   /** The head keeps only the events of its latest write, so an event outside that write cannot be changed there. The
     * update is refused for such an event, because the head stream has already delivered it.
     *
-    * The head is read, replaced with the new event, and written back under the condition that its events are still the
-    * ones that were read. A concurrent write or update of another event fails that condition, and the whole read and
-    * write is tried again against the new head.
+    * The head is read, replaced with the new event and a revision one higher, and written back under the condition that
+    * its `sequence-nr` and `revision` are still the ones that were read. A concurrent write or update of another event
+    * fails that condition, and the whole read and write is tried again against the new head. The journal row keeps its
+    * `deleted` flag and is not updated when it is deleted, so an update cannot bring a soft deleted event back.
     */
   private def updateRowAndHead(head: HeadTable, row: JournalRow, attemptsLeft: Int): Source[Unit, NotUsed] = {
     val persistenceId = row.persistenceId.asString
@@ -213,20 +218,27 @@ final class JournalRowStore(
         replaceHeadEvent(head, headItem, row) match {
           case Left(failure) =>
             Source.failed(failure)
-          case Right((observedEvents, newHeadItem)) =>
+          case Right((headCondition, newHeadItem)) =>
             val transaction = Operation.TransactWrite(
               Vector(
                 TransactItem.Update(
                   schema.table,
                   keyOf(row.persistenceId, row.sequenceNumber),
-                  rowUpdates(row),
-                  Some(Condition.AttributeExists(schema.partitionKey))
+                  rowContentUpdates(row),
+                  Some(
+                    Condition.And(
+                      Condition.AttributeExists(schema.partitionKey),
+                      Condition.Not(
+                        Condition.Compare(
+                          Operand.Column(schema.deleted),
+                          CompareOp.Eq,
+                          Operand.Literal(DdbValue.Bool(true))
+                        )
+                      )
+                    )
+                  )
                 ),
-                TransactItem.Put(
-                  head.spec.table,
-                  newHeadItem,
-                  Some(Condition.Compare(Operand.Column(head.events), CompareOp.Eq, Operand.Literal(observedEvents)))
-                )
+                TransactItem.Put(head.spec.table, newHeadItem, Some(headCondition))
               )
             )
             run(transaction, writeBackoffConfig).flatMapConcat {
@@ -241,7 +253,9 @@ final class JournalRowStore(
                     )
                   )
                 if (conditionFailed.contains(JournalRowIndex)) {
-                  cannotUpdate("its journal row does not exist, although the JournalHead item holds the event")
+                  cannotUpdate(
+                    "its journal row does not exist or is deleted, although the JournalHead item holds the event"
+                  )
                 } else if (conditionFailed.contains(HeadIndex)) {
                   // Only a failed condition on the head means the head changed after it was read. Any other
                   // cancellation reason (a validation error, throttling, a transaction conflict) is not cured by
@@ -260,12 +274,14 @@ final class JournalRowStore(
     }
   }
 
-  /** The events as they were read, and the head item with the event of the row replaced. */
+  /** The condition that the head is still the one that was read, and the head item with the event of the row replaced
+    * and its revision raised by one.
+    */
   private def replaceHeadEvent(
       head: HeadTable,
       headItem: AttributeMap,
       row: JournalRow
-  ): Either[Throwable, (DdbValue, AttributeMap)] = {
+  ): Either[Throwable, (Condition, AttributeMap)] = {
     val persistenceId = row.persistenceId.asString
     val target        = BigDecimal(row.sequenceNumber.value)
     def sequenceNrOf(event: DdbValue): Option[BigDecimal] = event match {
@@ -273,8 +289,11 @@ final class JournalRowStore(
         entries.collectFirst { case (name, DdbValue.Num(value)) if name == head.eventSequenceNr => value }
       case _ => None
     }
-    headItem.get(head.events) match {
-      case Some(observed @ DdbValue.L(events)) if events.exists(event => sequenceNrOf(event).contains(target)) =>
+    val observedSequenceNr = headItem.get(head.sequenceNr).collect { case DdbValue.Num(value) => value }
+    val observedRevision   = headItem.get(head.revision).collect { case DdbValue.Num(value) => value }
+    (headItem.get(head.events), observedSequenceNr) match {
+      case (Some(DdbValue.L(events)), Some(sequenceNr))
+          if events.exists(event => sequenceNrOf(event).contains(target)) =>
         val replaced = events.map {
           case event @ DdbValue.M(entries) if sequenceNrOf(event).contains(target) =>
             DdbValue.M(entries.map {
@@ -283,10 +302,10 @@ final class JournalRowStore(
             })
           case event => event
         }
-        val headSequenceNr = headItem.get(head.sequenceNr).collect { case DdbValue.Num(value) => value.toLong }
+        val newRevision = observedRevision.getOrElse(BigDecimal(0)) + 1
         val headRow = JournalHeadRow(
           row.persistenceId,
-          SequenceNumber(headSequenceNr.getOrElse(row.sequenceNumber.value)),
+          SequenceNumber(sequenceNr.toLong),
           replaced.collect { case event @ DdbValue.M(entries) =>
             JournalHeadEvent(
               SequenceNumber(sequenceNrOf(event).get.toLong),
@@ -296,15 +315,30 @@ final class JournalRowStore(
             )
           }
         )
-        val headSize = DynamoDBItemSizeCalculator.journalHeadItemSize(headRow, head.columns)
+        val headSize = DynamoDBItemSizeCalculator.journalHeadItemSize(headRow, head.columns) +
+          DynamoDBItemSizeCalculator.stringSize(head.revision.value) +
+          DynamoDBItemSizeCalculator.numberSize(newRevision.toLong)
         if (headSize > JournalHeadLimits.MaxItemSizeBytes) {
           Left(
             WriteRejection
               .HeadItemTooLarge(persistenceId, headSize, JournalHeadLimits.MaxItemSizeBytes).toJournalHeadException
           )
         } else {
-          Right((observed, headItem.updated(head.events, DdbValue.L(replaced))))
+          val unchanged = Condition.And(
+            Condition.Compare(Operand.Column(head.sequenceNr), CompareOp.Eq, Operand.Literal(DdbValue.Num(sequenceNr))),
+            observedRevision.fold[Condition](Condition.AttributeNotExists(head.revision))(revision =>
+              Condition.Compare(Operand.Column(head.revision), CompareOp.Eq, Operand.Literal(DdbValue.Num(revision)))
+            )
+          )
+          Right(
+            (
+              unchanged,
+              headItem.updated(head.events, DdbValue.L(replaced)).updated(head.revision, DdbValue.Num(newRevision))
+            )
+          )
         }
+      case (_, None) =>
+        Left(new IllegalStateException(s"persistenceId=[$persistenceId]: the JournalHead item has no sequence number"))
       case _ =>
         Left(new JournalHeadAsyncUpdateEventUnsupportedException(persistenceId, row.sequenceNumber.value))
     }
@@ -441,6 +475,7 @@ final class JournalRowStore(
       val persistenceId: AttributeName,
       val sequenceNr: AttributeName,
       val events: AttributeName,
+      val revision: AttributeName,
       val eventSequenceNr: String,
       val eventMessage: String,
       val columns: JournalHeadColumnsDefConfig

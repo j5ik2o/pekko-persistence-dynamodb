@@ -94,9 +94,14 @@ of editing the JSON by hand.
 | `persistence-id` | `S`    | partition key, one per aggregate    |
 | `sequence-nr`    | `N`    | last sequence number of the write   |
 | `events`         | `L`    | events of the write                 |
+| `revision`       | `N`    | optional, raised by one on every in-place event update |
 
 Each element of `events` is a map of `sequence-nr` (`N`) and `message` (`B`), the bytes stored in the journal row's
 `message`.
+
+A write does not write `revision`, so an item without it has revision 0. Only an in-place event update (see below)
+writes it. The attribute name is fixed and is not a column setting. A later write replaces the whole item, so the item
+of the next write has no `revision` again.
 
 ```{important}
 Enable DynamoDB Streams on the `JournalHead` table only, with the stream view type `NEW_IMAGE` or
@@ -114,10 +119,17 @@ and preserves the order of modifications to one item, so the events of one aggre
 [DynamoDB Streams](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Streams.html).
 
 The consumer applies each record at least once. It can retry a failed batch, rewind a checkpoint, or reset a shard
-iterator, and it then processes records it has already applied. Make the read model update idempotent, and
-deduplicate by the sequence number of each event. Keep a checkpoint for each persistence id, the last sequence number
-applied to the read model. Write the checkpoint in the same transaction as the read model when the read model store
-supports transactions.
+iterator, and it then processes records it has already applied. Make the read model update idempotent. Keep a
+checkpoint for each persistence id, the pair (`sequence-nr`, `revision`) of the last record applied to the read model,
+and read a missing `revision` as 0. Write the checkpoint in the same transaction as the read model when the read model
+store supports transactions. Compare a record with the checkpoint in this order:
+
+| Record compared with the checkpoint                       | What the consumer does                                                      |
+|:----------------------------------------------------------|:----------------------------------------------------------------------------|
+| `sequence-nr` is lower                                    | discard the record, it was applied before                                   |
+| `sequence-nr` is equal and `revision` is not higher       | discard the record, it was applied before                                   |
+| `sequence-nr` is equal and `revision` is higher           | an in-place update of an event of that write: replace the stored events with the same sequence numbers by the events of the record, or rebuild them from the journal |
+| `sequence-nr` is higher                                   | a new write: apply its events and move the checkpoint to (`sequence-nr`, `revision`) |
 
 Each element of `events` is the bytes of a serialized `PersistentRepr`, the same value the journal row stores in
 `message`. Deserialize it with the serializer for `PersistentRepr`, then apply the same event adapter that the
@@ -319,16 +331,19 @@ unchanged:
 |:------------------------------------------|:-----------------------------------------------------------------------------------------|
 | `JournalHeadMissingException`             | the aggregate has no `JournalHead` item — run the migration                              |
 | `JournalHeadItemTooLargeException`        | the `JournalHead` item would exceed 400 KB with the new event                            |
-| `IllegalStateException`                   | the journal row does not exist although the head holds the event, or the head changed during three attempts |
+| `IllegalStateException`                   | the journal row does not exist or is deleted although the head holds the event, or the head changed during three attempts |
 
-The transaction is conditional on the head events being the ones the plugin read, so a write that lands between the
-read and the transaction makes the plugin read the head again and retry, up to three attempts. Any other reason for
-which DynamoDB cancels the transaction is reported as an `IllegalStateException` without a retry.
+An update keeps the `deleted` flag of the journal row and does not update a deleted row. An event removed with a soft
+delete therefore stays deleted, and updating it fails.
 
-An update changes the message of an event and keeps its sequence number and the `sequence-nr` of the head. The
-stream therefore carries a record whose events have sequence numbers the consumer may already have applied. A consumer
-that skips events at or below its checkpoint ignores the update. Apply each event as an upsert by its sequence number,
-so that a record that carries the same sequence number with a new message replaces the stored event.
+The transaction is conditional on the `sequence-nr` and the `revision` of the head being the ones the plugin read, so a
+write or an update that lands between the read and the transaction makes the plugin read the head again and retry, up
+to three attempts. Any other reason for which DynamoDB cancels the transaction is reported as an `IllegalStateException`
+without a retry.
+
+An update changes the message of an event, keeps its sequence number and the `sequence-nr` of the head, and raises the
+`revision` of the head by one. The stream carries the update as a record with the same `sequence-nr` and a higher
+`revision`. The section "Consuming the stream" describes how a consumer applies it.
 
 A failure of the update itself, such as a DynamoDB error, now reaches the caller with its own type. Before, the head-less
 path relabelled every failure of `InPlaceUpdateEvent` as an `IllegalArgumentException` about serialization. Only a

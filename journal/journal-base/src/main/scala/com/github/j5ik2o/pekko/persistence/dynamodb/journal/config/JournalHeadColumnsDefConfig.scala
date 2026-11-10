@@ -27,6 +27,11 @@ object JournalHeadColumnsDefConfig extends LoggingSupport {
   val eventSequenceNrColumnNameKey = "event-sequence-nr-column-name"
   val eventMessageColumnNameKey    = "event-message-column-name"
 
+  /** The optional version attribute of a JournalHead item. It is not configurable: only an in-place event update writes
+    * it, and an item without it has revision 0.
+    */
+  val revisionColumnName = "revision"
+
   def fromConfig(config: Config): JournalHeadColumnsDefConfig = {
     val cfg = if (config == null) ConfigFactory.empty() else config
     JournalHeadColumnsDefConfig(

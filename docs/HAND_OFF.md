@@ -2,20 +2,18 @@
 
 ## いまの状態
 
-#886 の追加作業 2 点のうち、テストが赤になった段階。
+#886 の追加作業のうち、revision と soft-delete の保護は実装済み (全体テスト緑)。
 
-1. head に省略できる版番号 `revision` を足す。通常の書き込みは書かない。属性がなければ版 0。`asyncUpdateEvent` が head を更新するたびに 1 増やす。
-   列名は固定で、`JournalHeadColumnsDefConfig` の引数は増やさない。head の Put の条件は「`sequence-nr` と `revision` が一致」にする。
-2. soft-delete された行の復活を防ぐ。head モードの行の更新は `deleted` を書き換えず、条件に「`deleted` が true でない」を足す。
+1. head に省略できる `revision` を足した。head の Put の条件は `sequence-nr` と `revision` の一致。
+2. head モードの行の更新は `deleted` を書き換えず、条件は「行があり、`deleted` が true でない」。
 
-赤の理由: `revision` 属性がない。soft-delete した最新のイベントを更新すると `Done` で成功し、`deleted=false` に戻る。
-
-- 赤の実行: `sbt -batch "journal-v2/testOnly *JournalHeadSpec -- -z in-place"` (Docker が必要)、`sbt -batch "journal-base/testOnly *JournalRowStoreSpec"`
+独立レビューで次の 2 点が出た。これから直す。
+- 移行ツールの `raiseJournalHeadIfBehind` が `revision` を残す。`REMOVE revision` を足す。
+- 購読側の再構築手順で `revision` が未指定。docs に「再構築の前に head の `revision` を読む」と、events が空の record の行を足す。
 
 ## 次の一手
 
-`JournalRowStore.updateRowAndHead` に revision と条件を足し、行の更新を head モード用に分ける。`journal-head.md` の購読側の約束を
-`(sequence-nr, revision)` のチェックポイントに書き直す。`table-format.md` と `journal-head.md` の属性表に `revision` を足す。
+上の 2 点をテスト先行で直す。そのあと、例外の型の整理 (IllegalStateException は「あり得ない状態」だけ) に進む。
 
 ## 未決の判断
 
