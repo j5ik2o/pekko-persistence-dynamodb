@@ -1,0 +1,47 @@
+# PPD evidence CLI
+
+`ppd-evidence.py` uses Python 3.9+ and the standard library. It stores observations and generates assessments for #913 and #915. It never posts, merges, cancels, deletes, schedules or reads T3 transcripts. Supply exported snapshots only for the current PPD thread and its children.
+
+## Collect and assess PR evidence
+
+```sh
+python3 tools/ppd-evidence.py collect --repo j5ik2o/pekko-persistence-dynamodb \
+  --pr 123 --reviewed-head FULL_SHA --required-check lint \
+  --required-check 'test (11, 2.13.16)' --output /tmp/pr-evidence.json
+python3 tools/ppd-evidence.py pr /tmp/pr-evidence.json
+python3 tools/ppd-evidence.py git --output /tmp/worktree-evidence.json
+python3 -m unittest discover -s tools/tests -v
+```
+
+Replace the sample check names with the complete set the PM requires. The tool does not discover branch protection requirements. An empty required list is unknown. `collect` needs authenticated `gh`, plus `bash` and `jq` for the existing `check-review-threads.sh`. It uses GET requests and executes that repository-relative script. Each command records its actual exit code, output, source and observation time. A timeout or missing executable is unknown. The thread script's exit 1 means unresolved threads; exit 2 means collection failed.
+
+The JSON contains `snapshot` and `report`. Keep it outside the repository. `pr` replays the stored snapshot without network access and prints a status sentence to stderr. The snapshot preserves the caller's reviewed head as a claim, rather than an independently verified review. It records the current head before and after collection. A head or PR-state change during collection produces unknown. Collection is sequential and is not an atomic GitHub snapshot.
+
+The collector selects the highest workflow run number and attempt for each workflow ID on the current SHA, then fetches jobs for that exact attempt. A queued workflow with no jobs blocks evidence satisfaction. Old cancelled runs cannot replace a new successful run, and a new pending attempt cannot inherit an earlier success. External checks use the highest check ID per app and name; commit statuses use the highest status ID per context. All producers of a required name must succeed. Neutral and skipped checks do not satisfy a required name. Unknown, failed and pending states remain distinct in the reasons. Pagination failures are unknown, not an empty success result. Raw records retain job and step timestamps; the CLI makes no duration estimates or future timeout guarantees.
+
+`git` reads the current directory's HEAD, porcelain status, diff against HEAD and five recent commits. It saves the diff and its SHA-256. It does not visit other worktrees. Untracked file names appear in status, but their contents are not hashed. Compare successive snapshots to investigate edits within an already dirty tree.
+
+Exit codes are 0 for satisfied evidence, 1 for blocked evidence and 2 for unknown or failed collection. Satisfied evidence is **not merge authorization**. The PM must separately inspect the diff, review contents and branch protection. Every observation can become stale immediately. This tool adds no CI wiring or automation.
+
+## Assess offline progress
+
+```sh
+python3 tools/ppd-evidence.py progress snapshot.json --output /tmp/progress-report.json
+```
+
+The input is an object with `observed_at` and a `tasks` array. Each task has the following fields.
+
+| Field | Meaning |
+| --- | --- |
+| `task`, `source_thread`, `observed_at` | Task identifier, source and actual export time. Missing time remains null; replay time is not substituted. |
+| `initial_head`, `current_head`, `git_status` | Observed worktree values. Missing or null values produce unknown. |
+| `initial_git_status` | Optional baseline porcelain status, defaulting to clean. An unchanged dirty status is not new progress. |
+| `initial_diff_sha256`, `current_diff_sha256` | Optional fingerprints from two `git` snapshots. A changed fingerprint counts as an artifact delta. |
+| `diff_changed` | Optional observed comparison of baseline and current diff fingerprints. Omit if unavailable. |
+| `events` | Exported activity records in the observation window. |
+
+Each event has a `type`. `compaction` counts compactions. `command_execution` has `text`; only its first line is scanned for `cat`, `sed`, `tail` and `head` file reads. Paths are counted once per command. This is a heuristic, not a shell parser. A `verification` event has `kind`, `source`, `head`, `run_id`, `exit_code` and optionally `attempt` and `observed_at`. Include actual process results, not prose claims. The report retains these fields. Any observed verification execution is activity evidence, including a failing execution; it is not successful completion. Repeated execution of the same verification does not demonstrate forward progress by itself.
+
+At least three compactions and three reads of one file, with unchanged head, clean status and no observed verification, produce `investigate_repeated_preparation`. Progress evidence alongside repetition produces `repetition_with_progress_evidence`, which still warrants human interpretation. Other complete inputs produce `no_repetition_trigger`. Neither label means healthy or complete. `updatedAt` never establishes progress. The tool diagnoses no model or runtime cause and takes no action against a worker.
+
+Progress exits 1 for investigation candidates, 2 for unknown worktree evidence and 0 otherwise. A 0 exit only means the heuristic did not select an investigation candidate. The fixture under `tests/fixtures` preserves the three supplied historical repetition patterns with path prefixes normalized and command output removed.
