@@ -178,6 +178,18 @@ class CleanupMergedWorktreeTests(unittest.TestCase):
             process.terminate()
             process.wait()
 
+    def test_does_not_treat_regex_like_nearby_path_as_worktree_use(self):
+        nearby_path = str(self.worktree).replace("[1].+", "1x+")
+        process = subprocess.Popen(["python3", "-c", "import time; time.sleep(30)", nearby_path])
+        try:
+            time.sleep(0.1)
+            result = self.run_script("--dry-run")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(self.worktree.exists())
+        finally:
+            process.terminate()
+            process.wait()
+
     def test_stops_when_lsof_fails(self):
         self.env["LSOF_FAIL"] = "1"
         self.assert_stopped("could not inspect processes using worktree (cwd)")
