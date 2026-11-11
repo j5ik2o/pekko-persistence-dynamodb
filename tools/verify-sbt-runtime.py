@@ -79,7 +79,7 @@ def instrumentation(project, agent, run_id):
             'set ' + scope + 'Test / Keys.testOnly / aggregate := false', grouping]
 
 
-def collect_execution_evidence(result, repo, directory, run_id, marker, before):
+def collect_execution_evidence(result, repo, directory, run_id, before):
     started = result["started_ns"]
     finished = time.time_ns()
     for path in reports(repo):
@@ -146,7 +146,7 @@ def run_sbt(args, repo, java_home, directory, run_id, result):
         result["command_exit"] = process.wait()
         process.stdout.close()
     result["log"] = evidence(log_path)
-    collect_execution_evidence(result, repo, directory, run_id, marker, before)
+    collect_execution_evidence(result, repo, directory, run_id, before)
 
 
 def main():
