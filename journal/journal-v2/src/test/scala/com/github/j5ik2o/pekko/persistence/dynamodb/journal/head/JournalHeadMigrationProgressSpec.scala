@@ -52,9 +52,10 @@ class JournalHeadMigrationProgressSpec extends AnyWordSpec with Matchers {
       )
 
       renderFindings(findings) shouldBe Seq(
-        "[dry-run] raised JournalHead items may indicate writes from nodes with head mode disabled; this is not " +
-        "conclusive. A serialization rejection can leave a sequence-number gap without a journal row, and a " +
-        "later head-enabled write can move the head across a gap so the migration no longer reports it",
+        "[dry-run] raised means the observed journal or snapshot sequence is ahead of the head, which can indicate " +
+        "writes from nodes with head mode disabled but does not prove that cause. A serialization rejection alone " +
+        "creates no journal row and does not cause a raised item. A later head-enabled write can advance the head " +
+        "past earlier sequence gaps, so a later dry-run may no longer reveal earlier mixed writes",
         "[dry-run] snapshot-only migration sources: 1 persistence id (compare with hard-delete history; this is " +
         "not an anomaly):\n  - order-93"
       )
