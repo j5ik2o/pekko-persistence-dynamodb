@@ -160,7 +160,14 @@ def execute(args, root, out, source, test, before):
                     pass
                 except OSError as error:
                     result["errors"].append("timeout process-group cleanup failed: " + str(error))
-                result["child_exit"] = child.wait()
+                    try:
+                        child.kill()
+                    except OSError as fallback_error:
+                        result["errors"].append("timeout child cleanup failed: " + str(fallback_error))
+                try:
+                    result["child_exit"] = child.wait(timeout=args.timeout)
+                except subprocess.TimeoutExpired:
+                    result["errors"].append("timeout child wait expired after cleanup")
                 result["errors"].append("timeout")
         observed = json.loads(observation.read_bytes())
         result["observed"] = observed

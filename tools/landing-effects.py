@@ -122,14 +122,15 @@ def collect(args):
                     pr=c.get(f"{prefix}/pulls/{args.pr}") if args.pr else None,
                     workflows=c.get(f"{prefix}/actions/workflows?per_page=100"))
 
-    def workflow_state_inventory(value):
-        listing = observed_object(value, "workflow_state_inventory", c.unknowns)
+    def workflow_state_inventory(value, unknowns, phase=None):
+        listing = observed_object(value, "workflow_state_inventory", unknowns)
         workflows = listing.get("workflows")
         if not isinstance(workflows, list) or any(
                 not isinstance(w, dict) or not isinstance(w.get("path"), str)
                 for w in workflows):
             c.failed = True
-            c.unknowns.append(dict(kind="invalid_workflow_state_inventory"))
+            unknowns.append(dict(kind="invalid_workflow_state_inventory", **(
+                {"phase": phase} if phase else {})))
             return {"workflows": []}
         return listing
 
@@ -144,7 +145,7 @@ def collect(args):
     if args.pr and pr_base.get("ref") != args.branch:
         c.failed = True
         c.unknowns.append(dict(kind="pr_destination_mismatch"))
-    listing = workflow_state_inventory(before["workflows"])
+    listing = workflow_state_inventory(before["workflows"], c.unknowns)
     states = {w["path"]: w.get("state", "unknown") for w in listing.get("workflows", [])}
     if listing.get("total_count", 0) > 100:
         c.failed = True
@@ -165,19 +166,23 @@ def collect(args):
     c.get(f"{prefix}/actions/permissions/workflow")
     after = observe()
     # Compare the identities and workflow states, not unrelated volatile PR fields.
-    def identities(obs):
-        p = observed_object(obs["pr"], "pull_request", c.unknowns)
-        b = observed_object(obs["branch"], "branch", c.unknowns)
-        w = workflow_state_inventory(obs["workflows"])
-        commit = nested_object(b, "commit", "branch.commit", c.unknowns)
-        pr_base_identity = nested_object(p, "base", "pull_request.base", c.unknowns)
-        pr_head_identity = nested_object(p, "head", "pull_request.head", c.unknowns)
+    def identities(obs, unknowns, phase=None):
+        p = observed_object(obs["pr"], "pull_request", unknowns)
+        b = observed_object(obs["branch"], "branch", unknowns)
+        w = workflow_state_inventory(obs["workflows"], unknowns, phase)
+        commit = nested_object(b, "commit", "branch.commit", unknowns)
+        pr_base_identity = nested_object(p, "base", "pull_request.base", unknowns)
+        pr_head_identity = nested_object(p, "head", "pull_request.head", unknowns)
         return (commit.get("sha"), pr_base_identity.get("sha"),
                 pr_head_identity.get("sha"), p.get("state"),
                 sorted((x["path"], x.get("state")) for x in w.get("workflows", [])
                        if isinstance(x, dict) and isinstance(x.get("path"), str)))
-    if identities(before) != identities(after):
+    after_unknowns = []
+    if identities(before, []) != identities(after, after_unknowns, "after"):
         c.unknowns.append(dict(kind="observation_drift"))
+    c.unknowns.extend(after_unknowns)
+    if any(item.get("kind") == "invalid_api_object" for item in c.unknowns):
+        c.failed = True
     snapshot = dict(format_version=1, repository=args.repo, destination_branch=args.branch,
                     observed_base_sha=base, observed_head_sha=head, pr=args.pr,
                     observed_pr_base_sha=pr_base.get("sha"),

@@ -238,6 +238,27 @@ class EvidenceTests(unittest.TestCase):
                 expected = "collection_failure" if isinstance(invalid, list) else "invalid_workflow_state_inventory"
                 self.assertIn(expected, kinds)
 
+    def test_collect_fails_on_invalid_nested_api_object(self):
+        import argparse
+        with tempfile.TemporaryDirectory() as d:
+            responses = [dict(commit=dict(sha="a" * 40)),
+                dict(base=dict(ref="main", sha="a" * 40), head=dict(sha="b" * 40), state="open"),
+                dict(workflows=[], total_count=0), dict(tree=[]), dict(tree=[]), {}, {},
+                dict(commit=dict(sha="a" * 40)),
+                dict(base=dict(ref="main", sha="a" * 40), head=[], state="open"),
+                dict(workflows=[], total_count=0)]
+
+            def api(args, **kwargs):
+                return subprocess.CompletedProcess(args, 0, json.dumps(responses.pop(0)).encode(), b"")
+
+            out = Path(d) / "evidence"
+            with patch.object(le.subprocess, "run", side_effect=api), patch("builtins.print"):
+                result = le.collect(argparse.Namespace(out=out, repo="fixture/repo", branch="main", pr=1, head=None))
+            snapshot = json.loads((out / "snapshot.json").read_text())
+            self.assertEqual(result, 1)
+            self.assertFalse(snapshot["collection_complete"])
+            self.assertEqual([x["kind"] for x in snapshot["unknowns"]].count("invalid_api_object"), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
