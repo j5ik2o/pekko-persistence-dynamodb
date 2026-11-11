@@ -18,21 +18,45 @@ package com.github.j5ik2o.pekko.persistence.dynamodb.journal.head
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.wordspec.AnyWordSpec
 
+import com.github.j5ik2o.pekko.persistence.dynamodb.model.{ PersistenceId, SequenceNumber }
+
 class JournalHeadMigrationProgressSpec extends AnyWordSpec with Matchers {
   import JournalHeadMigration._
 
   "Migration progress" should {
     "render dry-run findings for raised and snapshot-only persistence ids" in {
-      val findings = MigrationFindings(
-        raisedPersistenceIds = Seq("order-17", "order-42"),
-        snapshotOnlyPersistenceIds = Seq("order-93")
+      val findings = MigrationFindings.fromPlan(
+        MigrationPlan(
+          Vector(
+            MigrationPlan.Entry(
+              PersistenceId("order-17"),
+              MigrationSource.Journal(SequenceNumber(4)),
+              SequenceNumber(4),
+              Some(SequenceNumber(2))
+            ),
+            MigrationPlan.Entry(
+              PersistenceId("order-42"),
+              MigrationSource.Both(SequenceNumber(5), SequenceNumber(3)),
+              SequenceNumber(5),
+              Some(SequenceNumber(3))
+            ),
+            MigrationPlan.Entry(
+              PersistenceId("order-93"),
+              MigrationSource.Snapshot(SequenceNumber(7)),
+              SequenceNumber(7),
+              None
+            )
+          ),
+          snapshotTableScanned = true
+        )
       )
 
       renderFindings(findings) shouldBe Seq(
         "[dry-run] raised JournalHead items may indicate writes from nodes with head mode disabled; this is not " +
-          "conclusive, because serialization rejections can also leave a gap and a later head-enabled write can " +
-          "hide it",
-        "[dry-run] snapshot-only migration sources: 1 persistence id (compare with hard-delete history):\n  - order-93"
+        "conclusive. A serialization rejection can leave a sequence-number gap without a journal row, and a " +
+        "later head-enabled write can move the head across a gap so the migration no longer reports it",
+        "[dry-run] snapshot-only migration sources: 1 persistence id (compare with hard-delete history; this is " +
+        "not an anomaly):\n  - order-93"
       )
     }
 

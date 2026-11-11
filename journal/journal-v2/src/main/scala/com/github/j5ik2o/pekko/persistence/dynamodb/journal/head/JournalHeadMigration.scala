@@ -77,6 +77,40 @@ object JournalHeadMigration {
   private[journal] case object SnapshotUnavailable extends Progress
   private[journal] case object SnapshotSkipped extends Progress
   private[journal] final case class PhaseStarted(phase: String) extends Progress
+  private[journal] final case class MigrationFindings(
+      raisedPersistenceIds: Seq[String],
+      snapshotOnlyPersistenceIds: Seq[String]
+  )
+
+  private[journal] object MigrationFindings {
+    def fromPlan(plan: MigrationPlan): MigrationFindings = MigrationFindings(
+      plan.raisedPersistenceIds.map(_.asString),
+      plan.entries.collect { case MigrationPlan.Entry(persistenceId, MigrationSource.Snapshot(_), _, _) =>
+        persistenceId.asString
+      }
+    )
+  }
+
+  private[journal] def renderFindings(findings: MigrationFindings): Seq[String] = {
+    val raised =
+      if (findings.raisedPersistenceIds.nonEmpty)
+        Seq(
+          "[dry-run] raised JournalHead items may indicate writes from nodes with head mode disabled; this is not " +
+          "conclusive. A serialization rejection can leave a sequence-number gap without a journal row, and a " +
+          "later head-enabled write can move the head across a gap so the migration no longer reports it"
+        )
+      else Seq.empty
+    val snapshotOnly =
+      if (findings.snapshotOnlyPersistenceIds.nonEmpty)
+        Seq(
+          s"[dry-run] snapshot-only migration sources: ${findings.snapshotOnlyPersistenceIds.size} persistence id" +
+          s"${if (findings.snapshotOnlyPersistenceIds.size == 1) "" else "s"} " +
+          "(compare with hard-delete history; this is not an anomaly):" +
+          findings.snapshotOnlyPersistenceIds.map(persistenceId => s"\n  - $persistenceId").mkString
+        )
+      else Seq.empty
+    raised ++ snapshotOnly
+  }
 
   private[journal] def renderProgress(progress: Progress, execute: Boolean): String = {
     def sourceName(source: Source): String = source match {
@@ -185,7 +219,8 @@ object JournalHeadMigration {
       snapshotTable: Option[SnapshotTable],
       emit: Progress => Unit,
       selectedIds: Option[Set[PersistenceId]],
-      reportSelection: (Int, Int) => Unit
+      reportSelection: (Int, Int) => Unit,
+      reportPlan: MigrationPlan => Unit = _ => ()
   ): Result = {
     val allJournalVersions = scanHighestSequenceNrs(
       syncClient,
@@ -215,6 +250,7 @@ object JournalHeadMigration {
       .toMap
     notifyProgress(emit, PhaseStarted("plan"))
     val plan = MigrationPlanner.plan(journalVersions, snapshotVersions, currentHeads)
+    reportPlan(plan)
     if (execute) {
       notifyProgress(emit, PhaseStarted("execute"))
       val result = MigrationExecutor.execute(plan, headWriter(syncClient, headConfig))
@@ -472,6 +508,7 @@ object JournalHeadMigration {
         .createThrow(pluginConfig.v2SyncClientFactoryClassName)
         .create
       try {
+        var findings = Seq.empty[String]
         val result = runObserved(
           client,
           pluginConfig.tableName,
@@ -487,7 +524,8 @@ object JournalHeadMigration {
               s"${prefix}JournalHead migration selection requested=$requested observed-in-sources=$observed" +
               s" not-observed-in-sources=${requested - observed}"
             )
-          }
+          },
+          plan => if (!execute) findings = renderFindings(MigrationFindings.fromPlan(plan))
         )
         val prefix = if (execute) "" else "[dry-run] "
         println(
@@ -507,6 +545,9 @@ object JournalHeadMigration {
             s"${prefix}raised JournalHead items (rebuild the read model of these aggregates from the journal):" +
             result.raisedPersistenceIds.map(persistenceId => s"\n  - $persistenceId").mkString
           )
+        }
+        if (!execute) {
+          findings.foreach(println)
         }
       } finally {
         client.close()

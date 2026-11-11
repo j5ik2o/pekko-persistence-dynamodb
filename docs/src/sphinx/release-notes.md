@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### JournalHead migration dry-run reports source details
+
+The dry-run now explains that raised JournalHead items may indicate writes from nodes with head mode disabled, while
+making clear that this is not conclusive and a later head-enabled write can hide the gap. It also lists and counts
+persistence ids found in snapshots but not in the journal so operators can compare them with hard-delete history.
+Snapshot-only ids are not treated as errors, and `--execute` behavior is unchanged.
+
 ### Docker Compose controller users must add s2util
 
 The published `pekko-persistence-dynamodb-test` artifact no longer includes `org.seasar.util:s2util` through `docker-controller-scala`. Maven Central does not host `s2util`, so Central-only users could not resolve the `test` module (#942).
