@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Docker Compose controller users must add s2util
+
+The published `pekko-persistence-dynamodb-test` artifact no longer includes `org.seasar.util:s2util` through `docker-controller-scala`. Maven Central does not host `s2util`, so Central-only users could not resolve the `test` module (#942).
+
+`DynamoDBContainerHelper` starts DynamoDB Local without `s2util`, so PPD's helper is unaffected. If you pass docker-controller-scala's `DockerComposeController` to `dockerControllers` to use Compose features, the controller may fail at runtime with `NoClassDefFoundError`.
+
+To use Compose features, add `s2util` and the Seasar resolver to your build:
+
+```scala
+resolvers += "Seasar Repository" at "https://maven.seasar.org/maven2/"
+libraryDependencies += "org.seasar.util" % "s2util" % "0.0.1"
+```
+
 ### Unbounded batch-write retry flow is deprecated
 
 `StreamWriteClient.recursiveBatchWriteItemFlow` in both `base-v1` and `base-v2` is now deprecated.
