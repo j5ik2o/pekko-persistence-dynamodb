@@ -471,7 +471,7 @@ $ aws dynamodb describe-continuous-backups --table-name JournalHead
    [dry-run] raised means the observed journal or snapshot sequence is ahead of the head, which can indicate writes from nodes with head mode disabled but does not prove that cause
    [dry-run] A serialization rejection alone creates no journal row and does not cause a raised item
    [dry-run] A later head-enabled write can advance the head past earlier sequence gaps, so a later dry-run may no longer reveal earlier mixed writes
-   [dry-run] snapshot-only migration sources: 1 persistence id (compare with hard-delete history; this is not an anomaly):
+   [dry-run] snapshot-only migration sources: 1 persistence id (compare with hard-delete history; this is not an anomaly by itself):
      - order-93
    ```
 

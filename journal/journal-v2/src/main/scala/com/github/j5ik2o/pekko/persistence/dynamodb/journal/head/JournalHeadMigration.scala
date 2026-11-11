@@ -97,21 +97,23 @@ object JournalHeadMigration {
         Seq(
           "[dry-run] raised means the observed journal or snapshot sequence is ahead of the head, which can indicate " +
           "writes from nodes with head mode disabled but does not prove that cause",
-          "[dry-run] A serialization rejection alone creates no journal row and does not cause a raised item",
-          "[dry-run] A later head-enabled write can advance the head past earlier sequence gaps, so a later dry-run " +
-          "may no longer reveal earlier mixed writes"
+          "[dry-run] A serialization rejection alone creates no journal row and does not cause a raised item"
         )
       else Seq.empty
+    val historyVisibility = Seq(
+      "[dry-run] A later head-enabled write can advance the head past earlier sequence gaps, so a later dry-run " +
+      "may no longer reveal earlier mixed writes"
+    )
     val snapshotOnly =
       if (findings.snapshotOnlyPersistenceIds.nonEmpty)
         Seq(
           s"[dry-run] snapshot-only migration sources: ${findings.snapshotOnlyPersistenceIds.size} persistence id" +
           s"${if (findings.snapshotOnlyPersistenceIds.size == 1) "" else "s"} " +
-          "(compare with hard-delete history; this is not an anomaly):" +
+          "(compare with hard-delete history; this is not an anomaly by itself):" +
           findings.snapshotOnlyPersistenceIds.map(persistenceId => s"\n  - $persistenceId").mkString
         )
       else Seq.empty
-    raised ++ snapshotOnly
+    raised ++ historyVisibility ++ snapshotOnly
   }
 
   private[journal] def renderProgress(progress: Progress, execute: Boolean): String = {

@@ -58,7 +58,14 @@ class JournalHeadMigrationProgressSpec extends AnyWordSpec with Matchers {
         "[dry-run] A later head-enabled write can advance the head past earlier sequence gaps, so a later dry-run " +
         "may no longer reveal earlier mixed writes",
         "[dry-run] snapshot-only migration sources: 1 persistence id (compare with hard-delete history; this is " +
-        "not an anomaly):\n  - order-93"
+        "not an anomaly by itself):\n  - order-93"
+      )
+    }
+
+    "always explain the limits of later dry-run findings when nothing was raised" in {
+      renderFindings(MigrationFindings(Seq.empty, Seq.empty)) shouldBe Seq(
+        "[dry-run] A later head-enabled write can advance the head past earlier sequence gaps, so a later dry-run " +
+        "may no longer reveal earlier mixed writes"
       )
     }
 
