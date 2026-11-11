@@ -154,6 +154,15 @@ class MergeApprovedTests(unittest.TestCase):
         self.assertIn("gh pr merge", result.stdout)
         self.assertFalse((self.root / "merge.log").exists())
 
+    def test_completed_required_runs_started_same_second_as_ready_are_accepted(self):
+        for check_run in self.check_runs:
+            check_run["started_at"] = "2026-11-11T06:45:02Z"
+        (self.root / "check-runs.json").write_text(json.dumps(self.check_runs))
+        result = self.run_script("--dry-run", "--subject", "fix(scope): x")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("gh pr merge", result.stdout)
+        self.assertFalse((self.root / "merge.log").exists())
+
     def test_wait_rechecks_missing_required_check_until_it_completes(self):
         self.env["MERGE_APPROVED_WAIT_SECONDS"] = "10"
         self.install("sleep", "#!/usr/bin/env bash\nexit 0\n")
