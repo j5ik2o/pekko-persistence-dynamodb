@@ -24,7 +24,7 @@ import scala.jdk.CollectionConverters._
 
 final class ApiCompatibilitySpec extends AnyFreeSpec with Matchers {
 
-  "no public declaration of the published modules disappears" in {
+  "the baseline records every public declaration of the published modules" in {
     val repo         = Repo.locate()
     val baselinePath = repo.root.resolve("schema-check/public-api-baseline.txt")
     if (!Files.isRegularFile(baselinePath)) {
@@ -51,5 +51,8 @@ final class ApiCompatibilitySpec extends AnyFreeSpec with Matchers {
     )
 
     removed shouldBe empty
+    withClue("Unregistered public declarations. Regenerate the baseline with ApiBaseline: ") {
+      added shouldBe empty
+    }
   }
 }
