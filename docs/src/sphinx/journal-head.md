@@ -370,9 +370,8 @@ numbers, because the write condition accepts a gap. The migration tool compares 
 number in the journal or the snapshot, and it reports only the aggregates whose head is still behind. After a
 head-on node writes again, the gap is invisible to the tool, and the read model stays incomplete. A `raised`
 aggregate can indicate a write from a node with head mode off, but it does not prove that a mixed deployment occurred.
-A rejected Pekko serialization can leave a sequence-number gap, but it does not create a journal row and does not by
-itself make the migration report the aggregate. A later head-on write can move the head across a gap, so a later
-dry-run may no longer report the aggregate.
+A serialization rejection alone creates no journal row and does not cause a raised item. A later head-enabled write can
+advance the head past earlier sequence gaps, so a later dry-run may no longer reveal earlier mixed writes.
 
 The dry-run also lists `snapshot-only migration sources`: ids with snapshot rows and no journal rows. This can be
 expected after a hard delete. Compare the ids with deletion history. Snapshot-only ids are not errors, and this report
@@ -469,7 +468,9 @@ $ aws dynamodb describe-continuous-backups --table-name JournalHead
    [dry-run] raised JournalHead items (rebuild the read model of these aggregates from the journal):
      - order-17
      - order-42
-   [dry-run] raised JournalHead items may indicate writes from nodes with head mode disabled; this is not conclusive. A serialization rejection can leave a sequence-number gap without a journal row, and a later head-enabled write can move the head across a gap so the migration no longer reports it
+   [dry-run] raised means the observed journal or snapshot sequence is ahead of the head, which can indicate writes from nodes with head mode disabled but does not prove that cause
+   [dry-run] A serialization rejection alone creates no journal row and does not cause a raised item
+   [dry-run] A later head-enabled write can advance the head past earlier sequence gaps, so a later dry-run may no longer reveal earlier mixed writes
    [dry-run] snapshot-only migration sources: 1 persistence id (compare with hard-delete history; this is not an anomaly):
      - order-93
    ```
