@@ -480,6 +480,18 @@ j5ik2o.dynamo-db-????? {
 }
 ```
 
+### Plugin MetricsReporter
+
+The plugin calls `MetricsReporter` through the configured `metrics-reporter-provider-class-name` and `metrics-reporter-class-name`.
+Journal write callbacks describe two different results.
+
+- `afterJournalAsyncWriteMessages` means the outer `asyncWriteMessages` Future completed successfully. It does not mean every event persisted. The returned sequence can contain a serialization `Failure` for an individual `AtomicWrite`.
+- `errorJournalSerializeJournal` reports a serialization failure. That `AtomicWrite` is rejected without reaching the row driver. The outer write Future can still succeed and call `afterJournalAsyncWriteMessages`. Pekko handles the rejection through `onPersistRejected`.
+- `errorJournalAsyncWriteMessages` reports failure of the outer write Future. Plugin preflight limits, including JournalHead event limits and oversized journal rows with head mode disabled, use this path. The plugin checks all serialized writes before sending the first one. A limit violation sends none of them. Pekko handles the failure through `onPersistFailure` and stops the persistent actor.
+
+Monitor serialization errors as well as outer write errors. Completion callbacks run asynchronously, so completion of the returned Future does not guarantee that the reporter has received its callback yet.
+These plugin callbacks also cover failures before an SDK request exists. The SDK `MetricPublisher` below observes SDK requests.
+
 ### MetricPublisher 
 
 Using the MetricPublisher in the V2 sdk, metrics at the SDK level can be sent to Datadog and Newrelic via Kamon.
