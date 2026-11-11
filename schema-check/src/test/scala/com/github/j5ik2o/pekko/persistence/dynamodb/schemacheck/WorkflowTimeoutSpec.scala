@@ -1,8 +1,8 @@
 package com.github.j5ik2o.pekko.persistence.dynamodb.schemacheck
 
 import java.nio.file.Files
+import java.nio.file.Path
 import org.scalatest.funsuite.AnyFunSuite
-import scala.collection.JavaConverters._
 
 final class WorkflowTimeoutSpec extends AnyFunSuite {
 
@@ -11,8 +11,15 @@ final class WorkflowTimeoutSpec extends AnyFunSuite {
     val workflows = repo.root.resolve(".github/workflows")
     val files     = Files.list(workflows)
     val paths =
-      try files.iterator().asScala.filter(_.getFileName.toString.endsWith(".yml")).toVector.sortBy(repo.relative)
-      finally files.close()
+      try {
+        val iterator = files.iterator()
+        val found    = scala.collection.mutable.ListBuffer.empty[Path]
+        while (iterator.hasNext) {
+          val path = iterator.next()
+          if (path.getFileName.toString.endsWith(".yml")) found += path
+        }
+        found.toVector.sortBy(repo.relative)
+      } finally files.close()
 
     val jobs = "^  ([A-Za-z0-9_-]+):\\s*(?:#.*)?$".r
     val missingTimeouts = paths.flatMap { path =>
@@ -21,18 +28,18 @@ final class WorkflowTimeoutSpec extends AnyFunSuite {
       if (jobsHeader < 0) Vector.empty
       else {
         val jobLines = lines.drop(jobsHeader + 1)
-        val starts = jobLines.zipWithIndex.collect {
-          case (jobs(id), index) => id -> index
+        val starts = jobLines.zipWithIndex.collect { case (jobs(id), index) =>
+          id -> index
         }
         starts.zipWithIndex.collect {
-          case ((id, start), index)
-              if {
-                val end         = starts.lift(index + 1).map(_._2).getOrElse(jobLines.length)
-                val body        = jobLines.slice(start + 1, end)
-                val reusable    = body.exists(_.matches("^    uses:\\s*.+$"))
-                val hasTimeout  = body.exists(_.matches("^    timeout-minutes:\\s*.+$"))
+          case ((id, start), index) if {
+                val end        = starts.lift(index + 1).map(_._2).getOrElse(jobLines.length)
+                val body       = jobLines.slice(start + 1, end)
+                val reusable   = body.exists(_.matches("^    uses:\\s*.+$"))
+                val hasTimeout = body.exists(_.matches("^    timeout-minutes:\\s*.+$"))
                 !reusable && !hasTimeout
-              } => s"${repo.relative(path)}: $id"
+              } =>
+            s"${repo.relative(path)}: $id"
         }
       }
     }
