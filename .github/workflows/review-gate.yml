@@ -1,9 +1,9 @@
 name: Review gate
 
 on:
-  # A dispatch records its run against the dispatched branch SHA. It may not
-  # update the pull request's required check when that SHA differs from the PR
-  # head, so treat the dispatch as an auxiliary re-run.
+  # Check on PR creation, updates, reopening, and readiness. Conversation
+  # resolution is enforced by branch protection, so review activity needs no run.
+  # A dispatch is an auxiliary re-run and may record against a different SHA.
   workflow_dispatch:
     inputs:
       pr:
@@ -12,10 +12,10 @@ on:
         type: string
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-  pull_request_review:
-    types: [submitted, edited, dismissed]
-  pull_request_review_comment:
-    types: [created, edited, deleted]
+
+concurrency:
+  group: review-gate-${{ inputs.pr || github.event.pull_request.number }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -24,6 +24,7 @@ permissions:
 jobs:
   unresolved-review-threads:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v5
       - name: Check unresolved review threads
