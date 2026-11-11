@@ -122,6 +122,17 @@ def collect(args):
                     pr=c.get(f"{prefix}/pulls/{args.pr}") if args.pr else None,
                     workflows=c.get(f"{prefix}/actions/workflows?per_page=100"))
 
+    def workflow_state_inventory(value):
+        listing = observed_object(value, "workflow_state_inventory", c.unknowns)
+        workflows = listing.get("workflows")
+        if not isinstance(workflows, list) or any(
+                not isinstance(w, dict) or not isinstance(w.get("path"), str)
+                for w in workflows):
+            c.failed = True
+            c.unknowns.append(dict(kind="invalid_workflow_state_inventory"))
+            return {"workflows": []}
+        return listing
+
     before = observe()
     branch = observed_object(before["branch"], "branch", c.unknowns)
     branch_commit = nested_object(branch, "commit", "branch.commit", c.unknowns)
@@ -133,13 +144,7 @@ def collect(args):
     if args.pr and pr_base.get("ref") != args.branch:
         c.failed = True
         c.unknowns.append(dict(kind="pr_destination_mismatch"))
-    listing = observed_object(before["workflows"], "workflow_state_inventory", c.unknowns)
-    if not isinstance(listing.get("workflows"), list) or any(
-            not isinstance(w, dict) or not isinstance(w.get("path"), str)
-            for w in listing.get("workflows", [])):
-        c.failed = True
-        c.unknowns.append(dict(kind="invalid_workflow_state_inventory"))
-        listing = {"workflows": []}
+    listing = workflow_state_inventory(before["workflows"])
     states = {w["path"]: w.get("state", "unknown") for w in listing.get("workflows", [])}
     if listing.get("total_count", 0) > 100:
         c.failed = True
@@ -163,7 +168,7 @@ def collect(args):
     def identities(obs):
         p = observed_object(obs["pr"], "pull_request", c.unknowns)
         b = observed_object(obs["branch"], "branch", c.unknowns)
-        w = observed_object(obs["workflows"], "workflow_state_inventory", c.unknowns)
+        w = workflow_state_inventory(obs["workflows"])
         commit = nested_object(b, "commit", "branch.commit", c.unknowns)
         pr_base_identity = nested_object(p, "base", "pull_request.base", c.unknowns)
         pr_head_identity = nested_object(p, "head", "pull_request.head", c.unknowns)
