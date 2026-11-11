@@ -16,16 +16,15 @@
 package com.github.j5ik2o.pekko.persistence.dynamodb.snapshot
 
 import org.apache.pekko.persistence.snapshot.SnapshotStoreSpec
-import com.github.j5ik2o.pekko.persistence.dynamodb.utils.{ DynamoDBContainerHelper, RandomPortUtil }
+import com.github.j5ik2o.pekko.persistence.dynamodb.utils.{ DockerAssignedPort, DynamoDBContainerHelper }
 import com.typesafe.config.ConfigFactory
 import org.scalatest.BeforeAndAfter
 import org.scalatest.concurrent.ScalaFutures
 
 import scala.concurrent.duration._
 
-object DynamoDBSnapshotStoreV1SyncSpec {
+object DynamoDBSnapshotStoreV1SyncSpec extends DockerAssignedPort {
   val dynamoDBHost: String = "localhost"
-  val dynamoDBPort: Int    = RandomPortUtil.temporaryServerPort()
 }
 
 final class DynamoDBSnapshotStoreV1SyncSpec
@@ -59,6 +58,8 @@ final class DynamoDBSnapshotStoreV1SyncSpec
   implicit val pc: PatienceConfig = PatienceConfig(30.seconds, 1.seconds)
 
   override lazy val dynamoDBPort: Int = DynamoDBSnapshotStoreV1SyncSpec.dynamoDBPort
+
+  override lazy val controller = DynamoDBSnapshotStoreV1SyncSpec.controller
 
   override def afterStartContainers(): Unit = {
     super.afterStartContainers()

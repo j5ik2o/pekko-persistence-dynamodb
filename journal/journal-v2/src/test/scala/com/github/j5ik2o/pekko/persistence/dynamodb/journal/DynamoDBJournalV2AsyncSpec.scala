@@ -26,14 +26,13 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.journal.head.{
   JournalRowUpdateRejection
 }
 import com.github.j5ik2o.pekko.persistence.dynamodb.config.client.{ ClientType, ClientVersion }
-import com.github.j5ik2o.pekko.persistence.dynamodb.utils.{ ConfigHelper, DynamoDBContainerHelper, RandomPortUtil }
+import com.github.j5ik2o.pekko.persistence.dynamodb.utils.{ ConfigHelper, DockerAssignedPort, DynamoDBContainerHelper }
 import org.scalatest.concurrent.ScalaFutures
 
 import scala.concurrent.duration._
 
-object DynamoDBJournalV2AsyncSpec {
+object DynamoDBJournalV2AsyncSpec extends DockerAssignedPort {
   val dynamoDBHost: String       = "localhost"
-  val dynamoDBPort: Int          = RandomPortUtil.temporaryServerPort()
   val legacyJournalMode: Boolean = false
 }
 
@@ -57,6 +56,8 @@ final class DynamoDBJournalV2AsyncSpec
   implicit val pc: PatienceConfig = PatienceConfig(30.seconds, 1.seconds)
 
   override lazy val dynamoDBPort: Int = DynamoDBJournalV2AsyncSpec.dynamoDBPort
+
+  override lazy val controller = DynamoDBJournalV2AsyncSpec.controller
 
   override val legacyJournalTable: Boolean = DynamoDBJournalV2AsyncSpec.legacyJournalMode
 

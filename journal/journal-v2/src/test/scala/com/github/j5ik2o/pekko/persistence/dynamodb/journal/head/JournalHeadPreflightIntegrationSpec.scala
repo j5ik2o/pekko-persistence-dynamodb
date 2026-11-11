@@ -15,7 +15,7 @@
  */
 package com.github.j5ik2o.pekko.persistence.dynamodb.journal.head
 
-import com.github.j5ik2o.pekko.persistence.dynamodb.utils.{ DynamoDBContainerHelper, RandomPortUtil }
+import com.github.j5ik2o.pekko.persistence.dynamodb.utils.{ DockerAssignedPort, DynamoDBContainerHelper }
 import org.scalatest.freespec.AnyFreeSpec
 import org.scalatest.matchers.should.Matchers
 import software.amazon.awssdk.auth.credentials.{ AwsBasicCredentials, StaticCredentialsProvider }
@@ -38,9 +38,7 @@ import software.amazon.awssdk.services.dynamodb.{ DynamoDbClient => JavaDynamoDb
 
 import java.net.URI
 
-object JournalHeadPreflightIntegrationSpec {
-  val dynamoDBPort: Int = RandomPortUtil.temporaryServerPort()
-}
+object JournalHeadPreflightIntegrationSpec extends DockerAssignedPort {}
 
 /** Runs the preflight against DynamoDB Local, so the `DescribeTable` call and both stream settings are exercised
   * without a real AWS account.
@@ -50,6 +48,8 @@ final class JournalHeadPreflightIntegrationSpec extends AnyFreeSpec with Matcher
   import JournalHeadPreflight._
 
   override lazy val dynamoDBPort: Int = JournalHeadPreflightIntegrationSpec.dynamoDBPort
+
+  override lazy val controller = JournalHeadPreflightIntegrationSpec.controller
 
   private val headWithStream       = "PreflightHeadWithStream"
   private val headWithoutStream    = "PreflightHeadWithoutStream"

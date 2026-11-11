@@ -36,7 +36,7 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.journal.dao.v2.V2JournalRowW
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.head._
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.serialization.ByteArrayJournalSerializer
 import com.github.j5ik2o.pekko.persistence.dynamodb.model.{ PersistenceId, SequenceNumber }
-import com.github.j5ik2o.pekko.persistence.dynamodb.utils.{ ConfigHelper, DynamoDBContainerHelper, RandomPortUtil }
+import com.github.j5ik2o.pekko.persistence.dynamodb.utils.{ ConfigHelper, DockerAssignedPort, DynamoDBContainerHelper }
 import com.typesafe.config.ConfigFactory
 import org.scalatest.BeforeAndAfterAll
 import org.scalatest.concurrent.ScalaFutures
@@ -74,9 +74,8 @@ import scala.concurrent.duration._
 import scala.concurrent.{ Await, ExecutionContext, Future }
 import scala.jdk.CollectionConverters._
 
-object JournalHeadSpec {
+object JournalHeadSpec extends DockerAssignedPort {
   val dynamoDBHost: String = "localhost"
-  val dynamoDBPort: Int    = RandomPortUtil.temporaryServerPort()
 
   /** The writes the plugin rejected before DynamoDB was called. The perf probe reports this count with the duration. */
   val localRejections: AtomicInteger = new AtomicInteger(0)
@@ -170,6 +169,8 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
   import JournalHeadSpec._
 
   override lazy val dynamoDBPort: Int = JournalHeadSpec.dynamoDBPort
+
+  override lazy val controller = JournalHeadSpec.controller
 
   override val legacyJournalTable: Boolean = false
 

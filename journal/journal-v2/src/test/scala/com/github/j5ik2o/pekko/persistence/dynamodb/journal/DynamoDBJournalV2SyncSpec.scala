@@ -18,14 +18,13 @@ package com.github.j5ik2o.pekko.persistence.dynamodb.journal
 import org.apache.pekko.persistence.CapabilityFlag
 import org.apache.pekko.persistence.journal.JournalSpec
 import com.github.j5ik2o.pekko.persistence.dynamodb.config.client.{ ClientType, ClientVersion }
-import com.github.j5ik2o.pekko.persistence.dynamodb.utils.{ ConfigHelper, DynamoDBContainerHelper, RandomPortUtil }
+import com.github.j5ik2o.pekko.persistence.dynamodb.utils.{ ConfigHelper, DockerAssignedPort, DynamoDBContainerHelper }
 import org.scalatest.concurrent.ScalaFutures
 
 import scala.concurrent.duration._
 
-object DynamoDBJournalV2SyncSpec {
+object DynamoDBJournalV2SyncSpec extends DockerAssignedPort {
   val dynamoDBHost: String       = "localhost"
-  val dynamoDBPort: Int          = RandomPortUtil.temporaryServerPort()
   val legacyJournalMode: Boolean = false
 }
 
@@ -36,7 +35,7 @@ final class DynamoDBJournalV2SyncSpec
         legacyConfigFormat = false,
         legacyJournalMode = DynamoDBJournalV2AsyncSpec.legacyJournalMode,
         dynamoDBHost = DynamoDBJournalV2AsyncSpec.dynamoDBHost,
-        dynamoDBPort = DynamoDBJournalV2AsyncSpec.dynamoDBPort,
+        dynamoDBPort = DynamoDBJournalV2SyncSpec.dynamoDBPort,
         clientVersion = ClientVersion.V2.toString,
         clientType = ClientType.Sync.toString
       )
@@ -48,7 +47,9 @@ final class DynamoDBJournalV2SyncSpec
 
   implicit val pc: PatienceConfig = PatienceConfig(30.seconds, 1.seconds)
 
-  override lazy val dynamoDBPort: Int = DynamoDBJournalV2AsyncSpec.dynamoDBPort
+  override lazy val dynamoDBPort: Int = DynamoDBJournalV2SyncSpec.dynamoDBPort
+
+  override lazy val controller = DynamoDBJournalV2SyncSpec.controller
 
   override val legacyJournalTable: Boolean = DynamoDBJournalV2AsyncSpec.legacyJournalMode
 
