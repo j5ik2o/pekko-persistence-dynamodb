@@ -41,6 +41,8 @@ Every action reference and every `run` command remains unknown. Local actions an
 
 API-managed workflows missing from the repository inventory remain unknown. A contents API 404 for `dynamic/dependabot` is retained with its real nonzero exit. Missing, failed, truncated, or unsupported paginated collection remains visible. The API workflow list is limited to 100 entries; a larger list is an explicit collection failure.
 
+Malformed workflow-state responses, including a missing or non-list `workflows` field, remain unknown and are treated as an empty state inventory for comparison. Collection records the failure and exits 1.
+
 Exit 0 means the requested evidence was saved and parsed. Unknowns normally remain present at exit 0. It never means no effects or authorization. Exit 1 means collection, dependency, input-file, or parse failure. Exit 2 means invalid CLI arguments. An existing output directory is an operational failure and is not overwritten.
 
 ## Regression observations

@@ -74,6 +74,11 @@ class CanaryTest(unittest.TestCase):
                 export['target']['requested_config'][key] = value
                 self.assessment('needs-canary', 'no_exact_record', export)
 
+    def test_missing_target_is_unknown(self):
+        export = copy.deepcopy(self.export)
+        del export['target']
+        self.assessment('unknown', 'missing_target', export)
+
     def test_expiry(self):
         self.assessment('needs-canary', 'expired', age=10)
 

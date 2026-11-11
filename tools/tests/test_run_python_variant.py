@@ -211,6 +211,45 @@ class VariantTests(unittest.TestCase):
         self.assertEqual((out / "stderr.raw").read_bytes(), b"\xfe")
         self.assertEqual(result["logs"]["stdout.raw"]["sha256"], sha(b"\xff\x00"))
 
+    def test_timeout_cleanup_permission_error_is_recorded(self):
+        wrapper = self.root / "kill-failure.py"
+        wrapper.write_text(
+            'import importlib.util, os, sys\n'
+            'spec=importlib.util.spec_from_file_location("runner", ' + repr(str(RUNNER)) + ')\n'
+            'm=importlib.util.module_from_spec(spec)\nspec.loader.exec_module(m)\n'
+            'os.killpg=lambda *args: (_ for _ in ()).throw(PermissionError("denied"))\n'
+            'sys.exit(m.main())\n')
+        (self.input / "test_subject.py").write_text("import time\ntime.sleep(0.2)\n")
+        _, result, _ = self.run_cli(("--timeout", "0.01"), runner=wrapper, expected=1)
+        self.assertTrue(any("timeout process-group cleanup failed: denied" in error
+                            for error in result["errors"]))
+
+    def test_timeout_cleanup_wait_is_bounded(self):
+        import time
+        wrapper = self.root / "wait-failure.py"
+        wrapper.write_text(
+            'import importlib.util, subprocess, sys\n'
+            'spec=importlib.util.spec_from_file_location("runner", ' + repr(str(RUNNER)) + ')\n'
+            'm=importlib.util.module_from_spec(spec)\nspec.loader.exec_module(m)\n'
+            'original=m.subprocess.Popen\n'
+            'class Child:\n'
+            '    def __init__(self, *a, **k): self.inner=original(*a, **k); self.waits=0\n'
+            '    def __getattr__(self, name): return getattr(self.inner, name)\n'
+            '    def kill(self): raise PermissionError("denied")\n'
+            '    def wait(self, timeout=None):\n'
+            '        self.waits += 1\n'
+            '        if self.waits == 2: raise subprocess.TimeoutExpired("child", timeout)\n'
+            '        return self.inner.wait(timeout=timeout)\n'
+            'm.subprocess.Popen=Child\n'
+            'm.os.killpg=lambda *args: (_ for _ in ()).throw(PermissionError("denied"))\n'
+            'sys.exit(m.main())\n')
+        (self.input / "test_subject.py").write_text("import time\ntime.sleep(0.2)\n")
+        _, result, _ = self.run_cli(("--timeout", "0.01"), runner=wrapper, expected=1)
+        time.sleep(0.25)
+        self.assertIsNone(result["child_exit"])
+        self.assertIn("timeout child cleanup failed: denied", result["errors"])
+        self.assertIn("timeout child wait expired after cleanup", result["errors"])
+
     def test_copy_change_is_incomplete(self):
         # Inject an input change precisely after validation, before copy; run actual CLI main.
         wrapper = self.root / "copy-change.py"

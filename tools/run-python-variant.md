@@ -83,7 +83,8 @@ mere presence of a result file as completion; check the runner exit and status.
 
 `--timeout SECONDS` defaults to 60 and must be positive and finite. The child
 starts a new POSIX session. On timeout the runner sends SIGKILL only to its owned
-process group and waits for the direct child. This does not guarantee stopping
+process group. If that fails, it tries to kill the direct child, then waits for a
+bounded interval and records cleanup errors. This does not guarantee stopping
 escaped descendants. Normal exit does not clean up descendant processes.
 
 This runner is for trusted explicit programs on macOS/Linux, **not a sandbox**.

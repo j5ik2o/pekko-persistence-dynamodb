@@ -1,3 +1,4 @@
+import java.io.IOException;
 import java.lang.instrument.Instrumentation;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -6,7 +7,7 @@ import java.nio.file.StandardOpenOption;
 import java.util.Base64;
 
 public final class RuntimeProbe {
-    public static void premain(String arguments, Instrumentation instrumentation) throws Exception {
+    public static void premain(String arguments, Instrumentation instrumentation) throws IOException {
         String[] parts = arguments.split(":", 2);
         if (parts.length != 2 || !parts[0].matches("[a-f0-9]{32}")) {
             throw new IllegalArgumentException("invalid runtime probe arguments");
