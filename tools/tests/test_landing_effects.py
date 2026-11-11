@@ -210,6 +210,34 @@ class EvidenceTests(unittest.TestCase):
             self.assertIn("observation_drift", {x["kind"] for x in snapshot["unknowns"]})
             self.assertFalse(responses)
 
+    def test_collect_records_invalid_workflow_state_response_as_unknown(self):
+        import argparse
+        invalid_responses = [
+            dict(workflows=None, total_count=0),
+            dict(workflows={}, total_count=0),
+            [dict(path="ci", state="active")],
+        ]
+        for invalid in invalid_responses:
+            with self.subTest(invalid=invalid), tempfile.TemporaryDirectory() as d:
+                responses = [dict(commit=dict(sha="a" * 40)),
+                    dict(base=dict(ref="main", sha="a" * 40), head=dict(sha="b" * 40), state="open"),
+                    dict(workflows=[], total_count=0), dict(tree=[]), dict(tree=[]), {}, {},
+                    dict(commit=dict(sha="a" * 40)),
+                    dict(base=dict(ref="main", sha="a" * 40), head=dict(sha="b" * 40), state="open"),
+                    invalid]
+
+                def api(args, **kwargs):
+                    return subprocess.CompletedProcess(args, 0, json.dumps(responses.pop(0)).encode(), b"")
+
+                out = Path(d) / "evidence"
+                with patch.object(le.subprocess, "run", side_effect=api), patch("builtins.print"):
+                    result = le.collect(argparse.Namespace(out=out, repo="fixture/repo", branch="main", pr=1, head=None))
+                snapshot = json.loads((out / "snapshot.json").read_text())
+                self.assertEqual(result, 1)
+                kinds = {x["kind"] for x in snapshot["unknowns"]}
+                expected = "collection_failure" if isinstance(invalid, list) else "invalid_workflow_state_inventory"
+                self.assertIn(expected, kinds)
+
 
 if __name__ == "__main__":
     unittest.main()
