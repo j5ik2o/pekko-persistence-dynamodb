@@ -23,7 +23,11 @@ object ModuleBoundaryPlugin extends AutoPlugin {
     moduleBoundariesAllowlist := repoRoot(baseDirectory.value) / "project" / "module-boundaries.allowlist",
     checkModuleBoundaries / aggregate := false,
     checkModuleBoundaries := {
-      ModuleBoundaryCheck.run(repoRoot(baseDirectory.value).toPath, moduleBoundariesAllowlist.value.toPath)
+      ModuleBoundaryCheck.run(
+        repoRoot(baseDirectory.value).toPath,
+        moduleBoundariesAllowlist.value.toPath,
+        streams.value.log
+      )
     }
   )
 
@@ -49,7 +53,7 @@ private object ModuleBoundaryCheck {
 
   private val ExcludedDirectories: Set[String] = Set("target", ".git", ".bsp", ".bloop", ".metals", ".idea")
 
-  def run(base: NioPath, allowlistFile: NioPath): Unit = {
+  def run(base: NioPath, allowlistFile: NioPath, log: sbt.util.Logger): Unit = {
     val allowlist = readAllowlist(allowlistFile)
     val offenders = scalaFiles(base).filter(hasSdkImport).map(path => relative(base, path)).toSet
     val added     = (offenders -- allowlist).toSeq.sorted
@@ -68,7 +72,7 @@ private object ModuleBoundaryCheck {
       sys.error(lines.mkString("\n"))
     }
 
-    println(s"checkModuleBoundaries: ${offenders.size} allowlisted files import an AWS SDK; no new imports.")
+    log.info(s"checkModuleBoundaries: ${offenders.size} allowlisted files import an AWS SDK; no new imports.")
   }
 
   private def readAllowlist(path: NioPath): Set[String] = {
