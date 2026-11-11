@@ -368,7 +368,14 @@ node with head mode off writes journal rows without updating the `JournalHead` i
 never reach the head stream. A later write from a node with head mode on can move the head past those sequence
 numbers, because the write condition accepts a gap. The migration tool compares the head with the highest sequence
 number in the journal or the snapshot, and it reports only the aggregates whose head is still behind. After a
-head-on node writes again, the gap is invisible to the tool, and the read model stays incomplete.
+head-on node writes again, the gap is invisible to the tool, and the read model stays incomplete. A `raised`
+aggregate can indicate a write from a node with head mode off, but it does not prove that a mixed deployment occurred.
+A serialization rejection alone creates no journal row and does not cause a raised item. A later head-enabled write can
+advance the head past earlier sequence gaps, so a later dry-run may no longer reveal earlier mixed writes.
+
+The dry-run also lists `snapshot-only migration sources`: ids with snapshot rows and no journal rows. This can be
+expected after a hard delete. Compare the ids with deletion history. Snapshot-only ids are not errors, and this report
+does not stop `--execute`.
 
 If a mixed deployment has happened, rebuild the read model of every aggregate that a head-off node may have written
 during that period. The tool cannot identify those aggregates after a head-on node has written. To avoid the
@@ -461,11 +468,20 @@ $ aws dynamodb describe-continuous-backups --table-name JournalHead
    [dry-run] raised JournalHead items (rebuild the read model of these aggregates from the journal):
      - order-17
      - order-42
+   [dry-run] raised means the observed journal or snapshot sequence is ahead of the head, which can indicate writes from nodes with head mode disabled but does not prove that cause
+   [dry-run] A serialization rejection alone creates no journal row and does not cause a raised item
+   [dry-run] A later head-enabled write can advance the head past earlier sequence gaps, so a later dry-run may no longer reveal earlier mixed writes
+   [dry-run] snapshot-only migration sources: 1 persistence id (compare with hard-delete history; this is not an anomaly by itself):
+     - order-93
    ```
 
    `created` counts the aggregates that have no head item. `raised` counts the aggregates whose head is behind. Both
-   must be 0 before you continue, or you repair them in step 6. The tool scans only persistence ids found in the
-   journal or snapshot. It cannot recreate a head whose persistence id is absent from both sources.
+   must be 0 before you continue, or you repair them in step 6. `skipped existing` counts scanned ids whose head is
+   already at or above the highest sequence number in the journal or snapshot. A snapshot-only id can appear in this
+   count when its head already covers the snapshot sequence number. The tool scans only persistence ids found in the
+   journal or snapshot. `snapshot-only migration sources` counts and lists ids found in the snapshot but not the
+   journal. This is expected when journal events were hard deleted; compare the ids with deletion history. It is not
+   an anomaly by itself. The tool cannot recreate a head whose persistence id is absent from both sources.
 5. Check heads against the journal, snapshots, deletion history, and backup timestamps. The tool does not report
    heads above both sources or heads whose persistence id is absent from both. For one aggregate, read `H` and `J`.
    The first command reads the head. The second reads the highest journal row.
