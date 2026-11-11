@@ -20,7 +20,7 @@ class MergeApprovedTests(unittest.TestCase):
         self.state = {"state": "OPEN", "headRefOid": SHA, "body": "Refs #12", "commits": [{"oid": SHA}]}
         self.checks = [{"bucket": "pass"}]
         self.check_runs = [
-            {"id": 1, "name": "CodeRabbit", "status": "completed", "conclusion": "neutral", "started_at": "2026-11-11T06:45:03Z"},
+            {"id": 1, "name": "CodeRabbit", "status": "completed", "conclusion": "success", "output": {"title": "Review completed", "summary": "Review completed."}, "started_at": "2026-11-11T06:45:03Z"},
             {"id": 2, "name": "unresolved-review-threads", "status": "completed", "conclusion": "success", "started_at": "2026-11-11T06:45:03Z"},
         ]
         self.review_exit = 0
@@ -153,6 +153,37 @@ class MergeApprovedTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("gh pr merge", result.stdout)
         self.assertFalse((self.root / "merge.log").exists())
+
+    def test_rate_limited_neutral_coderabbit_is_rejected(self):
+        self.check_runs[0].update(
+            conclusion="neutral",
+            output={"title": "Review rate limited", "summary": "### Review skipped\n\n### Walkthrough skipped"},
+        )
+        (self.root / "check-runs.json").write_text(json.dumps(self.check_runs))
+        result = self.run_script("--dry-run", "--subject", "fix(scope): x")
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("did not review this PR because it was rate limited", result.stderr)
+        self.assertIn("@coderabbitai review", result.stderr)
+        self.assertFalse((self.root / "merge.log").exists())
+
+    def test_unexplained_neutral_coderabbit_is_rejected(self):
+        self.check_runs[0].update(conclusion="neutral", output={"title": "Review skipped", "summary": ""})
+        (self.root / "check-runs.json").write_text(json.dumps(self.check_runs))
+        result = self.run_script("--dry-run", "--subject", "fix(scope): x")
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("neutral without a verified completed review", result.stderr)
+        self.assertFalse((self.root / "merge.log").exists())
+
+    def test_wait_does_not_wait_on_rate_limited_neutral_coderabbit(self):
+        self.check_runs[0].update(
+            conclusion="neutral",
+            output={"title": "Review rate limited", "summary": "Review skipped"},
+        )
+        (self.root / "check-runs.json").write_text(json.dumps(self.check_runs))
+        self.install("sleep", "#!/usr/bin/env bash\nexit 99\n")
+        result = self.run_script("--wait", "--dry-run", "--subject", "fix(scope): x")
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("did not review this PR because it was rate limited", result.stderr)
 
     def test_completed_required_runs_started_same_second_as_ready_are_accepted(self):
         for check_run in self.check_runs:

@@ -45,8 +45,11 @@ while :; do
   missing=$(jq -r --arg ready "$ready_at" '
     def named($name): [.check_runs[] | select(.name == $name and .started_at >= $ready)] | sort_by(.id) | if length == 0 then [] else [last] end;
     (named("CodeRabbit")) as $cr | (named("unresolved-review-threads")) as $threads |
-    [if ($cr | length) == 0 then "CodeRabbit is missing" elif any($cr[]; .status != "completed") then "CodeRabbit is pending" elif any($cr[]; .conclusion == "skipped") then "CodeRabbit was skipped" elif any($cr[]; (.conclusion != "success" and .conclusion != "neutral")) then "CodeRabbit did not succeed" else empty end,
+    [if ($cr | length) == 0 then "CodeRabbit is missing" elif any($cr[]; ((.output.title // "") + " " + (.output.summary // "")) | test("rate[- ]limit"; "i")) then "CodeRabbit did not review this PR because it was rate limited; after capacity returns, comment @coderabbitai review on the PR to rerun the review" elif any($cr[]; .status != "completed") then "CodeRabbit is pending" elif any($cr[]; .conclusion == "neutral") then "CodeRabbit returned neutral without a verified completed review" elif any($cr[]; .conclusion != "success") then "CodeRabbit did not succeed" else empty end,
      if ($threads | length) == 0 then "unresolved-review-threads is missing" elif any($threads[]; .status != "completed") then "unresolved-review-threads is pending" elif any($threads[]; .conclusion != "success") then "unresolved-review-threads did not succeed" else empty end] | .[]' <<<"$check_runs") || fail 'could not evaluate required checks'
+  if grep -Eq '^CodeRabbit (did not review|returned neutral|was skipped|did not succeed)' <<<"$missing"; then
+    fail "required checks blocked: $(tr '\n' ';' <<<"$missing" | sed 's/;$//')"
+  fi
   if $checks_ok && [[ -z $missing ]]; then break; fi
   [[ -n $missing ]] || missing='pull request checks are empty or pending'
   if ! $wait_for_checks || (( SECONDS >= deadline )); then fail "required checks blocked: $(tr '\n' ';' <<<"$missing" | sed 's/;$//')"; fi
