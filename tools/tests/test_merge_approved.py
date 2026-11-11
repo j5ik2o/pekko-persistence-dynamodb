@@ -72,7 +72,7 @@ class MergeApprovedTests(unittest.TestCase):
                 setup()
                 (self.root / "pr.json").write_text(json.dumps(self.state))
                 (self.root / "checks.json").write_text(json.dumps(self.checks))
-                result = self.run_script("--dry-run")
+                result = self.run_script("--dry-run", "--subject", self.env["GIT_SUBJECT"])
                 self.assertNotEqual(result.returncode, 0, result.stdout)
                 self.assertIn("error:", result.stderr)
 
