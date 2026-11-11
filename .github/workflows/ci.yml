@@ -39,6 +39,7 @@ env:
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
         with: { fetch-depth: 0 }
@@ -51,6 +52,7 @@ jobs:
       - name: sbt lint
         run: sbt -v lint
   test:
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
