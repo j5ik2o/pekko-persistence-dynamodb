@@ -1,5 +1,13 @@
 # PPD evidence CLI
 
+## Merge an approved pull request
+
+Run `tools/merge-approved.sh <owner/repo> <pr> <approved-head-sha>` only after reviewing that exact head. The script checks the PR state and head, requires every check to be passing or skipped, runs `check-review-threads.sh`, rejects `HAND_OFF` and `.audit/` files in the PR diff, and requires a scoped English Conventional Commit squash subject. A single commit supplies its complete subject from `git log` after fetching `pull/<pr>/head`; multiple commits require `--subject "type(scope): description"`. The script appends ` (#<pr>)` to the subject. It uses the first `Refs #N` in the PR body, or defaults to `Refs #<pr>`, as the merge body. Use `--dry-run` to print the exact merge command without merging. Every `gh` invocation receives `/dev/null` as stdin.
+
+```sh
+tools/merge-approved.sh j5ik2o/pekko-persistence-dynamodb 123 FULL_APPROVED_HEAD_SHA --dry-run
+```
+
 `ppd-evidence.py` uses Python 3.9+ and the standard library. It stores observations and generates assessments for #913 and #915. It never posts, merges, cancels, deletes, schedules or reads T3 transcripts. Supply exported snapshots only for the current PPD thread and its children.
 
 ## Collect and assess PR evidence
