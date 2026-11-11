@@ -104,6 +104,10 @@ final class StreamWriteClient(
     flowWithBackoffSettings(writeBackoffConfig, flow)
   }
 
+  /** Retries unprocessed items for the configured table without a retry limit, accumulating responses until completion.
+    * Callers should use an explicit bounded batch-write policy.
+    */
+  @deprecated(message = "Unbounded retry of unprocessed items; use an explicit bounded batch-write policy.")
   def recursiveBatchWriteItemFlow: Flow[BatchWriteItemRequest, BatchWriteItemResult, NotUsed] = {
     def loop(
         acc: Source[BatchWriteItemResult, NotUsed]
