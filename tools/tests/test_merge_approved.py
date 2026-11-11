@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import time
 import unittest
 
 SCRIPT = Path(__file__).resolve().parents[1] / "merge-approved.sh"
@@ -18,6 +19,10 @@ class MergeApprovedTests(unittest.TestCase):
         self.bin.mkdir()
         self.state = {"state": "OPEN", "headRefOid": SHA, "body": "Refs #12", "commits": [{"oid": SHA}]}
         self.checks = [{"bucket": "pass"}]
+        self.check_runs = [
+            {"id": 1, "name": "CodeRabbit", "status": "completed", "conclusion": "neutral", "started_at": "2026-11-11T06:45:03Z"},
+            {"id": 2, "name": "unresolved-review-threads", "status": "completed", "conclusion": "success", "started_at": "2026-11-11T06:45:03Z"},
+        ]
         self.review_exit = 0
         self.diff = ""
         self.inputs = []
@@ -26,8 +31,12 @@ class MergeApprovedTests(unittest.TestCase):
                      'args=sys.argv[1:]\n'
                      'if args[0:2]==["pr","view"]: print(open(os.environ["GH_PR" ]).read())\n'
                      'elif args[0:2]==["pr","checks"]: print(open(os.environ["GH_CHECKS"]).read())\n'
+                     'elif args[:2]==["api","repos/owner/repo/commits/' + SHA + '/check-runs"]: print(json.dumps([{"check_runs": json.load(open(os.environ["GH_CHECK_RUNS"]))}]))\n'
+                     'elif args[:2]==["api","repos/owner/repo/issues/7/timeline"]: print(json.dumps([[{ "event":"ready_for_review", "created_at":"2026-11-11T06:45:02Z"}]]))\n'
                      'elif args[:2]==["pr","diff"]: print(os.environ.get("GH_DIFF",""))\n'
-                     'elif args[0:2]==["pr","merge"]: open(os.environ["MERGE_LOG"],"w").write(" ".join(args))\n'
+                     'elif args[0:2]==["pr","merge"]: open(os.environ["MERGE_LOG"],"w").write(" ".join(args)); p=json.load(open(os.environ["GH_PR"])); p["state"]="MERGED" if os.environ.get("MERGE_LEAVES_OPEN") != "1" else "OPEN"; open(os.environ["GH_PR"],"w").write(json.dumps(p))\n'
+                     'elif args[:2]==["issue","close"]: open(os.environ["ISSUE_LOG"],"a").write("close " + " ".join(args[2:]) + "\\n")\n'
+                     'elif args[:2]==["issue","comment"]: open(os.environ["ISSUE_LOG"],"a").write("comment " + " ".join(args[2:]) + "\\n")\n'
                      'elif args[:2]==["api","graphql"]: print(json.dumps({"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":False},"nodes":[{"isResolved": os.environ.get("REVIEW_EXIT") != "1", "path":"x", "comments":{"nodes":[]}}]}}}}}))\n'
                      'else: raise SystemExit(2)\n')
         self.install("git", '#!/usr/bin/env python3\nimport os,sys\n'
@@ -39,9 +48,12 @@ class MergeApprovedTests(unittest.TestCase):
         self.install("check-review-threads.sh", '#!/usr/bin/env bash\nexit "$REVIEW_EXIT"\n')
         (self.root / "pr.json").write_text(json.dumps(self.state))
         (self.root / "checks.json").write_text(json.dumps(self.checks))
+        (self.root / "check-runs.json").write_text(json.dumps(self.check_runs))
         self.env = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
                         GH_PR=str(self.root / "pr.json"), GH_CHECKS=str(self.root / "checks.json"),
+                        GH_CHECK_RUNS=str(self.root / "check-runs.json"),
                         GH_INPUT_LOG=str(self.root / "stdin.log"), MERGE_LOG=str(self.root / "merge.log"),
+                        ISSUE_LOG=str(self.root / "issue.log"),
                         GIT_LOG=str(self.root / "git.log"),
                         REVIEW_EXIT="0")
 
@@ -110,6 +122,44 @@ class MergeApprovedTests(unittest.TestCase):
         result = self.run_script("--dry-run", "--subject", "fix(scope): x")
         self.assertNotEqual(result.returncode, 0, result.stdout)
         self.assertIn("checks are empty", result.stderr)
+
+    def test_ready_then_unregistered_coderabbit_is_rejected(self):
+        self.check_runs = [self.check_runs[1]]
+        (self.root / "check-runs.json").write_text(json.dumps(self.check_runs))
+        time.sleep(1)
+        result = self.run_script("--dry-run", "--subject", "fix(scope): x")
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("CodeRabbit", result.stderr)
+        self.assertFalse((self.root / "merge.log").exists())
+
+    def test_wait_rechecks_missing_required_check_until_it_completes(self):
+        self.env["MERGE_APPROVED_WAIT_SECONDS"] = "10"
+        self.install("sleep", "#!/usr/bin/env bash\nexit 0\n")
+        original = self.check_runs[:]
+        self.check_runs = [original[1]]
+        (self.root / "check-runs.json").write_text(json.dumps(self.check_runs))
+        self.install("gh", self.bin.joinpath("gh").read_text().replace(
+            'print(json.dumps([{"check_runs": json.load(open(os.environ["GH_CHECK_RUNS"]))}]))',
+            'p=os.environ["GH_CHECK_RUNS"]; f=os.environ["CHECK_CALLS_FILE"]; n=int(open(f).read()) if os.path.exists(f) else 0; open(f,"w").write(str(n+1)); data=json.load(open(p)); data = json.load(open(os.environ["GH_CHECK_RUNS_DONE"])) if n else data; print(json.dumps([{"check_runs":data}]))'))
+        self.env["CHECK_CALLS_FILE"] = str(self.root / "check-calls")
+        (self.root / "check-runs-done.json").write_text(json.dumps(original))
+        self.env["GH_CHECK_RUNS_DONE"] = str(self.root / "check-runs-done.json")
+        result = self.run_script("--wait", "--dry-run", "--subject", "fix(scope): x")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertGreaterEqual(int((self.root / "check-calls").read_text()), 2)
+
+    def test_issue_actions_run_only_after_verified_merge(self):
+        result = self.run_script("--close", "12", "--comment", "13=recorded", "--subject", "fix(scope): x")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("close 12", (self.root / "issue.log").read_text())
+        self.assertIn("comment 13", (self.root / "issue.log").read_text())
+
+    def test_issue_actions_stop_when_pr_is_not_merged(self):
+        self.env["MERGE_LEAVES_OPEN"] = "1"
+        result = self.run_script("--close", "12", "--comment", "13=recorded", "--subject", "fix(scope): x")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("issue actions were not run", result.stderr)
+        self.assertFalse((self.root / "issue.log").exists())
 
     def test_merge_body_rejects_unscoped_bump_version_lines(self):
         self.state["body"] = "Refs #12\nfix: this would bump the version"
