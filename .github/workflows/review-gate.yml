@@ -3,7 +3,7 @@ name: Review gate
 on:
   # Check on PR creation, updates, reopening, and readiness. Conversation
   # resolution is enforced by branch protection, so review activity needs no run.
-  # A dispatch is an auxiliary re-run and may record against a different SHA.
+  # Dispatch runs are isolated from PR runs because they may record against a different SHA.
   workflow_dispatch:
     inputs:
       pr:
@@ -14,7 +14,7 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
 
 concurrency:
-  group: review-gate-${{ inputs.pr || github.event.pull_request.number }}
+  group: review-gate-${{ github.event_name }}-${{ inputs.pr || github.event.pull_request.number }}
   cancel-in-progress: true
 
 permissions:
