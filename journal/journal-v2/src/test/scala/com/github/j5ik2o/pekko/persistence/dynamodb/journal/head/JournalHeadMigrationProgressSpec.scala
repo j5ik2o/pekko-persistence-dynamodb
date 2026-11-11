@@ -22,6 +22,20 @@ class JournalHeadMigrationProgressSpec extends AnyWordSpec with Matchers {
   import JournalHeadMigration._
 
   "Migration progress" should {
+    "render dry-run findings for raised and snapshot-only persistence ids" in {
+      val findings = MigrationFindings(
+        raisedPersistenceIds = Seq("order-17", "order-42"),
+        snapshotOnlyPersistenceIds = Seq("order-93")
+      )
+
+      renderFindings(findings) shouldBe Seq(
+        "[dry-run] raised JournalHead items may indicate writes from nodes with head mode disabled; this is not " +
+          "conclusive, because serialization rejections can also leave a gap and a later head-enabled write can " +
+          "hide it",
+        "[dry-run] snapshot-only migration sources: 1 persistence id (compare with hard-delete history):\n  - order-93"
+      )
+    }
+
     "render source observations without implying a migration total or success" in {
       renderProgress(ScanPage(Journal, 2L, 1L, 1L, false), execute = false) shouldBe
       "[dry-run] JournalHead migration progress phase=scan source=journal pages=2 rows-observed=1 ids-observed=1 source-exhausted=false"
