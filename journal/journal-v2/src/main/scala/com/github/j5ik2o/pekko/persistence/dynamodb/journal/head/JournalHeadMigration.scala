@@ -96,9 +96,10 @@ object JournalHeadMigration {
       if (findings.raisedPersistenceIds.nonEmpty)
         Seq(
           "[dry-run] raised means the observed journal or snapshot sequence is ahead of the head, which can indicate " +
-          "writes from nodes with head mode disabled but does not prove that cause. A serialization rejection alone " +
-          "creates no journal row and does not cause a raised item. A later head-enabled write can advance the head " +
-          "past earlier sequence gaps, so a later dry-run may no longer reveal earlier mixed writes"
+          "writes from nodes with head mode disabled but does not prove that cause",
+          "[dry-run] A serialization rejection alone creates no journal row and does not cause a raised item",
+          "[dry-run] A later head-enabled write can advance the head past earlier sequence gaps, so a later dry-run " +
+          "may no longer reveal earlier mixed writes"
         )
       else Seq.empty
     val snapshotOnly =
