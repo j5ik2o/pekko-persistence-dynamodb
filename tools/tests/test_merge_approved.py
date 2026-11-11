@@ -132,6 +132,28 @@ class MergeApprovedTests(unittest.TestCase):
         self.assertIn("CodeRabbit", result.stderr)
         self.assertFalse((self.root / "merge.log").exists())
 
+    def test_stale_coderabbit_success_is_rejected_when_fresh_run_is_missing(self):
+        self.check_runs[0]["started_at"] = "2026-11-11T06:45:01Z"
+        (self.root / "check-runs.json").write_text(json.dumps(self.check_runs))
+        result = self.run_script("--dry-run", "--subject", "fix(scope): x")
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("CodeRabbit is missing", result.stderr)
+        self.assertFalse((self.root / "merge.log").exists())
+
+    def test_stale_review_threads_success_is_rejected_when_fresh_run_is_missing(self):
+        self.check_runs[1]["started_at"] = "2026-11-11T06:45:01Z"
+        (self.root / "check-runs.json").write_text(json.dumps(self.check_runs))
+        result = self.run_script("--dry-run", "--subject", "fix(scope): x")
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("unresolved-review-threads is missing", result.stderr)
+        self.assertFalse((self.root / "merge.log").exists())
+
+    def test_completed_required_runs_after_ready_are_accepted(self):
+        result = self.run_script("--dry-run", "--subject", "fix(scope): x")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("gh pr merge", result.stdout)
+        self.assertFalse((self.root / "merge.log").exists())
+
     def test_wait_rechecks_missing_required_check_until_it_completes(self):
         self.env["MERGE_APPROVED_WAIT_SECONDS"] = "10"
         self.install("sleep", "#!/usr/bin/env bash\nexit 0\n")
