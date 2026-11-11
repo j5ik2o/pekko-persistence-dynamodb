@@ -263,6 +263,71 @@ node runs with `head.enabled = true`.
 The writes of the tool are conditional, so it can be run as often as needed. A run without `--execute` is a dry-run
 and never writes.
 
+Pass `--progress` with or without `--persistence-id` to either migration command to print scan diagnostics to stderr. Without this flag, no
+additional progress diagnostics are emitted; the existing stdout summary and warnings keep their format and order.
+The programmatic `run` method remains silent.
+
+```text
+[dry-run] JournalHead migration progress phase=scan source=journal started
+[dry-run] JournalHead migration progress phase=scan source=journal pages=1 rows-observed=120 ids-observed=40 source-exhausted=false
+```
+
+Each source reports cumulative pages, successfully decoded and aggregated rows, and distinct observed IDs.
+Counts reset for the snapshot source. IDs can occur in both sources, so their counts are not a combined total.
+`source-exhausted=true` means only that the source has no continuation key. Empty pages with a continuation
+key are still followed. A missing snapshot table is `unavailable`; `--without-snapshots` is `skipped`.
+Phase starts identify scan, head reads, planning, and execution. Dry-run diagnostics carry `[dry-run]`.
+A failed page is not reported as processed. Diagnostics contain neither table names nor persistence IDs,
+and provide no remaining count, ETA, percentage, or periodic heartbeat during a slow request.
+
+With selection, progress still counts every observed source row and ID before selection.
+Selection counts describe only the requested and observed target set.
+
+Progress is observation, not a checkpoint or mixed-writer detection. It does not reduce downtime, RCU use,
+or memory use. The full scans and conditional writes, and the requirement to stop application writes, still
+apply. A failed run starts scanning again when retried. A blocked stderr can delay the tool; combining stdout
+and stderr does not guarantee their relative order.
+
+To select exact persistence ids, repeat `--persistence-id VALUE` for both the dry-run and execute run:
+
+```shell
+$ sbt -batch "journal-v2/runMain com.github.j5ik2o.pekko.persistence.dynamodb.journal.head.JournalHeadMigration --persistence-id account-17 --persistence-id account-93"
+$ sbt -batch "journal-v2/runMain com.github.j5ik2o.pekko.persistence.dynamodb.journal.head.JournalHeadMigration --execute --persistence-id account-17 --persistence-id account-93"
+```
+
+Without this option, all ids observed in the sources remain targets. Repeated values are deduplicated by exact
+match. Values follow the existing persistence id rules (nonempty, at most 2048 characters), with no trimming,
+case folding or Unicode normalization. This option cannot select ids that start with `--`, even when they satisfy
+the persistence id rules. Empty or missing values, values that start with `--`, equals syntax such as
+`--persistence-id=value`, unknown flags and extra positional arguments fail before the actor system or client is
+created. Rejecting unknown arguments is an intentional change from the CLI's previous silent ignore behavior.
+Existing snapshot option resolution and precedence still apply.
+
+Both sources are still scanned through every page and all ids' maxima are collected before selection. Only head
+reads, the plan and conditional writes are limited. This does not reduce scan RCU or the memory needed to aggregate
+all source ids. A selected id observed only in snapshots still uses its highest snapshot sequence number, including
+when all its journal events were hard deleted. An id present only in the head table is neither read nor changed.
+No matches means zero targets, with no fallback to all ids. The public `run` method keeps its existing all-id behavior.
+
+Only a selected CLI run adds one stderr line, with the usual `[dry-run] ` prefix for a dry-run:
+
+```text
+JournalHead migration selection requested=4 observed-in-sources=2 not-observed-in-sources=2
+```
+
+`requested` counts distinct input ids. `observed-in-sources` counts selected ids found in the available journal or
+snapshot source. `not-observed-in-sources` does not prove that an aggregate is absent, deleted or migrated. It cannot
+distinguish head-only ids, a missing or skipped snapshot source, or an incorrect source table. Such ids are valid
+input. `Result.scannedPersistenceIds` and the existing stdout scanned count mean the number of ids in the selected
+plan, not the number of ids scanned across the tables or the number requested. Existing stdout messages remain the same.
+Dry-run create and raise counts are planned operations; execute counts reflect actual conditional writes.
+
+Selection does not establish completion of the whole migration. Keep every writer stopped as required above and
+cover every migration target before starting all nodes with head mode enabled. Splitting the work into selected
+runs does not permit other writers to run. Strongly consistent scans do not provide one snapshot across pages and
+tables. Selection does not make online migration safe or detect mixed writers. A retry starts all scans again and
+uses the existing conditional writes to converge without lowering heads.
+
 If an aggregate is written without its `JournalHead` item, the write fails with
 `JournalHeadMissingException`. That failure means the migration has not covered the aggregate yet. A new aggregate
 whose first sequence number is `1` does not need a migration.
