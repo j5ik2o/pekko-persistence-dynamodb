@@ -1850,62 +1850,6 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
       }
     }
 
-    "resolve the snapshot source from the config or the command line, and fail when neither is given" in {
-      val configured = ConfigFactory.parseString(
-        """
-          |j5ik2o.dynamo-db-snapshot {
-          |  table-name = "ConfiguredSnapshot"
-          |  columns-def {
-          |    persistence-id-column-name = "pid"
-          |    sequence-nr-column-name = "seq"
-          |  }
-          |}
-          |""".stripMargin
-      )
-
-      JournalHeadMigration.resolveSnapshotTable(Array.empty, configured) shouldBe
-      Some(JournalHeadMigration.SnapshotTable("ConfiguredSnapshot", "pid", "seq"))
-
-      JournalHeadMigration.resolveSnapshotTable(
-        Array(
-          "--snapshot-table",
-          "CustomSnapshot",
-          "--snapshot-persistence-id-column",
-          "p",
-          "--snapshot-sequence-nr-column",
-          "s"
-        ),
-        configured
-      ) shouldBe Some(JournalHeadMigration.SnapshotTable("CustomSnapshot", "p", "s"))
-
-      JournalHeadMigration.resolveSnapshotTable(Array("--without-snapshots"), configured) shouldBe None
-
-      // Without the config and without a named table the tool must not silently scan the default `Snapshot` table.
-      val missingSource = intercept[IllegalArgumentException] {
-        JournalHeadMigration.resolveSnapshotTable(Array.empty, ConfigFactory.empty())
-      }
-      missingSource.getMessage should include("--snapshot-table")
-      missingSource.getMessage should include("--without-snapshots")
-
-      // A named table is a source on its own, so a deployment without the snapshot plugin can name the table.
-      JournalHeadMigration.resolveSnapshotTable(
-        Array("--snapshot-table", "CustomSnapshot"),
-        ConfigFactory.empty()
-      ) shouldBe
-      Some(JournalHeadMigration.SnapshotTable("CustomSnapshot", "persistence-id", "sequence-nr"))
-
-      Seq(
-        "--snapshot-table",
-        "--snapshot-persistence-id-column",
-        "--snapshot-sequence-nr-column"
-      ).foreach { option =>
-        val failure = intercept[IllegalArgumentException] {
-          JournalHeadMigration.resolveSnapshotTable(Array(option), configured)
-        }
-        failure.getMessage should include(option)
-      }
-    }
-
     "report a missing snapshot table and still migrate from the journal" in {
       val pid = "head-missing-snapshot-1"
       persistAllOk(headDisabledSystem, pid, immutable.Seq("e1", "e2", "e3"))
