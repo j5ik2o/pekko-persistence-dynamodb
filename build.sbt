@@ -87,8 +87,10 @@ lazy val test = (project in file("test"))
       pekko.stream(pekkoVersion),
       amazonaws.dynamodb,
       javaDevJnv.jna,
-      "com.github.j5ik2o" %% "docker-controller-scala-scalatest"      % "1.15.34",
-      "com.github.j5ik2o" %% "docker-controller-scala-dynamodb-local" % "1.15.34"
+      ("com.github.j5ik2o" %% "docker-controller-scala-scalatest" % "1.15.34")
+        .exclude("org.seasar.util", "s2util"),
+      ("com.github.j5ik2o" %% "docker-controller-scala-dynamodb-local" % "1.15.34")
+        .exclude("org.seasar.util", "s2util")
     ),
     libraryDependencies ++= {
       CrossVersion.partialVersion(scalaVersion.value) match {
@@ -344,7 +346,8 @@ lazy val example = (project in file("example"))
       pekko.persistenceTyped(pekkoVersion),
       pekko.serializationJackson(pekkoVersion),
       scalatest.scalatest(scalaTest32Version) % Test,
-      "com.github.j5ik2o"                    %% "docker-controller-scala-scalatest" % "1.15.34"
+      ("com.github.j5ik2o"                   %% "docker-controller-scala-scalatest" % "1.15.34")
+        .exclude("org.seasar.util", "s2util")
     )
   )
   .dependsOn(
