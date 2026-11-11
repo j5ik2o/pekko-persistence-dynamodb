@@ -39,6 +39,7 @@ import software.amazon.awssdk.services.dynamodb.{ DynamoDbClient => JavaDynamoDb
 import scala.collection.mutable
 import scala.jdk.CollectionConverters._
 import scala.util.Try
+import scala.util.control.NonFatal
 
 /** Creates the JournalHead items of the aggregates that were written before `head.enabled` was turned on.
   *
@@ -96,10 +97,7 @@ object JournalHeadMigration {
 
   private[journal] def notifyProgress(emit: Progress => Unit, progress: Progress): Unit =
     try emit(progress)
-    catch {
-      // Progress output is advisory; an unavailable sink must not interrupt a migration.
-      case _: IllegalStateException => ()
-    }
+    catch { case NonFatal(_) => () }
 
   private[journal] def progressSink(args: Array[String], execute: Boolean): Progress => Unit =
     if (args.contains("--progress")) progress => Console.err.println(renderProgress(progress, execute))

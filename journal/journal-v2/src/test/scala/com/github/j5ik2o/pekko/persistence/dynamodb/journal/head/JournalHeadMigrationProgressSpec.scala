@@ -51,10 +51,8 @@ class JournalHeadMigrationProgressSpec extends AnyWordSpec with Matchers {
       observed._2 shouldBe (renderProgress(SourceStarted(Journal), execute = false) + System.lineSeparator())
     }
 
-    "ignore an unavailable progress sink but propagate other callback failures" in {
+    "isolate only NonFatal notification failures" in {
       noException should be thrownBy notifyProgress(_ => throw new IllegalStateException("sink"), SnapshotSkipped)
-      val unexpected = new IllegalArgumentException("unexpected sink failure")
-      intercept[IllegalArgumentException](notifyProgress(_ => throw unexpected, SnapshotSkipped)) shouldBe unexpected
       val fatal = new LinkageError("fatal sink")
       intercept[LinkageError](notifyProgress(_ => throw fatal, SnapshotSkipped)) shouldBe fatal
     }
