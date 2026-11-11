@@ -33,7 +33,7 @@ class MergeApprovedTests(unittest.TestCase):
         self.install("git", '#!/usr/bin/env python3\nimport os,sys\n'
                      'args=sys.argv[1:]\n'
                      'if args[:2]==["diff","--name-only"]: print(os.environ.get("GIT_DIFF",""))\n'
-                     'elif args[:2]==["fetch","--quiet"]: pass\n'
+                     'elif args[:2]==["fetch","--quiet"]: open(os.environ["GIT_LOG"],"a").write("fetch\\n")\n'
                      'elif args[:2]==["log","-1"]: print(os.environ.get("GIT_SUBJECT","feat(storage): preserve values"))\n'
                      'else: raise SystemExit(2)\n')
         self.install("check-review-threads.sh", '#!/usr/bin/env bash\nexit "$REVIEW_EXIT"\n')
@@ -42,6 +42,7 @@ class MergeApprovedTests(unittest.TestCase):
         self.env = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
                         GH_PR=str(self.root / "pr.json"), GH_CHECKS=str(self.root / "checks.json"),
                         GH_INPUT_LOG=str(self.root / "stdin.log"), MERGE_LOG=str(self.root / "merge.log"),
+                        GIT_LOG=str(self.root / "git.log"),
                         REVIEW_EXIT="0")
 
     def install(self, name, content):
@@ -77,13 +78,41 @@ class MergeApprovedTests(unittest.TestCase):
 
     def test_dry_run_uses_full_git_subject_and_never_merges(self):
         self.env["GIT_SUBJECT"] = "feat(storage): retain complete subject"
-        result = self.run_script("--dry-run")
+        result = self.run_script("--dry-run", "--subject", self.env["GIT_SUBJECT"])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(r"feat\(storage\):\ retain\ complete\ subject\ \(#7\)", result.stdout)
         self.assertFalse((self.root / "merge.log").exists())
+        self.assertFalse((self.root / "git.log").exists())
+
+    def test_subject_must_use_lowercase_type_and_scope(self):
+        for subject, expected in [
+            ("fix(scope): x", True),
+            ("Fix(scope): x", False),
+            ("FIX(scope): x", False),
+            ("fix(): x", False),
+            ("fix: x", False),
+            ("修正(scope): x", False),
+        ]:
+            with self.subTest(subject=subject):
+                result = self.run_script("--dry-run", "--subject", subject)
+                self.assertEqual(result.returncode == 0, expected, result.stderr)
+
+    def test_empty_checks_are_rejected(self):
+        self.checks = []
+        (self.root / "checks.json").write_text(json.dumps(self.checks))
+        result = self.run_script("--dry-run", "--subject", "fix(scope): x")
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("checks are empty", result.stderr)
+
+    def test_merge_body_rejects_unscoped_bump_version_lines(self):
+        self.state["body"] = "Refs #12\nfix: this would bump the version"
+        (self.root / "pr.json").write_text(json.dumps(self.state))
+        result = self.run_script("--dry-run", "--subject", "fix(scope): x")
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("merge body", result.stderr)
 
     def test_parent_loop_input_is_not_consumed_by_gh(self):
-        command = f'while IFS= read -r line; do {SCRIPT} owner/repo 7 {SHA} --dry-run >/dev/null || exit; printf "%s\\n" "$line"; done'
+        command = f'while IFS= read -r line; do {SCRIPT} owner/repo 7 {SHA} --dry-run --subject "fix(scope): x" >/dev/null || exit; printf "%s\\n" "$line"; done'
         result = subprocess.run(["bash", "-c", command], input="first\nsecond\n", text=True,
                                 env=self.env, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
