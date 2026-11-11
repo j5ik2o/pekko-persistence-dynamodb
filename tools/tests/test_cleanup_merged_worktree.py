@@ -16,7 +16,7 @@ class CleanupMergedWorktreeTests(unittest.TestCase):
         self.bin.mkdir()
         self.remote = self.root / "origin.git"
         self.repo = self.root / "repo"
-        self.worktree = self.root / "work tree"
+        self.worktree = self.root / "work tree [1].+"
         self.run_git("init", "--bare", str(self.remote))
         self.run_git("init", "-b", "main", str(self.repo))
         self.run_git("-C", str(self.repo), "config", "user.email", "test@example.com")
@@ -132,7 +132,6 @@ class CleanupMergedWorktreeTests(unittest.TestCase):
         process = subprocess.Popen(["python3", "-c", "import time,sys; time.sleep(30)", str(self.worktree)])
         try:
             time.sleep(0.1)
-            self.assertIn(str(process.pid), subprocess.check_output(["pgrep", "-f", str(self.worktree)], text=True).split())
             self.assert_stopped("in use")
         finally:
             process.terminate()

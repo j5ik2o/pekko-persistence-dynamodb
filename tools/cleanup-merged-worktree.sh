@@ -44,13 +44,14 @@ fi
 
 if ! status=$(git -C "$worktree" status --short --untracked-files=all </dev/null); then fail 'could not read worktree status'; fi
 [[ -z $status ]] || fail 'worktree has modified or untracked files'
-if matching_pids=$(pgrep -f "$worktree_arg" || true); then
+escape_ere() { printf '%s' "$1" | sed 's/[][\\.^$*+?(){}|]/\\&/g'; }
+if matching_pids=$(pgrep -f "$(escape_ere "$worktree_arg")" || true); then
   active_pids=$(printf '%s\n' "$matching_pids" | awk -v self="$$" -v parent="$PPID" '$0 != self && $0 != parent && NF')
 else
   active_pids=''
 fi
 if [[ -z $active_pids && $worktree_arg != "$worktree" ]]; then
-  if matching_pids=$(pgrep -f "$worktree" || true); then
+  if matching_pids=$(pgrep -f "$(escape_ere "$worktree")" || true); then
     active_pids=$(printf '%s\n' "$matching_pids" | awk -v self="$$" -v parent="$PPID" '$0 != self && $0 != parent && NF')
   fi
 fi
