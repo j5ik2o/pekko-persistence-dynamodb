@@ -84,6 +84,13 @@ class MergeApprovedTests(unittest.TestCase):
         self.assertFalse((self.root / "merge.log").exists())
         self.assertFalse((self.root / "git.log").exists())
 
+    def test_dry_run_without_subject_stops_before_fetch_or_merge(self):
+        result = self.run_script("--dry-run")
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("--dry-run requires --subject", result.stderr)
+        self.assertFalse((self.root / "git.log").exists())
+        self.assertFalse((self.root / "merge.log").exists())
+
     def test_subject_must_use_lowercase_type_and_scope(self):
         for subject, expected in [
             ("fix(scope): x", True),
