@@ -108,7 +108,9 @@ def assess(export, as_of, max_age, directory):
     try:
         require(isinstance(export, dict) and type(export.get('schema')) is int and
                 export['schema'] == 1, 'unsupported_schema')
-        target = configuration(export.get('target', {}).get('requested_config'))
+        target_envelope = export.get('target')
+        require(isinstance(target_envelope, dict), 'missing_target')
+        target = configuration(target_envelope.get('requested_config'))
         target_bytes = canonical(target)
         result['config_fingerprint'] = fingerprint(target)
         records = export.get('records')

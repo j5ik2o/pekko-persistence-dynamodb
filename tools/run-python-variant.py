@@ -156,7 +156,10 @@ def execute(args, root, out, source, test, before):
                 try:
                     os.killpg(child.pid, signal.SIGKILL)
                 except ProcessLookupError:
+                    # The timed-out child exited between wait() and group cleanup.
                     pass
+                except OSError as error:
+                    result["errors"].append("timeout process-group cleanup failed: " + str(error))
                 result["child_exit"] = child.wait()
                 result["errors"].append("timeout")
         observed = json.loads(observation.read_bytes())

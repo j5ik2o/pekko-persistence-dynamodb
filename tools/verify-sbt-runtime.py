@@ -79,6 +79,76 @@ def instrumentation(project, agent, run_id):
             'set ' + scope + 'Test / Keys.testOnly / aggregate := false', grouping]
 
 
+def collect_execution_evidence(result, repo, directory, run_id, marker, before):
+    started = result["started_ns"]
+    finished = time.time_ns()
+    for path in reports(repo):
+        item = evidence(path)
+        if item == before.get(str(path)) or not started <= item["mtime_ns"] <= finished:
+            result["ignored_stale_reports"].append(str(path))
+            continue
+        try:
+            result["reports"].append({"evidence": item, "suites": test_evidence(path)})
+        except (ET.ParseError, ValueError) as error:
+            result["errors"].append({"evidence": item, "error": str(error)})
+    for path in sorted((directory / "forks").glob("*.probe")):
+        item = evidence(path)
+        try:
+            lines = path.read_text().splitlines()
+            if len(lines) != 3 or lines[0] != run_id or not started <= item["mtime_ns"] <= finished:
+                raise ValueError("invalid or stale fork probe")
+            values = [base64.b64decode(v, validate=True).decode() for v in lines[1:]]
+            if not all(values):
+                raise ValueError("empty fork properties")
+            result["forks"].append({"evidence": item, "jvms": [
+                {"java.version": values[0], "java.home": values[1]}]})
+        except (ValueError, UnicodeError) as error:
+            result["errors"].append({"evidence": item, "error": str(error)})
+
+
+def run_sbt(args, repo, java_home, directory, run_id, result):
+    if args.sbt:
+        sbt = Path(args.sbt).expanduser().resolve()
+    else:
+        sbt = Path(subprocess.check_output(
+            ["mise", "which", "sbt"], cwd=repo, text=True).strip()).resolve()
+    if not sbt.is_file() or "shims" in sbt.parts:
+        raise ValueError("select a real sbt executable, not a shim")
+    before = {str(path): evidence(path) for path in reports(repo)}
+    marker = "PPD_JVM_" + run_id + "="
+    probe = ('eval println("' + marker + '" + System.getProperty("java.version")'
+             ' + "\\t" + System.getProperty("java.home"))')
+    agent = prepare_probe(java_home, directory, run_id)
+    result["probe_source"] = evidence(Path(__file__).resolve().parent / "jvm-probe/RuntimeProbe.java")
+    project = TEST_COMMAND.fullmatch(args.commands[0])[1]
+    command = [str(sbt), "--java-home", str(java_home), "-batch", probe,
+               *instrumentation(project, agent, run_id), *args.commands]
+    if args.fork_java_home:
+        fork_home = args.fork_java_home.expanduser().resolve()
+        if not (fork_home / "bin/java").is_file():
+            raise ValueError("--fork-java-home must contain bin/java")
+        command.insert(4, 'set LocalProject(' + json.dumps(project) +
+                       ') / Test / javaHome := Some(file(' + json.dumps(str(fork_home)) + '))')
+    result["command"] = command
+    result["started_ns"] = time.time_ns()
+    log_path = directory / "sbt.log"
+    with log_path.open("w") as log:
+        process = subprocess.Popen(command, cwd=repo, stdout=subprocess.PIPE,
+                                   stderr=subprocess.STDOUT, text=True, errors="replace")
+        for line in process.stdout:
+            sys.stdout.write(line)
+            log.write(line)
+            match = re.fullmatch(r"(?:\[info\] )?" + re.escape(marker) + r"([^\t\r\n]+)\t([^\r\n]+)\r?\n?", line)
+            if line.strip() == "PPD_GROUP_" + run_id:
+                result["groups"].append(run_id)
+            if match:
+                result["launcher"].append({"java.version": match[1], "java.home": match[2]})
+        result["command_exit"] = process.wait()
+        process.stdout.close()
+    result["log"] = evidence(log_path)
+    collect_execution_evidence(result, repo, directory, run_id, marker, before)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sbt", help="explicit sbt executable; otherwise use mise which sbt")
@@ -107,69 +177,7 @@ def main():
     started = time.time_ns()
     result["started_ns"] = started
     try:
-        if args.sbt:
-            sbt = Path(args.sbt).expanduser().resolve()
-        else:
-            sbt = Path(subprocess.check_output(
-                ["mise", "which", "sbt"], cwd=repo, text=True).strip()).resolve()
-        if not sbt.is_file() or "shims" in sbt.parts:
-            raise ValueError("select a real sbt executable, not a shim")
-        before = {str(p): evidence(p) for p in reports(repo)}
-        marker = "PPD_JVM_" + run_id + "="
-        probe = ('eval println("' + marker + '" + System.getProperty("java.version")'
-                 ' + "\\t" + System.getProperty("java.home"))')
-        agent = prepare_probe(java_home, directory, run_id)
-        result["probe_source"] = evidence(Path(__file__).resolve().parent / "jvm-probe/RuntimeProbe.java")
-        project = TEST_COMMAND.fullmatch(args.commands[0])[1]
-        command = [str(sbt), "--java-home", str(java_home), "-batch", probe,
-                   *instrumentation(project, agent, run_id), *args.commands]
-        if args.fork_java_home:
-            fork_home = args.fork_java_home.expanduser().resolve()
-            if not (fork_home / "bin/java").is_file():
-                raise ValueError("--fork-java-home must contain bin/java")
-            command.insert(4, 'set LocalProject(' + json.dumps(project) +
-                           ') / Test / javaHome := Some(file(' + json.dumps(str(fork_home)) + '))')
-        result["command"] = command
-        started = time.time_ns()
-        result["started_ns"] = started
-        log_path = directory / "sbt.log"
-        with log_path.open("w") as log:
-            process = subprocess.Popen(command, cwd=repo, stdout=subprocess.PIPE,
-                                       stderr=subprocess.STDOUT, text=True, errors="replace")
-            for line in process.stdout:
-                sys.stdout.write(line)
-                log.write(line)
-                match = re.fullmatch(r"(?:\[info\] )?" + re.escape(marker) + r"([^\t\r\n]+)\t([^\r\n]+)\r?\n?", line)
-                if line.strip() == "PPD_GROUP_" + run_id:
-                    result["groups"].append(run_id)
-                if match:
-                    result["launcher"].append({"java.version": match[1], "java.home": match[2]})
-            result["command_exit"] = process.wait()
-            process.stdout.close()
-        result["log"] = evidence(log_path)
-        finished = time.time_ns()
-        for path in reports(repo):
-            item = evidence(path)
-            if item == before.get(str(path)) or not started <= item["mtime_ns"] <= finished:
-                result["ignored_stale_reports"].append(str(path))
-                continue
-            try:
-                result["reports"].append({"evidence": item, "suites": test_evidence(path)})
-            except (ET.ParseError, ValueError) as error:
-                result["errors"].append({"evidence": item, "error": str(error)})
-        for path in sorted((directory / "forks").glob("*.probe")):
-            item = evidence(path)
-            try:
-                lines = path.read_text().splitlines()
-                if len(lines) != 3 or lines[0] != run_id or not started <= item["mtime_ns"] <= finished:
-                    raise ValueError("invalid or stale fork probe")
-                values = [base64.b64decode(v, validate=True).decode() for v in lines[1:]]
-                if not all(values):
-                    raise ValueError("empty fork properties")
-                result["forks"].append({"evidence": item, "jvms": [
-                    {"java.version": values[0], "java.home": values[1]}]})
-            except (ValueError, UnicodeError) as error:
-                result["errors"].append({"evidence": item, "error": str(error)})
+        run_sbt(args, repo, java_home, directory, run_id, result)
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         result["errors"].append({"error": str(error)})
     launcher = result["launcher"]

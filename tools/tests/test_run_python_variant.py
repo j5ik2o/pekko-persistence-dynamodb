@@ -214,14 +214,15 @@ class VariantTests(unittest.TestCase):
     def test_timeout_cleanup_permission_error_is_recorded(self):
         wrapper = self.root / "kill-failure.py"
         wrapper.write_text(
-            'import importlib.util, signal, sys\n'
+            'import importlib.util, os, sys\n'
             'spec=importlib.util.spec_from_file_location("runner", ' + repr(str(RUNNER)) + ')\n'
             'm=importlib.util.module_from_spec(spec)\nspec.loader.exec_module(m)\n'
-            'signal.killpg=lambda *args: (_ for _ in ()).throw(PermissionError("denied"))\n'
+            'os.killpg=lambda *args: (_ for _ in ()).throw(PermissionError("denied"))\n'
             'sys.exit(m.main())\n')
         (self.input / "test_subject.py").write_text("import time\ntime.sleep(0.2)\n")
         _, result, _ = self.run_cli(("--timeout", "0.01"), runner=wrapper, expected=1)
-        self.assertTrue(any("PermissionError: denied" in error for error in result["errors"]))
+        self.assertTrue(any("timeout process-group cleanup failed: denied" in error
+                            for error in result["errors"]))
 
     def test_copy_change_is_incomplete(self):
         # Inject an input change precisely after validation, before copy; run actual CLI main.
