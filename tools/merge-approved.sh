@@ -43,7 +43,7 @@ while :; do
   if jq -e 'type == "array" and any(.[]; ((.bucket // "") | ascii_downcase) == "fail")' <<<"$checks" >/dev/null; then fail 'a pull request check failed'; fi
   check_runs=$(gh api "repos/$repo/commits/$approved_sha/check-runs" --paginate --slurp </dev/null | jq '{check_runs: [.[] | .check_runs[]]}') || fail 'could not read checks for approved head'
   missing=$(jq -r --arg ready "$ready_at" '
-    def named($name): [.check_runs[] | select(.name == $name and .started_at > $ready)] | sort_by(.id) | if length == 0 then [] else [last] end;
+    def named($name): [.check_runs[] | select(.name == $name and .started_at >= $ready)] | sort_by(.id) | if length == 0 then [] else [last] end;
     (named("CodeRabbit")) as $cr | (named("unresolved-review-threads")) as $threads |
     [if ($cr | length) == 0 then "CodeRabbit is missing" elif any($cr[]; .status != "completed") then "CodeRabbit is pending" elif any($cr[]; .conclusion == "skipped") then "CodeRabbit was skipped" elif any($cr[]; (.conclusion != "success" and .conclusion != "neutral")) then "CodeRabbit did not succeed" else empty end,
      if ($threads | length) == 0 then "unresolved-review-threads is missing" elif any($threads[]; .status != "completed") then "unresolved-review-threads is pending" elif any($threads[]; .conclusion != "success") then "unresolved-review-threads did not succeed" else empty end] | .[]' <<<"$check_runs") || fail 'could not evaluate required checks'
