@@ -16,6 +16,7 @@ done
 [[ $repo =~ ^[^/]+/[^/]+$ ]] || fail 'repository must be <owner/repo>'
 [[ $pr =~ ^[0-9]+$ ]] || fail 'pull request must be an integer'
 [[ $approved_sha =~ ^[[:xdigit:]]{40}$ ]] || fail 'approved head must be a full commit SHA'
+if $dry_run && [[ -z $subject ]]; then fail '--dry-run requires --subject to avoid fetching the pull request head'; fi
 for tool in gh jq git; do command -v "$tool" >/dev/null || fail "$tool is required"; done
 
 if ! pr_data=$(gh pr view "$pr" --repo "$repo" --json state,headRefOid,body,commits </dev/null); then fail 'could not read pull request'; fi
@@ -40,9 +41,13 @@ if ! changed_files=$(gh pr diff "$pr" --repo "$repo" --name-only </dev/null); th
 if grep -E '(^|/)HAND_OFF([^/]*$)|(^|/)\.audit(/|$)' <<<"$changed_files" >/dev/null; then
   fail 'diff contains HAND_OFF or .audit files'
 fi
-[[ $subject =~ ^[a-zA-Z]+\([a-zA-Z0-9._/-]+\):[[:space:]]+[^[:space:]].*$ ]] || fail 'subject must be a scoped English Conventional Commit'
+[[ $subject =~ ^[a-z]+\([a-zA-Z0-9._/-]+\):[[:space:]]+[^[:space:]].*$ ]] || fail 'subject must be a scoped English Conventional Commit'
 subject="$subject (#$pr)"
-body=$(jq -r '.body // empty' <<<"$pr_data" | grep -Eo 'Refs #[0-9]+' | head -n 1 || true)
+pr_body=$(jq -r '.body // empty' <<<"$pr_data")
+if grep -Eq '^(build|ci|feat|fix|docs|style|refactor|perf|test|revert|chore):' <<<"$pr_body"; then
+  fail 'PR body contains a merge body line counted by bump-version.yml'
+fi
+body=$(grep -Eo 'Refs #[0-9]+' <<<"$pr_body" | head -n 1 || true)
 [[ -n $body ]] || body="Refs #$pr"
 if $dry_run; then
   printf 'gh pr merge %q --repo %q --squash --match-head-commit %q --subject %q --body %q\n' "$pr" "$repo" "$approved_sha" "$subject" "$body"
