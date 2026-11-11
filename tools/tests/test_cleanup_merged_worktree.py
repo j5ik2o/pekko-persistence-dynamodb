@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import time
@@ -14,6 +15,7 @@ class CleanupMergedWorktreeTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.bin = self.root / "bin"
         self.bin.mkdir()
+        self.real_lsof = shutil.which("lsof")
         self.remote = self.root / "origin.git"
         self.repo = self.root / "repo"
         self.worktree = self.root / "work tree [1].+"
@@ -32,6 +34,7 @@ class CleanupMergedWorktreeTests(unittest.TestCase):
         self.run_git("-C", str(self.repo), "commit", "-m", "feature")
         self.run_git("-C", str(self.repo), "push", "-u", "origin", "feature/test")
         self.run_git("-C", str(self.repo), "push", "origin", "HEAD:refs/pull/8/head")
+        self.feature_sha = self.git("-C", str(self.repo), "rev-parse", "HEAD").strip()
         self.run_git("-C", str(self.repo), "switch", "main")
         self.run_git("-C", str(self.repo), "merge", "--no-ff", "feature/test", "-m", "merge feature")
         self.merge_sha = self.git("-C", str(self.repo), "rev-parse", "HEAD").strip()
@@ -44,12 +47,20 @@ class CleanupMergedWorktreeTests(unittest.TestCase):
         self.install("gh", "#!/usr/bin/env python3\nimport json, os, sys\n"
                      "sys.stdin.read()\nargs=sys.argv[1:]\n"
                      "if args[:2] == ['pr','list']: print(open(os.environ['GH_PR']).read())\n"
+                     "elif args[:2] == ['pr','view']: print(open(os.environ['GH_HEAD']).read())\n"
                      "elif args[:2] == ['run','list']: print(open(os.environ['GH_RUN']).read())\n"
                      "else: raise SystemExit(2)\n")
+        self.install("lsof", "#!/usr/bin/env python3\nimport os, sys\n"
+                     "if os.getenv('USE_REAL_LSOF'): "
+                     "os.execv(os.environ['REAL_LSOF'], [os.environ['REAL_LSOF'], *sys.argv[1:]])\n"
+                     "if os.getenv('LSOF_FAIL'): print('lsof failed', file=sys.stderr); raise SystemExit(2)\n"
+                     "raise SystemExit(1 if '-d' in sys.argv else 0)\n")
         self.write_json("pr.json", self.pr)
         self.write_json("run.json", self.run_state)
         self.env = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
-                        GH_PR=str(self.root / "pr.json"), GH_RUN=str(self.root / "run.json"))
+                        GH_PR=str(self.root / "pr.json"), GH_RUN=str(self.root / "run.json"),
+                        GH_HEAD=str(self.root / "head.json"), REAL_LSOF=self.real_lsof or "")
+        self.write_json("head.json", {"headRefOid": self.feature_sha})
 
     def install(self, name, content):
         path = self.bin / name
@@ -92,14 +103,44 @@ class CleanupMergedWorktreeTests(unittest.TestCase):
         self.run_git("-C", str(self.repo), "push", "origin", ":refs/pull/8/head")
         self.assert_stopped("could not fetch pull request head")
 
-    def test_force_fetch_replaces_existing_pull_request_ref(self):
+    def test_rejects_fetched_pull_request_ref_that_differs_from_github_head(self):
         wrong = self.git("-C", str(self.repo), "rev-parse", "origin/main").strip()
-        self.run_git("-C", str(self.repo), "update-ref", "refs/pm/8", wrong)
-        result = self.run_script("--dry-run")
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.write_json("head.json", {"headRefOid": wrong})
+        self.assert_stopped("does not match GitHub head SHA")
         fetched = self.git("-C", str(self.repo), "rev-parse", "refs/pm/8").strip()
-        expected = self.git("-C", str(self.repo), "rev-parse", "feature/test").strip()
-        self.assertEqual(fetched, expected)
+        self.assertNotEqual(fetched, wrong)
+
+    def test_rejects_process_whose_only_worktree_reference_is_its_current_directory(self):
+        if not self.real_lsof:
+            self.skipTest("lsof is unavailable")
+        process = subprocess.Popen(["python3", "-c", "import os,time; os.chdir(os.environ['WT']); time.sleep(30)"],
+                                   cwd=self.root, env=dict(self.env, WT=str(self.worktree)))
+        try:
+            time.sleep(0.1)
+            self.assert_stopped_with_real_lsof()
+        finally:
+            process.terminate()
+            process.wait()
+
+    def test_rejects_process_with_file_open_inside_worktree(self):
+        if not self.real_lsof:
+            self.skipTest("lsof is unavailable")
+        process = subprocess.Popen(["python3", "-c", "import os,time; f=open(os.environ['OPEN_FILE']); time.sleep(30)"],
+                                   cwd=self.root, env=dict(self.env, OPEN_FILE=str(self.worktree / "feature.txt")))
+        try:
+            time.sleep(0.1)
+            self.assert_stopped_with_real_lsof()
+        finally:
+            process.terminate()
+            process.wait()
+
+    def assert_stopped_with_real_lsof(self):
+        env = dict(self.env, USE_REAL_LSOF="1")
+        result = subprocess.run([str(SCRIPT), "owner/repo", str(self.worktree)], text=True,
+                                capture_output=True, env=env)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("in use", result.stderr)
+        self.assertTrue(self.worktree.exists())
 
     def test_rejects_head_outside_both_histories(self):
         self.run_git("-C", str(self.repo), "checkout", "--orphan", "unrelated")
@@ -123,10 +164,10 @@ class CleanupMergedWorktreeTests(unittest.TestCase):
 
     def test_rejects_modified_and_untracked_files(self):
         (self.worktree / "feature.txt").write_text("modified\n")
-        self.assert_stopped("modified or untracked")
+        self.assert_stopped("error: worktree has modified or untracked files")
         self.run_git("-C", str(self.worktree), "checkout", "--", "feature.txt")
         (self.worktree / "untracked.txt").write_text("untracked\n")
-        self.assert_stopped("modified or untracked")
+        self.assert_stopped("error: worktree has modified or untracked files")
 
     def test_rejects_worktree_used_by_another_process(self):
         process = subprocess.Popen(["python3", "-c", "import time,sys; time.sleep(30)", str(self.worktree)])
@@ -136,6 +177,10 @@ class CleanupMergedWorktreeTests(unittest.TestCase):
         finally:
             process.terminate()
             process.wait()
+
+    def test_stops_when_lsof_fails(self):
+        self.env["LSOF_FAIL"] = "1"
+        self.assert_stopped("could not inspect processes using worktree (cwd)")
 
     def test_dry_run_preserves_worktree_and_branch(self):
         result = self.run_script("--dry-run")
