@@ -37,7 +37,7 @@ if [[ -z $subject ]]; then
   subject=$(git log -1 --format=%s FETCH_HEAD </dev/null) || fail 'could not read commit subject'
 fi
 if ! changed_files=$(gh pr diff "$pr" --repo "$repo" --name-only </dev/null); then fail 'could not read pull request diff'; fi
-if grep -E '(^|/)HAND_OFF$|(^|/)\.audit(/|$)' <<<"$changed_files" >/dev/null; then
+if grep -E '(^|/)HAND_OFF([^/]*$)|(^|/)\.audit(/|$)' <<<"$changed_files" >/dev/null; then
   fail 'diff contains HAND_OFF or .audit files'
 fi
 [[ $subject =~ ^[a-zA-Z]+\([a-zA-Z0-9._/-]+\):[[:space:]]+[^[:space:]].*$ ]] || fail 'subject must be a scoped English Conventional Commit'

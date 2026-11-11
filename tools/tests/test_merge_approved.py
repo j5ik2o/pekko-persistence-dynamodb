@@ -65,7 +65,9 @@ class MergeApprovedTests(unittest.TestCase):
             with self.subTest(label=label):
                 self.state.update(headRefOid=SHA)
                 self.checks = [{"bucket": "pass"}]
-                self.env.update(REVIEW_EXIT="0", GH_DIFF="", GIT_SUBJECT="fix: avoid bump")
+                self.env.update(REVIEW_EXIT="0", GH_DIFF="", GIT_SUBJECT="feat(storage): avoid version bump")
+                if label == "unscoped":
+                    self.env["GIT_SUBJECT"] = "fix: avoid bump"
                 setup()
                 (self.root / "pr.json").write_text(json.dumps(self.state))
                 (self.root / "checks.json").write_text(json.dumps(self.checks))
