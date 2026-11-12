@@ -1,0 +1,461 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "rule": "ai-slop/unused-import",
+      "engine": "ai-slop",
+      "file": "base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v1/V1OperationRenderer.scala",
+      "fingerprint": "0f8c3c09de4e5a2f",
+      "count": 1,
+      "reason": "false positive: Scala 2.13.16 -Ywarn-unused and Scala 3.6.4 -Wunused:all report no unused import here (clean compile and Test/compile, #969); aislop flags the first line of an import the code uses"
+    },
+    {
+      "rule": "ai-slop/unused-import",
+      "engine": "ai-slop",
+      "file": "base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v1/V1OperationRenderer.scala",
+      "fingerprint": "46e54fb70632eea6",
+      "count": 1,
+      "reason": "false positive: Scala 2.13.16 -Ywarn-unused and Scala 3.6.4 -Wunused:all report no unused import here (clean compile and Test/compile, #969); aislop flags the first line of an import the code uses"
+    },
+    {
+      "rule": "ai-slop/unused-import",
+      "engine": "ai-slop",
+      "file": "base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v1/V1RenderedOperation.scala",
+      "fingerprint": "46e54fb70632eea6",
+      "count": 1,
+      "reason": "false positive: Scala 2.13.16 -Ywarn-unused and Scala 3.6.4 -Wunused:all report no unused import here (clean compile and Test/compile, #969); aislop flags the first line of an import the code uses"
+    },
+    {
+      "rule": "ai-slop/unused-import",
+      "engine": "ai-slop",
+      "file": "base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v1/V1Responses.scala",
+      "fingerprint": "46e54fb70632eea6",
+      "count": 1,
+      "reason": "false positive: Scala 2.13.16 -Ywarn-unused and Scala 3.6.4 -Wunused:all report no unused import here (clean compile and Test/compile, #969); aislop flags the first line of an import the code uses"
+    },
+    {
+      "rule": "ai-slop/duplicate-import",
+      "engine": "ai-slop",
+      "file": "base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V1ClientBuilderUtils.scala",
+      "fingerprint": "fda227f0dc29a853",
+      "count": 1,
+      "reason": "false positive: each `import pluginContext._` sits in a separate def or class and imports a different pluginContext parameter, and neither compiler reports it unused (#969)"
+    },
+    {
+      "rule": "ai-slop/unused-import",
+      "engine": "ai-slop",
+      "file": "base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V1ClientConfigurationUtils.scala",
+      "fingerprint": "039de9d537e547d3",
+      "count": 1,
+      "reason": "false positive: Scala 2.13.16 -Ywarn-unused and Scala 3.6.4 -Wunused:all report no unused import here (clean compile and Test/compile, #969); aislop flags the first line of an import the code uses"
+    },
+    {
+      "rule": "ai-slop/duplicate-import",
+      "engine": "ai-slop",
+      "file": "base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V1DaxClientBuilderUtils.scala",
+      "fingerprint": "fda227f0dc29a853",
+      "count": 1,
+      "reason": "false positive: each `import pluginContext._` sits in a separate def or class and imports a different pluginContext parameter, and neither compiler reports it unused (#969)"
+    },
+    {
+      "rule": "ai-slop/duplicate-import",
+      "engine": "ai-slop",
+      "file": "base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/client/v2/AwsCredentialsProviderProvider.scala",
+      "fingerprint": "fda227f0dc29a853",
+      "count": 1,
+      "reason": "false positive: each `import pluginContext._` sits in a separate def or class and imports a different pluginContext parameter, and neither compiler reports it unused (#969)"
+    },
+    {
+      "rule": "ai-slop/duplicate-import",
+      "engine": "ai-slop",
+      "file": "base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/client/v2/MetricPublishersProvider.scala",
+      "fingerprint": "fda227f0dc29a853",
+      "count": 1,
+      "reason": "false positive: each `import pluginContext._` sits in a separate def or class and imports a different pluginContext parameter, and neither compiler reports it unused (#969)"
+    },
+    {
+      "rule": "ai-slop/unused-import",
+      "engine": "ai-slop",
+      "file": "base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v2/V2OperationRenderer.scala",
+      "fingerprint": "0f8c3c09de4e5a2f",
+      "count": 1,
+      "reason": "false positive: Scala 2.13.16 -Ywarn-unused and Scala 3.6.4 -Wunused:all report no unused import here (clean compile and Test/compile, #969); aislop flags the first line of an import the code uses"
+    },
+    {
+      "rule": "ai-slop/unused-import",
+      "engine": "ai-slop",
+      "file": "base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v2/V2OperationRenderer.scala",
+      "fingerprint": "ea2594ce05f5fecb",
+      "count": 1,
+      "reason": "false positive: Scala 2.13.16 -Ywarn-unused and Scala 3.6.4 -Wunused:all report no unused import here (clean compile and Test/compile, #969); aislop flags the first line of an import the code uses"
+    },
+    {
+      "rule": "ai-slop/unused-import",
+      "engine": "ai-slop",
+      "file": "base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v2/V2RenderedOperation.scala",
+      "fingerprint": "ea2594ce05f5fecb",
+      "count": 1,
+      "reason": "false positive: Scala 2.13.16 -Ywarn-unused and Scala 3.6.4 -Wunused:all report no unused import here (clean compile and Test/compile, #969); aislop flags the first line of an import the code uses"
+    },
+    {
+      "rule": "ai-slop/unused-import",
+      "engine": "ai-slop",
+      "file": "base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v2/V2Responses.scala",
+      "fingerprint": "ea2594ce05f5fecb",
+      "count": 1,
+      "reason": "false positive: Scala 2.13.16 -Ywarn-unused and Scala 3.6.4 -Wunused:all report no unused import here (clean compile and Test/compile, #969); aislop flags the first line of an import the code uses"
+    },
+    {
+      "rule": "ai-slop/duplicate-import",
+      "engine": "ai-slop",
+      "file": "base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V2ClientBuilderUtils.scala",
+      "fingerprint": "fda227f0dc29a853",
+      "count": 1,
+      "reason": "false positive: each `import pluginContext._` sits in a separate def or class and imports a different pluginContext parameter, and neither compiler reports it unused (#969)"
+    },
+    {
+      "rule": "ai-slop/unused-import",
+      "engine": "ai-slop",
+      "file": "base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V2ClientBuilderUtils.scala",
+      "fingerprint": "c2d9a3642c5ace0a",
+      "count": 1,
+      "reason": "false positive: Scala 2.13.16 -Ywarn-unused and Scala 3.6.4 -Wunused:all report no unused import here (clean compile and Test/compile, #969); aislop flags the first line of an import the code uses"
+    },
+    {
+      "rule": "ai-slop/unused-import",
+      "engine": "ai-slop",
+      "file": "base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V2ClientOverrideConfigurationBuilderUtils.scala",
+      "fingerprint": "792eff3249ebca69",
+      "count": 1,
+      "reason": "false positive: Scala 2.13.16 -Ywarn-unused and Scala 3.6.4 -Wunused:all report no unused import here (clean compile and Test/compile, #969); aislop flags the first line of an import the code uses"
+    },
+    {
+      "rule": "ai-slop/unused-import",
+      "engine": "ai-slop",
+      "file": "base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V2ClientUtils.scala",
+      "fingerprint": "c2d9a3642c5ace0a",
+      "count": 1,
+      "reason": "false positive: Scala 2.13.16 -Ywarn-unused and Scala 3.6.4 -Wunused:all report no unused import here (clean compile and Test/compile, #969); aislop flags the first line of an import the code uses"
+    },
+    {
+      "rule": "ai-slop/unused-import",
+      "engine": "ai-slop",
+      "file": "base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V2DaxOverrideConfigurationBuilderUtils.scala",
+      "fingerprint": "792eff3249ebca69",
+      "count": 1,
+      "reason": "false positive: Scala 2.13.16 -Ywarn-unused and Scala 3.6.4 -Wunused:all report no unused import here (clean compile and Test/compile, #969); aislop flags the first line of an import the code uses"
+    },
+    {
+      "rule": "ai-slop/unused-import",
+      "engine": "ai-slop",
+      "file": "base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/config/client/v2/DynamoDBClientV2Config.scala",
+      "fingerprint": "1bcfc8d6777b0597",
+      "count": 1,
+      "reason": "false positive: Scala 2.13.16 -Ywarn-unused and Scala 3.6.4 -Wunused:all report no unused import here (clean compile and Test/compile, #969); aislop flags the first line of an import the code uses"
+    },
+    {
+      "rule": "ai-slop/unused-import",
+      "engine": "ai-slop",
+      "file": "base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/config/client/v2dax/DynamoDBClientV2DaxConfig.scala",
+      "fingerprint": "1bcfc8d6777b0597",
+      "count": 1,
+      "reason": "false positive: Scala 2.13.16 -Ywarn-unused and Scala 3.6.4 -Wunused:all report no unused import here (clean compile and Test/compile, #969); aislop flags the first line of an import the code uses"
+    },
+    {
+      "rule": "ai-slop/unused-import",
+      "engine": "ai-slop",
+      "file": "base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/config/CommonConfigParser.scala",
+      "fingerprint": "1bcfc8d6777b0597",
+      "count": 1,
+      "reason": "false positive: Scala 2.13.16 -Ywarn-unused and Scala 3.6.4 -Wunused:all report no unused import here (clean compile and Test/compile, #969); aislop flags the first line of an import the code uses"
+    },
+    {
+      "rule": "ai-slop/duplicate-import",
+      "engine": "ai-slop",
+      "file": "base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/DispatcherUtils.scala",
+      "fingerprint": "fda227f0dc29a853",
+      "count": 1,
+      "reason": "false positive: each `import pluginContext._` sits in a separate def or class and imports a different pluginContext parameter, and neither compiler reports it unused (#969)"
+    },
+    {
+      "rule": "ai-slop/unused-import",
+      "engine": "ai-slop",
+      "file": "benchmark/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/jmh/untyped/Untyped.scala",
+      "fingerprint": "b1feddab8e209c1d",
+      "count": 1,
+      "reason": "false positive: Scala 2.13.16 -Ywarn-unused and Scala 3.6.4 -Wunused:all report no unused import here (clean compile and Test/compile, #969); aislop flags the first line of an import the code uses"
+    },
+    {
+      "rule": "ai-slop/unused-css",
+      "engine": "ai-slop",
+      "file": "docs/src/sphinx/static/css/my_theme.css",
+      "fingerprint": "6913ef6dffc0655f",
+      "count": 1,
+      "reason": "intentional: the class belongs to sphinx_rtd_theme, which generates the markup; conf.py loads this file as html_style (#944, #957)"
+    },
+    {
+      "rule": "ai-slop/unused-css",
+      "engine": "ai-slop",
+      "file": "docs/src/sphinx/static/css/my_theme.css",
+      "fingerprint": "bf3eff33694a4c42",
+      "count": 1,
+      "reason": "intentional: the class belongs to sphinx_rtd_theme, which generates the markup; conf.py loads this file as html_style (#944, #957)"
+    },
+    {
+      "rule": "ai-slop/unused-import",
+      "engine": "ai-slop",
+      "file": "journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/config/JournalPluginConfig.scala",
+      "fingerprint": "82e98897414e68cf",
+      "count": 1,
+      "reason": "false positive: Scala 2.13.16 -Ywarn-unused and Scala 3.6.4 -Wunused:all report no unused import here (clean compile and Test/compile, #969); aislop flags the first line of an import the code uses"
+    },
+    {
+      "rule": "ai-slop/unused-import",
+      "engine": "ai-slop",
+      "file": "journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/dao/DaoSupport.scala",
+      "fingerprint": "d73002cdbe647b13",
+      "count": 1,
+      "reason": "false positive: Scala 2.13.16 -Ywarn-unused and Scala 3.6.4 -Wunused:all report no unused import here (clean compile and Test/compile, #969); aislop flags the first line of an import the code uses"
+    },
+    {
+      "rule": "ai-slop/unused-import",
+      "engine": "ai-slop",
+      "file": "journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/DynamoDBJournal.scala",
+      "fingerprint": "2871f6ae7fa0509e",
+      "count": 1,
+      "reason": "false positive: Scala 2.13.16 -Ywarn-unused and Scala 3.6.4 -Wunused:all report no unused import here (clean compile and Test/compile, #969); aislop flags the first line of an import the code uses"
+    },
+    {
+      "rule": "ai-slop/unused-import",
+      "engine": "ai-slop",
+      "file": "journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/DynamoDBJournal.scala",
+      "fingerprint": "fe5c584332599951",
+      "count": 1,
+      "reason": "false positive: Scala 2.13.16 -Ywarn-unused and Scala 3.6.4 -Wunused:all report no unused import here (clean compile and Test/compile, #969); aislop flags the first line of an import the code uses"
+    },
+    {
+      "rule": "ai-slop/unused-import",
+      "engine": "ai-slop",
+      "file": "journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/head/DynamoDBItemSizeCalculator.scala",
+      "fingerprint": "33955e06cd256200",
+      "count": 1,
+      "reason": "false positive: Scala 2.13.16 -Ywarn-unused and Scala 3.6.4 -Wunused:all report no unused import here (clean compile and Test/compile, #969); aislop flags the first line of an import the code uses"
+    },
+    {
+      "rule": "ai-slop/duplicate-import",
+      "engine": "ai-slop",
+      "file": "journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/PartitionKeyResolver.scala",
+      "fingerprint": "fda227f0dc29a853",
+      "count": 1,
+      "reason": "false positive: each `import pluginContext._` sits in a separate def or class and imports a different pluginContext parameter, and neither compiler reports it unused (#969)"
+    },
+    {
+      "rule": "ai-slop/unused-import",
+      "engine": "ai-slop",
+      "file": "journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/schema/JournalRowCodec.scala",
+      "fingerprint": "13e1b19713ea80b3",
+      "count": 1,
+      "reason": "false positive: Scala 2.13.16 -Ywarn-unused and Scala 3.6.4 -Wunused:all report no unused import here (clean compile and Test/compile, #969); aislop flags the first line of an import the code uses"
+    },
+    {
+      "rule": "ai-slop/unused-import",
+      "engine": "ai-slop",
+      "file": "journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/schema/JournalTableSpec.scala",
+      "fingerprint": "13e1b19713ea80b3",
+      "count": 1,
+      "reason": "false positive: Scala 2.13.16 -Ywarn-unused and Scala 3.6.4 -Wunused:all report no unused import here (clean compile and Test/compile, #969); aislop flags the first line of an import the code uses"
+    },
+    {
+      "rule": "ai-slop/unused-import",
+      "engine": "ai-slop",
+      "file": "journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/store/JournalRowStore.scala",
+      "fingerprint": "33955e06cd256200",
+      "count": 1,
+      "reason": "false positive: Scala 2.13.16 -Ywarn-unused and Scala 3.6.4 -Wunused:all report no unused import here (clean compile and Test/compile, #969); aislop flags the first line of an import the code uses"
+    },
+    {
+      "rule": "ai-slop/unused-import",
+      "engine": "ai-slop",
+      "file": "journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/store/JournalRowStore.scala",
+      "fingerprint": "82e98897414e68cf",
+      "count": 1,
+      "reason": "false positive: Scala 2.13.16 -Ywarn-unused and Scala 3.6.4 -Wunused:all report no unused import here (clean compile and Test/compile, #969); aislop flags the first line of an import the code uses"
+    },
+    {
+      "rule": "ai-slop/unused-import",
+      "engine": "ai-slop",
+      "file": "journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/store/JournalRowStore.scala",
+      "fingerprint": "fb3e794b13babfc1",
+      "count": 1,
+      "reason": "false positive: Scala 2.13.16 -Ywarn-unused and Scala 3.6.4 -Wunused:all report no unused import here (clean compile and Test/compile, #969); aislop flags the first line of an import the code uses"
+    },
+    {
+      "rule": "complexity/file-too-large",
+      "engine": "code-quality",
+      "file": "journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/store/JournalRowStore.scala",
+      "fingerprint": "message:96b0128c3491727f",
+      "count": 1,
+      "reason": "intentional: no split by meaning was found; a split by line count alone is not done (#957)"
+    },
+    {
+      "rule": "ai-slop/unused-import",
+      "engine": "ai-slop",
+      "file": "journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/write/JournalWritePlan.scala",
+      "fingerprint": "fb3e794b13babfc1",
+      "count": 1,
+      "reason": "false positive: Scala 2.13.16 -Ywarn-unused and Scala 3.6.4 -Wunused:all report no unused import here (clean compile and Test/compile, #969); aislop flags the first line of an import the code uses"
+    },
+    {
+      "rule": "ai-slop/unused-import",
+      "engine": "ai-slop",
+      "file": "journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/write/WriteRejection.scala",
+      "fingerprint": "fb3e794b13babfc1",
+      "count": 1,
+      "reason": "false positive: Scala 2.13.16 -Ywarn-unused and Scala 3.6.4 -Wunused:all report no unused import here (clean compile and Test/compile, #969); aislop flags the first line of an import the code uses"
+    },
+    {
+      "rule": "ai-slop/unused-import",
+      "engine": "ai-slop",
+      "file": "journal/journal-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/dao/v2/V2JournalRowWriteDriver.scala",
+      "fingerprint": "c2d9a3642c5ace0a",
+      "count": 1,
+      "reason": "false positive: Scala 2.13.16 -Ywarn-unused and Scala 3.6.4 -Wunused:all report no unused import here (clean compile and Test/compile, #969); aislop flags the first line of an import the code uses"
+    },
+    {
+      "rule": "ai-slop/swallowed-exception",
+      "engine": "ai-slop",
+      "file": "journal/journal-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/head/JournalHeadMigration.scala",
+      "fingerprint": "a1e4d28f1c15a377",
+      "count": 1,
+      "reason": "intentional: notifyProgress ignores a NonFatal failure of the optional progress output so that the migration continues (#939, #957)"
+    },
+    {
+      "rule": "ai-slop/unused-import",
+      "engine": "ai-slop",
+      "file": "journal/journal-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/head/JournalHeadMigration.scala",
+      "fingerprint": "33955e06cd256200",
+      "count": 1,
+      "reason": "false positive: Scala 2.13.16 -Ywarn-unused and Scala 3.6.4 -Wunused:all report no unused import here (clean compile and Test/compile, #969); aislop flags the first line of an import the code uses"
+    },
+    {
+      "rule": "ai-slop/unused-import",
+      "engine": "ai-slop",
+      "file": "journal/journal-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/head/JournalHeadMigration.scala",
+      "fingerprint": "ea2594ce05f5fecb",
+      "count": 1,
+      "reason": "false positive: Scala 2.13.16 -Ywarn-unused and Scala 3.6.4 -Wunused:all report no unused import here (clean compile and Test/compile, #969); aislop flags the first line of an import the code uses"
+    },
+    {
+      "rule": "complexity/file-too-large",
+      "engine": "code-quality",
+      "file": "journal/journal-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/head/JournalHeadMigration.scala",
+      "fingerprint": "message:96b0128c3491727f",
+      "count": 1,
+      "reason": "intentional: no split by meaning was found; a split by line count alone is not done (#957)"
+    },
+    {
+      "rule": "complexity/file-too-large",
+      "engine": "code-quality",
+      "file": "schema-check/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/schemacheck/PublicApiSurface.scala",
+      "fingerprint": "message:96b0128c3491727f",
+      "count": 1,
+      "reason": "intentional: no split by meaning was found; a split by line count alone is not done (#957)"
+    },
+    {
+      "rule": "ai-slop/unused-import",
+      "engine": "ai-slop",
+      "file": "schema-check/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/schemacheck/TableSpecJson.scala",
+      "fingerprint": "13e1b19713ea80b3",
+      "count": 1,
+      "reason": "false positive: Scala 2.13.16 -Ywarn-unused and Scala 3.6.4 -Wunused:all report no unused import here (clean compile and Test/compile, #969); aislop flags the first line of an import the code uses"
+    },
+    {
+      "rule": "ai-slop/unused-import",
+      "engine": "ai-slop",
+      "file": "snapshot/snapshot-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/snapshot/config/SnapshotPluginConfig.scala",
+      "fingerprint": "0fe2b89fc1a891a7",
+      "count": 1,
+      "reason": "false positive: Scala 2.13.16 -Ywarn-unused and Scala 3.6.4 -Wunused:all report no unused import here (clean compile and Test/compile, #969); aislop flags the first line of an import the code uses"
+    },
+    {
+      "rule": "ai-slop/duplicate-import",
+      "engine": "ai-slop",
+      "file": "snapshot/snapshot-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/snapshot/PartitionKeyResolver.scala",
+      "fingerprint": "fda227f0dc29a853",
+      "count": 1,
+      "reason": "false positive: each `import pluginContext._` sits in a separate def or class and imports a different pluginContext parameter, and neither compiler reports it unused (#969)"
+    },
+    {
+      "rule": "ai-slop/unused-import",
+      "engine": "ai-slop",
+      "file": "snapshot/snapshot-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/snapshot/store/SnapshotStore.scala",
+      "fingerprint": "5013b844126c483e",
+      "count": 1,
+      "reason": "false positive: Scala 2.13.16 -Ywarn-unused and Scala 3.6.4 -Wunused:all report no unused import here (clean compile and Test/compile, #969); aislop flags the first line of an import the code uses"
+    },
+    {
+      "rule": "ai-slop/unused-import",
+      "engine": "ai-slop",
+      "file": "snapshot/snapshot-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/snapshot/dao/V1NewSnapshotDaoImpl.scala",
+      "fingerprint": "5013b844126c483e",
+      "count": 1,
+      "reason": "false positive: Scala 2.13.16 -Ywarn-unused and Scala 3.6.4 -Wunused:all report no unused import here (clean compile and Test/compile, #969); aislop flags the first line of an import the code uses"
+    },
+    {
+      "rule": "ai-slop/unused-import",
+      "engine": "ai-slop",
+      "file": "snapshot/snapshot-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/snapshot/dao/V2SnapshotDaoImpl.scala",
+      "fingerprint": "5013b844126c483e",
+      "count": 1,
+      "reason": "false positive: Scala 2.13.16 -Ywarn-unused and Scala 3.6.4 -Wunused:all report no unused import here (clean compile and Test/compile, #969); aislop flags the first line of an import the code uses"
+    },
+    {
+      "rule": "ai-slop/unused-import",
+      "engine": "ai-slop",
+      "file": "state/state-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/state/scaladsl/DynamoDBDurableStateStoreV1.scala",
+      "fingerprint": "13e1b19713ea80b3",
+      "count": 1,
+      "reason": "false positive: Scala 2.13.16 -Ywarn-unused and Scala 3.6.4 -Wunused:all report no unused import here (clean compile and Test/compile, #969); aislop flags the first line of an import the code uses"
+    },
+    {
+      "rule": "ai-slop/unused-import",
+      "engine": "ai-slop",
+      "file": "state/state-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/state/scaladsl/DynamoDBDurableStateStoreV1.scala",
+      "fingerprint": "2b1361f911475741",
+      "count": 1,
+      "reason": "false positive: Scala 2.13.16 -Ywarn-unused and Scala 3.6.4 -Wunused:all report no unused import here (clean compile and Test/compile, #969); aislop flags the first line of an import the code uses"
+    },
+    {
+      "rule": "ai-slop/unused-import",
+      "engine": "ai-slop",
+      "file": "state/state-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/state/scaladsl/DynamoDBDurableStateStoreV1.scala",
+      "fingerprint": "81a55756acefe3e9",
+      "count": 1,
+      "reason": "false positive: Scala 2.13.16 -Ywarn-unused and Scala 3.6.4 -Wunused:all report no unused import here (clean compile and Test/compile, #969); aislop flags the first line of an import the code uses"
+    },
+    {
+      "rule": "ai-slop/unused-import",
+      "engine": "ai-slop",
+      "file": "state/state-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/state/scaladsl/DynamoDBDurableStateStoreV2.scala",
+      "fingerprint": "13e1b19713ea80b3",
+      "count": 1,
+      "reason": "false positive: Scala 2.13.16 -Ywarn-unused and Scala 3.6.4 -Wunused:all report no unused import here (clean compile and Test/compile, #969); aislop flags the first line of an import the code uses"
+    },
+    {
+      "rule": "ai-slop/unused-import",
+      "engine": "ai-slop",
+      "file": "state/state-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/state/scaladsl/DynamoDBDurableStateStoreV2.scala",
+      "fingerprint": "2b1361f911475741",
+      "count": 1,
+      "reason": "false positive: Scala 2.13.16 -Ywarn-unused and Scala 3.6.4 -Wunused:all report no unused import here (clean compile and Test/compile, #969); aislop flags the first line of an import the code uses"
+    },
+    {
+      "rule": "ai-slop/unused-import",
+      "engine": "ai-slop",
+      "file": "state/state-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/state/scaladsl/DynamoDBDurableStateStoreV2.scala",
+      "fingerprint": "81a55756acefe3e9",
+      "count": 1,
+      "reason": "false positive: Scala 2.13.16 -Ywarn-unused and Scala 3.6.4 -Wunused:all report no unused import here (clean compile and Test/compile, #969); aislop flags the first line of an import the code uses"
+    }
+  ]
+}

@@ -1,0 +1,95 @@
+{
+  "schemaVersion": "1",
+  "cliVersion": "0.20.0",
+  "version": "0.20.0",
+  "score": 90,
+  "label": "Healthy",
+  "scoreable": true,
+  "coverage": {
+    "supportedFiles": 227,
+    "unsupportedFiles": 227,
+    "dominantUnsupported": "Scala",
+    "scoreable": true
+  },
+  "engines": {
+    "format": {
+      "issues": 0,
+      "skipped": true,
+      "elapsed": 641.272625,
+      "skipReason": "missing tools: scalafmt",
+      "missingTools": [
+        "scalafmt"
+      ]
+    },
+    "lint": {
+      "issues": 0,
+      "skipped": true,
+      "elapsed": 641.244042,
+      "skipReason": "no linter for the detected languages"
+    },
+    "code-quality": {
+      "issues": 3,
+      "skipped": false,
+      "elapsed": 641.4206670000001
+    },
+    "ai-slop": {
+      "issues": 53,
+      "skipped": false,
+      "elapsed": 587.17925
+    },
+    "security": {
+      "issues": 0,
+      "skipped": false,
+      "elapsed": 59.414999999999964
+    }
+  },
+  "engineDefinitions": {},
+  "diagnostics": [],
+  "findingAssessment": {
+    "rows": [
+      {
+        "kind": "ai-slop-indicator",
+        "label": "AI-slop indicators",
+        "count": 53,
+        "errors": 0,
+        "warnings": 53,
+        "info": 0,
+        "fixable": 0
+      },
+      {
+        "kind": "style-policy",
+        "label": "style/policy",
+        "count": 3,
+        "errors": 0,
+        "warnings": 3,
+        "info": 0,
+        "fixable": 0
+      }
+    ],
+    "byKind": {
+      "confirmed-defect": 0,
+      "conservative-security": 0,
+      "style-policy": 3,
+      "ai-slop-indicator": 53
+    },
+    "byConfidence": {
+      "high": 0,
+      "medium": 56,
+      "low": 0
+    }
+  },
+  "summary": {
+    "errors": 0,
+    "warnings": 56,
+    "fixable": 0,
+    "files": 227,
+    "elapsed": "652ms"
+  },
+  "baseline": {
+    "path": ".aislop/ci-baseline.json",
+    "status": "ok",
+    "accepted": 55,
+    "new": 1,
+    "stale": 0
+  }
+}
