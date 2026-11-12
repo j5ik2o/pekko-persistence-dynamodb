@@ -7,6 +7,9 @@ on:
     types: [created, edited, deleted]
   issue_comment:
     types: [created, edited, deleted]
+  # Refresh every open pull request on the base branch once a day (03:17 JST).
+  schedule:
+    - cron: "17 18 * * *"
   workflow_dispatch:
     inputs:
       pr_number:
