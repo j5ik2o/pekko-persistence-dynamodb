@@ -76,8 +76,9 @@ def class_entries(entry):
 def scan_classpath(classpath, excluded):
     packages = sorted({c.rsplit("/", 1)[0] for c in excluded if "/" in c})
     prefilter = sorted({"/".join(p.split("/")[:2]).encode() for p in packages})
+    # The suffix spans "/" so that a parent package cannot cut a subpackage class name short.
     reference = re.compile(rb"(?:" + b"|".join(re.escape(p.encode()) for p in packages)
-                           + rb")/[A-Za-z0-9_$]+")
+                           + rb")/[A-Za-z0-9_$/]+")
     present, callers = [], {}
     for entry in classpath:
         for name, read in class_entries(entry):

@@ -125,6 +125,17 @@ class CheckDependencyExclusionTest(unittest.TestCase):
         self.assertIn("FAIL the suite loaded or needed excluded code:\n"
                       "com.github.j5ik2o.dockerController.DockerComposeController", self.output())
 
+    def test_caller_of_a_subpackage_class_is_found_and_fails_when_loaded(self):
+        sub = "org/seasar/util/beans/converter/DateConverter"
+        self.excluded_jar = jar(Path(self.tmp.name) / "s2util-sub.jar", {
+            "org/seasar/util/beans/BeanDesc": b"\xca\xfe\xba\xbe", sub: b"\xca\xfe\xba\xbe"})
+        self.sbt.classpath.append(jar(Path(self.tmp.name) / "sub-caller.jar", {
+            "com/example/SubCaller": b"\xca\xfe\xba\xbe\x01\x00\x2c" + sub.encode() + b"\x07"}))
+        self.sbt.loaded.append("com.example.SubCaller")
+        self.assertEqual(self.main(), 1)
+        self.assertIn("caller com.example.SubCaller in sub-caller.jar", self.output())
+        self.assertIn("FAIL the suite loaded or needed excluded code:\ncom.example.SubCaller", self.lines[-1])
+
     def test_runtime_that_loads_an_excluded_class_fails(self):
         self.sbt.loaded.append("org.seasar.util.io.ResourceUtil")
         self.assertEqual(self.main(), 1)
