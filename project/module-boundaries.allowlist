@@ -1,64 +1,26 @@
-base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/client/v1/AWSCredentialsProviderProvider.scala
-base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/client/v1/CsmConfigurationProviderProvider.scala
-base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/client/v1/DnsResolverProvider.scala
-base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/client/v1/MonitoringListenerProvider.scala
-base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/client/v1/RequestHandlersProvider.scala
-base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/client/v1/RequestMetricCollectorProvider.scala
-base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/client/v1/RetryPolicyProvider.scala
-base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/client/v1/StreamReadClient.scala
-base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/client/v1/StreamWriteClient.scala
-base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v1/V1AttributeValues.scala
-base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v1/V1ClientAdapter.scala
-base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v1/V1OperationRenderer.scala
-base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v1/V1RenderedOperation.scala
-base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v1/V1Responses.scala
-base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V1AsyncClientFactory.scala
-base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V1ClientBuilderUtils.scala
-base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V1ClientConfigurationUtils.scala
-base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V1ClientUtils.scala
-base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V1DaxAsyncClientFactory.scala
-base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V1DaxClientBuilderUtils.scala
-base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V1DaxSyncClientFactory.scala
-base/base-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V1SyncClientFactory.scala
-base/base-v1/src/test/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v1/V1RequestNormalizer.scala
-base/base-v1/src/test/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v1/V1ResponsesSpec.scala
-base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/client/v2/AwsCredentialsProviderProvider.scala
-base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/client/v2/ExecutionInterceptorsProvider.scala
-base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/client/v2/MetricPublishersProvider.scala
-base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/client/v2/RetryPolicyProvider.scala
-base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/client/v2/StreamReadClient.scala
-base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/client/v2/StreamWriteClient.scala
-base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v2/V2AttributeValues.scala
-base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v2/V2ClientAdapter.scala
-base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v2/V2OperationRenderer.scala
-base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v2/V2RenderedOperation.scala
-base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v2/V2Responses.scala
-base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V2AsyncClientFactory.scala
-base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V2ClientBuilderUtils.scala
-base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V2ClientOverrideConfigurationBuilderUtils.scala
-base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V2ClientUtils.scala
-base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V2DaxAsyncClientFactory.scala
-base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V2DaxClientBuilderUtils.scala
-base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V2DaxOverrideConfigurationBuilderUtils.scala
-base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V2DaxSyncClientFactory.scala
-base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V2HttpClientBuilderUtils.scala
-base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/V2SyncClientFactory.scala
-base/base-v2/src/test/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v2/V2RequestNormalizer.scala
-base/base-v2/src/test/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/v2/V2ResponsesSpec.scala
-example/src/test/scala/com/github/j5ik2o/pekko/persistence/dynamodb/example/untyped/eventsourced/CounterSpec.scala
-journal/journal-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/dao/v1/V1JournalRowReadDriver.scala
-journal/journal-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/dao/v1/V1JournalRowWriteDriver.scala
-journal/journal-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/dao/v2/V2JournalRowReadDriver.scala
-journal/journal-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/dao/v2/V2JournalRowWriteDriver.scala
-journal/journal-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/head/JournalHeadMigration.scala
-journal/journal-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/head/JournalHeadPreflight.scala
-journal/journal-v2/src/test/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/JournalHeadSpec.scala
-journal/journal-v2/src/test/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/head/JournalHeadPreflightIntegrationSpec.scala
-metrics/metrics-v2/src/main/scala/com/github/j5ik2o/akka/persistence/dynamodb/metrics/AwsSDKMetricPublisher.scala
-metrics/metrics-v2/src/main/scala/com/github/j5ik2o/akka/persistence/dynamodb/metrics/AwsSDKMetricPublishersProvider.scala
-snapshot/snapshot-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/snapshot/dao/V1LegacySnapshotDaoImpl.scala
-snapshot/snapshot-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/snapshot/dao/V1NewSnapshotDaoImpl.scala
-snapshot/snapshot-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/snapshot/dao/V2SnapshotDaoImpl.scala
-state/state-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/state/scaladsl/DynamoDBDurableStateStoreV1.scala
-state/state-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/state/scaladsl/DynamoDBDurableStateStoreV2.scala
-test/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/DynamoDBContainerHelper.scala
+# Files outside base/base-v1 and base/base-v2 that may import com.amazonaws, software.amazon.awssdk, or
+# software.amazon.dax. checkModuleBoundaries (project/ModuleBoundaryCheck.scala) enforces this list.
+#
+# Write each entry as `<path>  # <reason>`. An entry without a reason fails.
+# Files in base/base-v1 and base/base-v2 import the SDK without an entry, and an entry for them fails.
+# A new entry is allowed only in a module that already holds SDK imports (ModuleBoundaryCheck.Modules), and the PR
+# that adds it gives the same reason. A core module such as base/base or journal-base cannot import the SDK at all.
+# An entry whose file no longer imports the SDK fails, so the list shrinks when an import goes away.
+
+example/src/test/scala/com/github/j5ik2o/pekko/persistence/dynamodb/example/untyped/eventsourced/CounterSpec.scala  # BaseCounterSpec queries the journal rows with the v1 QueryRequest to assert what was written.
+journal/journal-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/dao/v1/V1JournalRowReadDriver.scala  # Deprecated v1 facade whose public constructor takes the v1 AmazonDynamoDB clients.
+journal/journal-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/dao/v1/V1JournalRowWriteDriver.scala  # Deprecated v1 facade whose public constructor takes the v1 AmazonDynamoDB clients.
+journal/journal-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/dao/v2/V2JournalRowReadDriver.scala  # Deprecated v2 facade whose public constructor takes the v2 DynamoDb clients.
+journal/journal-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/dao/v2/V2JournalRowWriteDriver.scala  # Holds the JournalHead TransactWriteItems request and classifies TransactionCanceledException.
+journal/journal-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/head/JournalHeadMigration.scala  # JournalHead migration tool that scans and writes the tables through the v2 DynamoDbClient.
+journal/journal-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/head/JournalHeadPreflight.scala  # JournalHead preflight CLI that calls DescribeTable through the v2 DynamoDbClient (#882).
+journal/journal-v2/src/test/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/JournalHeadSpec.scala  # Writes raw rows with the v1 client and drives V2JournalRowWriteDriver with a fake v2 client.
+journal/journal-v2/src/test/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/head/JournalHeadPreflightIntegrationSpec.scala  # Creates the tables the preflight inspects with the v2 DynamoDbClient (#882).
+metrics/metrics-v2/src/main/scala/com/github/j5ik2o/akka/persistence/dynamodb/metrics/AwsSDKMetricPublisher.scala  # Implements the v2 MetricPublisher. The directory is in no sbt project (#977).
+metrics/metrics-v2/src/main/scala/com/github/j5ik2o/akka/persistence/dynamodb/metrics/AwsSDKMetricPublishersProvider.scala  # Provides v2 MetricPublisher instances. The directory is in no sbt project (#977).
+snapshot/snapshot-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/snapshot/dao/V1LegacySnapshotDaoImpl.scala  # Deprecated v1 facade whose public constructor takes the v1 AmazonDynamoDB clients.
+snapshot/snapshot-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/snapshot/dao/V1NewSnapshotDaoImpl.scala  # Deprecated v1 facade whose public constructor takes the v1 AmazonDynamoDB clients.
+snapshot/snapshot-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/snapshot/dao/V2SnapshotDaoImpl.scala  # Deprecated v2 facade whose public constructor takes the v2 DynamoDb clients.
+state/state-v1/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/state/scaladsl/DynamoDBDurableStateStoreV1.scala  # Deprecated v1 store whose public constructor takes the v1 AmazonDynamoDB clients.
+state/state-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/state/scaladsl/DynamoDBDurableStateStoreV2.scala  # Deprecated v2 store whose public constructor takes the v2 DynamoDb clients.
+test/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/DynamoDBContainerHelper.scala  # Test helper that creates and deletes the DynamoDB Local tables with the v1 client.

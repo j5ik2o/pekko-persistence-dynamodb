@@ -126,7 +126,8 @@ lazy val `schema-check` = (project in file("schema-check"))
           Seq.empty
       }
     },
-    Test / javaOptions += s"-Drepo.root=${baseDirectory.value.getParentFile.getAbsolutePath}"
+    Test / javaOptions += s"-Drepo.root=${baseDirectory.value.getParentFile.getAbsolutePath}",
+    Test / unmanagedSources += baseDirectory.value.getParentFile / "project" / "ModuleBoundaryCheck.scala"
   )
 
 lazy val `base` = (project in file("base/base"))
