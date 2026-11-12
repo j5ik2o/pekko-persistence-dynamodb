@@ -31,7 +31,7 @@ head=$(jq -r '.headRefOid // empty' <<<"$pr_data")
 
 ready_events=$(gh api "repos/$repo/issues/$pr/timeline" --paginate --slurp </dev/null) || fail 'could not read pull request ready timeline'
 ready_at=$(jq -r 'flatten | [.[] | select(.event == "ready_for_review") | .created_at] | last // empty' <<<"$ready_events")
-[[ -n $ready_at ]] || fail 'pull request has no ready_for_review event'
+[[ -n $ready_at ]] || fail 'pull request has no ready_for_review event; convert it to draft and mark it ready again (gh pr ready --undo, then gh pr ready)'
 
 wait_seconds=${MERGE_APPROVED_WAIT_SECONDS:-300}
 [[ $wait_seconds =~ ^[0-9]+$ ]] || fail 'MERGE_APPROVED_WAIT_SECONDS must be an integer'
