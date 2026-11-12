@@ -190,9 +190,38 @@ final class ApiSurfaceScannerSpec extends AnyFreeSpec with Matchers {
     }
   }
 
+  "an excluded package and its subpackages stay outside the surface, and a sibling package does not" in {
+    val internal = PublicApiSurface.ExcludedPackages.keys.find(_.endsWith(".ddb.internal")).get
+    val parent   = internal.stripSuffix(".ddb.internal")
+    def headers(packageName: String): Vector[String] = {
+      val (outer, inner) = packageName.splitAt(packageName.lastIndexOf('.'))
+      scanIn(packageName, s"package $outer\npackage ${inner.drop(1)}\n\nfinal case class Rendered(value: String)\n")
+        .map(_.header)
+    }
+    val recorded = Vector("final case class Rendered(value: String)")
+    headers(internal) shouldBe empty
+    headers(s"$internal.nested") shouldBe empty
+    headers(s"${internal}x") shouldBe recorded
+    headers(parent) shouldBe recorded
+  }
+
+  "the repository surface holds no declaration of ddb.internal" in {
+    val declarations = PublicApiSurface.of(Repo.locate().root)
+    declarations.filter(_.path.contains("/ddb/internal/")) shouldBe empty
+    declarations.exists(_.path.contains("/ddb/")) shouldBe true
+  }
+
   private def scan(source: String): Vector[ApiDeclaration] = {
     val root = Files.createTempDirectory("api-surface-")
     val file = root.resolve("base/base/src/main/scala/example/Api.scala")
+    Files.createDirectories(file.getParent)
+    write(file, source)
+    PublicApiSurface.of(root)
+  }
+
+  private def scanIn(packageName: String, source: String): Vector[ApiDeclaration] = {
+    val root = Files.createTempDirectory("api-surface-")
+    val file = root.resolve(s"base/base/src/main/scala/${packageName.replace('.', '/')}/Api.scala")
     Files.createDirectories(file.getParent)
     write(file, source)
     PublicApiSurface.of(root)

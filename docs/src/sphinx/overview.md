@@ -43,3 +43,7 @@ The plugins use the AWS SDK for communication with `AWS DynamoDB`.
 - [aws-sdk-java-v2](https://github.com/aws/aws-sdk-java-v2)
 - [Amazon DynamoDB Accelerator(DAX) Client](https://aws.amazon.com/jp/dynamodb/dax/)
 
+
+### Internal Packages
+
+The package `com.github.j5ik2o.pekko.persistence.dynamodb.ddb.internal` is for internal use. Its types, such as `RenderedExpression`, `RenderedOperation`, and `RenderedTransactItem`, are public in the bytecode, and the v1 and v2 client modules use them, but they are not part of the supported API and have no compatibility guarantee. They can change or disappear in any release, including a patch release. Do not use them in application code.
