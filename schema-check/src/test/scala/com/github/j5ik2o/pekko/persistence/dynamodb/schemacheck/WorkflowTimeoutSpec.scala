@@ -6,6 +6,43 @@ import org.scalatest.funsuite.AnyFunSuite
 
 final class WorkflowTimeoutSpec extends AnyFunSuite {
 
+  test("release workflows do not run on a schedule") {
+    val repo      = Repo.locate()
+    val workflows = repo.root.resolve(".github/workflows")
+    val files     = Files.list(workflows)
+    val paths =
+      try {
+        val iterator = files.iterator()
+        val found    = scala.collection.mutable.ListBuffer.empty[Path]
+        while (iterator.hasNext) {
+          val path = iterator.next()
+          if (path.getFileName.toString.endsWith(".yml")) found += path
+        }
+        found.toVector.sortBy(repo.relative)
+      } finally files.close()
+
+    val releaseWorkflows = paths.filter { path =>
+      val lines = repo.read(path).split("\n", -1).toVector
+      val pushTags = lines.indices.exists { index =>
+        lines(index).matches("^  push:\\s*(?:#.*)?$") &&
+        lines
+          .drop(index + 1).takeWhile(line => !line.matches("^  [A-Za-z_-]+:\\s*(?:#.*)?$"))
+          .exists(_.matches("^    tags:\\s*.+$"))
+      }
+      path.getFileName.toString == "bump-version.yml" || pushTags
+    }
+
+    val scheduled = releaseWorkflows.filter { path =>
+      repo.read(path).split("\n", -1).exists(_.matches("^  schedule:\\s*(?:#.*)?$"))
+    }
+
+    assert(releaseWorkflows.exists(_.getFileName.toString == "bump-version.yml"))
+    assert(
+      scheduled.isEmpty,
+      s"Release workflows must not have a schedule:\n${scheduled.map(repo.relative).mkString("\n")}"
+    )
+  }
+
   test("every workflow job has a timeout") {
     val repo      = Repo.locate()
     val workflows = repo.root.resolve(".github/workflows")
