@@ -1,5 +1,15 @@
 # Release notes
 
+## Manual releases
+
+After the owner approves a release, confirm that the selected commit's CI has passed, then create the tag and GitHub release from that exact commit:
+
+```bash
+gh release create v1.2.0 --target <SHA> --generate-notes
+```
+
+Replace `v1.2.0` and `<SHA>` with the approved version and commit. Confirm that the tag points to that SHA and that the `publish` workflow succeeds. Tag pushes publish the artifacts to Maven Central automatically.
+
 ## Unreleased
 
 ### JournalHead migration dry-run reports source details

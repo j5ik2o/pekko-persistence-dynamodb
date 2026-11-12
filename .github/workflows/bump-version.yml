@@ -1,3 +1,4 @@
+# Tags trigger an irreversible Maven Central release, so run this workflow only by hand.
 name: Bump Version
 on:
   workflow_dispatch:
@@ -7,8 +8,6 @@ on:
         required: true
         type: boolean
         default: false
-  schedule:
-    - cron: '0 0 * * *'
 jobs:
   bump-version:
     runs-on: ubuntu-latest
