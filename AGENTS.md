@@ -1,6 +1,6 @@
 # Working on pekko-persistence-dynamodb
 
-This file is for an agent that changes this repository. It names the module that owns each part of the code, the files to edit for the three common changes, the build matrix, the Docker cost, the verification commands, and the rules that the build enforces.
+This file is for an agent that changes this repository. It names the module that owns each part of the code, the files to edit for the four common changes, the build matrix, the Docker cost, the verification commands, and the rules that the build enforces.
 
 Read this file before you edit. If a rule names an enforcement path, run that check after your change.
 
@@ -78,6 +78,28 @@ A client variant is one value of `ClientVersion`. The repository has `v1`, `v1-d
 8. Run the three module test suites for the client module you changed and `sbt -batch "schema-check/test"`. `FactoryClassReferenceSpec` fails when a class name in a config does not resolve to a class, object, or trait.
 
 The three `pluginExecutor` matches resolve all four registered variants: `V1`, `V1Dax`, `V2`, and `V2Dax`. A new variant still needs its own case, because the match on an `Enumeration.Value` is not checked for exhaustiveness and a missing case fails at startup with a `MatchError`.
+
+## Change a published dependency
+
+A published module's POM is what a user resolves. An `.exclude(...)` on a dependency of a published module removes the excluded module from every user's classpath, so a class that still needs it fails at runtime with `NoClassDefFoundError`. `tools/check-dependency-exclusion.py` checks such an exclusion in five steps and stops at the first failure.
+
+1. Add the `.exclude(org, name)` to each dependency of the module in `build.sbt` that reaches the excluded module. Find these paths with `sbt -batch "<project>/dependencyTree"` before the change.
+2. Run the check. `--project` names the sbt project that declares the exclusion. `--suite` names one project-scoped test command that uses the module, and `--via` names each dependency that must carry the exclusion in the POM. The excluded jar is read from the Coursier cache; pass `--excluded-jar` when it is not there. Start Docker first when the suite extends `DynamoDBContainerHelper`.
+
+   ```bash
+   python3 tools/check-dependency-exclusion.py --project test \
+     --exclude org.seasar.util:s2util \
+     --via com.github.j5ik2o:docker-controller-scala-scalatest \
+     --via com.github.j5ik2o:docker-controller-scala-dynamodb-local \
+     --suite 'journal-v1/testOnly *DynamoDBJournalV1SyncSpec' --resolve-central
+   ```
+
+3. Read the result. Step 1 runs `<project>/update` and `<project>/dependencyTree` and fails when the excluded module is still in the tree or a dependency does not resolve. `dependencyTree` alone drops an unresolvable module and exits 0, so the script runs `update` first. Step 2 scans the suite project's `Test/fullClasspath`, fails when an excluded class is still on it, and lists each class that references an excluded class, with the `javap -c -p` lines of the reference. Step 3 runs `<project>/makePom` and fails when the POM declares the excluded module, has no exclusion of it, or lacks it on a `--via` dependency. Step 4 resolves the POM's compile and runtime dependencies from Maven Central only, in a temporary sbt project. Step 5 runs the suite with `-verbose:class` and fails when it loads an excluded class or a listed caller, reports a missing excluded class, or prints no class loading at all.
+4. Pass `--resolve-central` before you push. Step 4 needs the network, so without the option the script prints `SKIPPED 4 Maven Central resolution: offline run` and ends with `(Maven Central resolution skipped)`. Do not report a skipped step as checked.
+5. A caller listed in step 2 is code that fails for a user who calls it. If the suite does not load it, write the caller, the excluded module, and the dependency a user must add to keep that feature in the pull request and the release notes.
+6. Run `python3 -m unittest discover -s tools/tests -p 'test_check_dependency_exclusion.py'` when you change the script. The tests replace every command, so they need neither sbt nor the network.
+
+The script exits 0 when every step passes and 1 at the first failure. A pass covers only the suite you named. Run it again with another suite when other modules use the excluded code path.
 
 ## Build matrix
 

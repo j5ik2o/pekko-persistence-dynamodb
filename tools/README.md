@@ -24,6 +24,8 @@ tools/merge-approved.sh j5ik2o/pekko-persistence-dynamodb 123 FULL_APPROVED_HEAD
 tools/merge-approved.sh j5ik2o/pekko-persistence-dynamodb 123 FULL_APPROVED_HEAD_SHA --wait --close 966 --comment '966=Merged in #123'
 ```
 
+Run `python3 tools/check-dependency-exclusion.py --project <project> --exclude <org:name> --suite '<project>/testOnly <suite>' --resolve-central` before you exclude a transitive dependency from a published module. The "Change a published dependency" section of `AGENTS.md` describes its five steps.
+
 `ppd-evidence.py` uses Python 3.9+ and the standard library. It stores observations and generates assessments for #913 and #915. It never posts, merges, cancels, deletes, schedules or reads T3 transcripts. Supply exported snapshots only for the current PPD thread and its children.
 
 ## Collect and assess PR evidence
