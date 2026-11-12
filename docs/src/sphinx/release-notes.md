@@ -5,10 +5,11 @@
 After the owner approves a release, confirm that the selected commit's CI has passed, then create the tag and GitHub release from that exact commit:
 
 ```bash
+git ls-remote --tags origin "refs/tags/v1.2.0" "refs/tags/v1.2.0^{}"
 gh release create v1.2.0 --target <SHA> --generate-notes
 ```
 
-Replace `v1.2.0` and `<SHA>` with the approved version and commit. Confirm that the tag points to that SHA and that the `publish` workflow succeeds. Tag pushes publish the artifacts to Maven Central automatically.
+Replace `v1.2.0` and `<SHA>` with the approved version and commit. If the lookup returns no rows, continue. For a lightweight tag, compare the SHA on its row with `<SHA>`; for an annotated tag, compare the SHA on the `^{}` row. Continue only on a match; otherwise stop. `--target` selects the commit only when `gh release create` creates a missing tag. Confirm that the `publish` workflow succeeds. Tag pushes publish the artifacts to Maven Central automatically.
 
 ## Unreleased
 
