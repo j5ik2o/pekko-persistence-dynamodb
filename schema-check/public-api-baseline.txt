@@ -1582,3 +1582,41 @@ state-v2	state/state-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynam
 state-v2	state/state-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/state/scaladsl/V2DaxScalaDurableStateUpdateStoreFactory.scala	V2DaxScalaDurableStateUpdateStoreFactory	override def create[A]: ScalaDurableStateUpdateStore[A]
 state-v2	state/state-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/state/scaladsl/V2ScalaDurableStateUpdateStoreFactory.scala		final class V2ScalaDurableStateUpdateStoreFactory(pluginContext: StatePluginContext) extends ScalaDurableStateUpdateStoreFactory
 state-v2	state/state-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/state/scaladsl/V2ScalaDurableStateUpdateStoreFactory.scala	V2ScalaDurableStateUpdateStoreFactory	override def create[A]: ScalaDurableStateUpdateStore[A]
+test	test/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/ConfigHelper.scala		object ConfigHelper
+test	test/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/ConfigHelper.scala	ConfigHelper	def config( defaultResource: Option[String], legacyConfigFormat: Boolean, legacyJournalMode: Boolean, dynamoDBHost: String, dynamoDBPort: Int, clientVersion: String, clientType: String, requestHandlerClassNames: Seq[String] = Seq.empty, journalRowDriverWrapperClassName: Option[String] = None, softDelete: Boolean = true, headEnabled: Boolean = false ): Config
+test	test/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/DynamoDBContainerHelper.scala		trait DockerControllerHelperUtil extends DockerControllerHelper
+test	test/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/DynamoDBContainerHelper.scala		trait DynamoDBContainerHelper extends DockerControllerSpecSupport with DockerAssignedPort
+test	test/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/DynamoDBContainerHelper.scala	DockerControllerHelperUtil	def createJournalHeadTable(): Unit
+test	test/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/DynamoDBContainerHelper.scala	DockerControllerHelperUtil	def createLegacySnapshotTable(): Unit
+test	test/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/DynamoDBContainerHelper.scala	DockerControllerHelperUtil	def createSnapshotTable(): Unit
+test	test/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/DynamoDBContainerHelper.scala	DockerControllerHelperUtil	def createStateTable(): Unit
+test	test/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/DynamoDBContainerHelper.scala	DockerControllerHelperUtil	def createTable(): Unit
+test	test/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/DynamoDBContainerHelper.scala	DockerControllerHelperUtil	def deleteTable(): Unit
+test	test/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/DynamoDBContainerHelper.scala	DockerControllerHelperUtil	def startContainer(): Unit
+test	test/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/DynamoDBContainerHelper.scala	DockerControllerHelperUtil	def stopContainer(): Unit
+test	test/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/DynamoDBContainerHelper.scala	DockerControllerHelperUtil	lazy val controller: DynamoDBLocalController
+test	test/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/DynamoDBContainerHelper.scala	DockerControllerHelperUtil	lazy val dynamoDBEndpoint: String
+test	test/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/DynamoDBContainerHelper.scala	DockerControllerHelperUtil	lazy val dynamoDBPort: Int
+test	test/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/DynamoDBContainerHelper.scala	DockerControllerHelperUtil	val GetJournalRowsIndexName
+test	test/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/DynamoDBContainerHelper.scala	DockerControllerHelperUtil	val dynamoDBAccessKeyId: String
+test	test/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/DynamoDBContainerHelper.scala	DockerControllerHelperUtil	val dynamoDBRegion: Regions
+test	test/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/DynamoDBContainerHelper.scala	DockerControllerHelperUtil	val dynamoDBSecretAccessKey: String
+test	test/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/DynamoDBContainerHelper.scala	DockerControllerHelperUtil	val journalHeadTableName
+test	test/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/DynamoDBContainerHelper.scala	DockerControllerHelperUtil	val journalTableName
+test	test/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/DynamoDBContainerHelper.scala	DockerControllerHelperUtil	val legacyJournalTable
+test	test/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/DynamoDBContainerHelper.scala	DockerControllerHelperUtil	val legacySnapshotTable
+test	test/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/DynamoDBContainerHelper.scala	DockerControllerHelperUtil	val snapshotTableName
+test	test/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/DynamoDBContainerHelper.scala	DockerControllerHelperUtil	val stateTableName
+test	test/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/DynamoDBContainerHelper.scala	DockerControllerHelperUtil	val tableName
+test	test/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/DynamoDBContainerHelper.scala	DockerControllerHelperUtil	val testTimeFactor: Int
+test	test/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/DynamoDBContainerHelper.scala	DockerControllerHelperUtil	val waitPredicate: WaitPredicate
+test	test/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/DynamoDBContainerHelper.scala	DockerControllerHelperUtil	val waitPredicateSetting: WaitPredicateSetting
+test	test/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/DynamoDBContainerHelper.scala	DynamoDBContainerHelper	abstract override def run(testName: Option[String], args: Args): Status
+test	test/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/DynamoDBLocalFixture.scala		object DynamoDBLocalFixture
+test	test/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/DynamoDBLocalFixture.scala	DynamoDBLocalFixture	def table(tableName: String): Config
+test	test/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/DynamoDBLocalFixture.scala	DynamoDBLocalFixture	val FixtureResource: String
+test	test/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/RandomPortUtil.scala		object RandomPortUtil extends RandomPortUtil
+test	test/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/RandomPortUtil.scala		trait RandomPortUtil
+test	test/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/RandomPortUtil.scala	RandomPortUtil	def temporaryServerAddress(interface: String = "127.0.0.1"): InetSocketAddress
+test	test/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/RandomPortUtil.scala	RandomPortUtil	def temporaryServerHostnameAndPort(interface: String = "127.0.0.1"): (String, Int)
+test	test/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/utils/RandomPortUtil.scala	RandomPortUtil	def temporaryServerPort(interface: String = "127.0.0.1"): Int

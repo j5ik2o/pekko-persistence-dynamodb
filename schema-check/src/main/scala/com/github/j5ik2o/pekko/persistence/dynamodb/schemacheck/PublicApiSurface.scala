@@ -39,7 +39,8 @@ object PublicApiSurface {
     "snapshot-v2"   -> "snapshot/snapshot-v2/src/main",
     "state-base"    -> "state/state-base/src/main",
     "state-v1"      -> "state/state-v1/src/main",
-    "state-v2"      -> "state/state-v2/src/main"
+    "state-v2"      -> "state/state-v2/src/main",
+    "test"          -> "test/src/main"
   )
 
   /** Packages whose declarations stay outside the gate, each with the reason. A file is excluded when its package is a
