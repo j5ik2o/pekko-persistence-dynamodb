@@ -495,7 +495,7 @@ These plugin callbacks also cover failures before an SDK request exists. The SDK
 (metrics-write-limits)=
 #### Write limit failures
 
-A write that exceeds a DynamoDB limit fails before the plugin sends anything. The plugin calls `errorJournalAsyncWriteMessages` once for the whole `asyncWriteMessages` call, and its `ex` argument is the exception of the first violation it finds. `errorJournalSerializeJournal` is not called for a limit violation, and `afterJournalAsyncWriteMessages` is not called for that write.
+Before the plugin sends anything, it checks a write against the limits in the table below, and only those. A write that exceeds one of them fails without being sent. The plugin calls `errorJournalAsyncWriteMessages` once for the whole `asyncWriteMessages` call, and its `ex` argument is the exception of the first violation it finds. `errorJournalSerializeJournal` is not called for a limit violation, and `afterJournalAsyncWriteMessages` is not called for that write.
 
 | `head.enabled` | Limit                                         | `ex` type                                  |
 |:---------------|:----------------------------------------------|:-------------------------------------------|
