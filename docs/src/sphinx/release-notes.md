@@ -22,6 +22,17 @@ later dry-run may no longer reveal earlier mixed writes. The dry-run also lists 
 snapshots but not in the journal so operators can compare them with hard-delete history.
 Snapshot-only ids are not treated as errors, and `--execute` behavior is unchanged.
 
+### The test module is covered by the public API check
+
+The public declarations of `pekko-persistence-dynamodb-test` are now recorded in `schema-check/public-api-baseline.txt`, together with those of the other published modules. A change that removes or adds a public declaration in `DynamoDBContainerHelper`, `DockerControllerHelperUtil`, `DynamoDBLocalFixture`, `ConfigHelper`, or `RandomPortUtil` fails `ApiCompatibilitySpec` until the baseline is regenerated (#947).
+
+The check reads the declarations written in PPD's sources. It has two limits for this module:
+
+- Members inherited from docker-controller-scala are not recorded. Examples are `dockerControllers`, `dockerClient`, `disposeResources()`, and the eight `before/after*Containers` hooks. The check records the parent types in the `extends` clause, so replacing `DockerControllerHelper` or `DockerControllerSpecSupport` fails the check. A docker-controller-scala version change that alters the inherited members does not fail the check.
+- Protected members are not recorded, as in the other modules. Examples are `dynamoDBClient`, `waitDynamoDBLocal`, and `createJournalTable`, which suites override or call.
+
+Review a docker-controller-scala upgrade and a change to a protected member of the helper by hand.
+
 ### Docker Compose controller users must add s2util
 
 The published `pekko-persistence-dynamodb-test` artifact no longer includes `org.seasar.util:s2util` through `docker-controller-scala`. Maven Central does not host `s2util`, so Central-only users could not resolve the `test` module (#942).
