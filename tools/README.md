@@ -26,6 +26,8 @@ tools/merge-approved.sh j5ik2o/pekko-persistence-dynamodb 123 FULL_APPROVED_HEAD
 tools/merge-approved.sh j5ik2o/pekko-persistence-dynamodb 123 FULL_APPROVED_HEAD_SHA --wait --close 966 --comment '966=Merged in #123'
 ```
 
+Run `python3 tools/check-dependency-exclusion.py --project <project> --exclude <org:name> --suite '<project>/testOnly <suite>' --resolve-central` before you exclude a transitive dependency from a published module. The "Change a published dependency" section of `AGENTS.md` describes its five steps.
+
 Run `python3 tools/aislop-gate.py` to scan with the local `aislop` (never `npx`). It exits 1 when aislop withholds the score, analyzes no Scala file, or reports a finding that is not in `.aislop/ci-baseline.json`, when a baseline entry no longer occurs, and when an entry has no `reason`. It exits 2 when aislop cannot run. Add an entry, with its `reason`, only for a finding you have verified, for example with the compiler's unused warnings. `aislop baseline write` and `prune` drop the `reason` fields.
 
 `ppd-evidence.py` uses Python 3.9+ and the standard library. It stores observations and generates assessments for #913 and #915. It never posts, merges, cancels, deletes, schedules or reads T3 transcripts. Supply exported snapshots only for the current PPD thread and its children.
