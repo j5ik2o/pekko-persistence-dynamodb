@@ -2,7 +2,15 @@
 
 ## Merge an approved pull request
 
-Run `tools/merge-approved.sh <owner/repo> <pr> <approved-head-sha>` only after reviewing that exact head. The script checks the PR state and head, requires all visible checks to pass or skip, and reads check runs for that exact head SHA. Every required check must have a run started in the same second as or after the PR's latest `ready_for_review` event; for each required check name, only the highest-ID qualifying run counts. `CodeRabbit` must complete with `success`; `neutral` and all other conclusions block the merge. This rule follows a review of the latest 40 merged PR heads: every observed neutral run had `output.title` set to `Review rate limited`, with its review steps marked skipped in `output.summary`; successful runs were titled `Finished` and said `Result: Success - Review completed`. No non-rate-limited neutral result was found. The gate also detects rate-limit text in the title or summary and tells the operator to comment `@coderabbitai review` on the PR after capacity returns. `unresolved-review-threads` must succeed. The script also runs `check-review-threads.sh`, rejects `HAND_OFF` and `.audit/` files in the PR diff, and requires a lowercase scoped English Conventional Commit squash subject.
+Run `tools/merge-approved.sh <owner/repo> <pr> <approved-head-sha>` only after reviewing that exact head. The script checks the PR state and head, requires all visible checks to pass or skip, and reads check runs for that exact head SHA. Every required check must have a run started in the same second as or after the PR's latest `ready_for_review` event; for each required check name, only the highest-ID qualifying run counts. `CodeRabbit` must complete with `success`. A rate-limited run can use `--substitute-review <comment-id>` with the conditions below. Other neutral or failed runs block the merge. `unresolved-review-threads` must succeed. The script also runs `check-review-threads.sh`, rejects `HAND_OFF` and `.audit/` files in the PR diff, and requires a lowercase scoped English Conventional Commit squash subject.
+
+Use `--substitute-review <comment-id>` only when CodeRabbit's completed check for the approved head has `output.title` set to `Review rate limited`. The comment must belong to this PR, come from a non-bot repository collaborator with `admin`, `maintain`, or `write` permission, and be newer than the rate-limited check run. Its body must contain exactly one marker line whose SHA matches the approved head and whose result is `pass`. For example:
+
+```text
+independent-review: head=0123456789abcdef0123456789abcdef01234567 result=pass
+```
+
+The marker records an independent review verdict. It does not replace CodeRabbit when CodeRabbit succeeded, and it cannot override a pending or failed CodeRabbit check. When CodeRabbit is rate limited, wait for capacity and comment `@coderabbitai review` to rerun it, or record the independent review with the marker above and pass its issue-comment ID with `--substitute-review`.
 
 Use `--wait` to poll pending or missing checks until they complete. The default timeout is 300 seconds; set `MERGE_APPROVED_WAIT_SECONDS` to change it. Failed, neutral, and rate-limited checks stop immediately, including when `--wait` is set. Use repeated `--close <issue>` and `--comment <issue>=<body>` options to record the merge and close related issues. The script runs those actions only after `gh pr view --json state` reports `MERGED`.
 
@@ -10,6 +18,7 @@ A single commit supplies its complete subject from `git log` after fetching `pul
 
 ```sh
 tools/merge-approved.sh j5ik2o/pekko-persistence-dynamodb 123 FULL_APPROVED_HEAD_SHA --dry-run --subject "fix(storage): preserve values"
+tools/merge-approved.sh j5ik2o/pekko-persistence-dynamodb 123 FULL_APPROVED_HEAD_SHA --dry-run --subject "fix(storage): preserve values" --substitute-review 456
 tools/merge-approved.sh j5ik2o/pekko-persistence-dynamodb 123 FULL_APPROVED_HEAD_SHA --wait --close 966 --comment '966=Merged in #123'
 ```
 

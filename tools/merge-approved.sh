@@ -2,13 +2,14 @@
 set -euo pipefail
 
 fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
-usage() { printf 'usage: %s <owner/repo> <pr> <approved-head-sha> [--subject <subject>] [--dry-run] [--wait] [--close <issue>]... [--comment <issue>=<body>]...\n' "$0" >&2; exit 2; }
+usage() { printf 'usage: %s <owner/repo> <pr> <approved-head-sha> [--subject <subject>] [--substitute-review <comment-id>] [--dry-run] [--wait] [--close <issue>]... [--comment <issue>=<body>]...\n' "$0" >&2; exit 2; }
 [[ $# -ge 3 ]] || usage
 repo=$1 pr=$2 approved_sha=$3; shift 3
-subject=''; dry_run=false; wait_for_checks=false; close_issues=(); comments=()
+subject=''; substitute_review=''; dry_run=false; wait_for_checks=false; close_issues=(); comments=()
 while (($#)); do
   case $1 in
     --subject) (($# >= 2)) || usage; subject=$2; shift 2 ;;
+    --substitute-review) (($# >= 2)) || usage; [[ $2 =~ ^[0-9]+$ ]] || usage; substitute_review=$2; shift 2 ;;
     --dry-run) dry_run=true; shift ;;
     --wait) wait_for_checks=true; shift ;;
     --close) (($# >= 2)) || usage; [[ $2 =~ ^[0-9]+$ ]] || usage; close_issues+=("$2"); shift 2 ;;
@@ -42,10 +43,41 @@ while :; do
   if jq -e 'type == "array" and length > 0 and all(.[]; ((.bucket // "") | ascii_downcase) as $s | ($s == "pass" or $s == "skipping"))' <<<"$checks" >/dev/null; then checks_ok=true; fi
   if jq -e 'type == "array" and any(.[]; ((.bucket // "") | ascii_downcase) == "fail")' <<<"$checks" >/dev/null; then fail 'a pull request check failed'; fi
   check_runs=$(gh api "repos/$repo/commits/$approved_sha/check-runs" --paginate --slurp </dev/null | jq '{check_runs: [.[] | .check_runs[]]}') || fail 'could not read checks for approved head'
+  coderabbit=$(jq -c --arg ready "$ready_at" '[.check_runs[] | select(.name == "CodeRabbit" and .started_at >= $ready)] | sort_by(.id) | if length == 0 then null else last end' <<<"$check_runs")
+  rate_limited=false
+  if jq -e '(.output.title // "") == "Review rate limited" and .status == "completed" and .conclusion == "neutral"' <<<"$coderabbit" >/dev/null; then rate_limited=true; fi
+  if [[ -n $substitute_review ]] && ! $rate_limited; then
+    fail '--substitute-review is allowed only when the approved head has a completed, rate-limited CodeRabbit run'
+  fi
+  if $rate_limited; then
+    if [[ -z $substitute_review ]]; then
+      fail 'CodeRabbit did not review this PR because it was rate limited; wait for capacity and rerun with @coderabbitai review, or record an independent review and pass --substitute-review <comment-id>'
+    fi
+    if ! review_comment=$(gh api "repos/$repo/issues/comments/$substitute_review" </dev/null); then fail 'could not read substitute review comment'; fi
+    if ! jq -e --arg repo "$repo" --arg pr "$pr" '.issue_url | endswith("/repos/" + $repo + "/issues/" + $pr)' <<<"$review_comment" >/dev/null; then
+      fail 'substitute review comment does not belong to this pull request'
+    fi
+    reviewer=$(jq -r '.user.login // empty' <<<"$review_comment")
+    reviewer_type=$(jq -r '.user.type // empty' <<<"$review_comment")
+    [[ -n $reviewer && $reviewer_type != Bot ]] || fail 'substitute review must be written by a non-bot user'
+    review_body=$(jq -r '.body // empty' <<<"$review_comment")
+    marker_count=$(grep -Ec '^independent-review: head=[[:xdigit:]]{40} result=(pass|fail)$' <<<"$review_body" || true)
+    [[ $marker_count == 1 ]] || fail 'substitute review must contain exactly one machine-readable independent-review marker line'
+    marker=$(grep -E '^independent-review:' <<<"$review_body")
+    marker_sha=$(sed -E 's/^independent-review: head=([[:xdigit:]]{40}) result=(pass|fail)$/\1/' <<<"$marker")
+    marker_result=$(sed -E 's/^independent-review: head=[[:xdigit:]]{40} result=(pass|fail)$/\1/' <<<"$marker")
+    [[ $marker_sha == "$approved_sha" ]] || fail 'substitute review marker head does not match the approved head'
+    [[ $marker_result == pass ]] || fail 'substitute review result must be pass'
+    comment_created=$(jq -r '.created_at // empty' <<<"$review_comment")
+    rate_limited_at=$(jq -r '.completed_at // empty' <<<"$coderabbit")
+    [[ -n $comment_created && -n $rate_limited_at && $comment_created > $rate_limited_at ]] || fail 'substitute review comment must be created after the rate-limited CodeRabbit run'
+    if ! permission=$(gh api "repos/$repo/collaborators/$reviewer/permission" </dev/null); then fail 'could not verify substitute reviewer permission'; fi
+    jq -e '(.permission // "") == "admin" or (.permission // "") == "maintain" or (.permission // "") == "write"' <<<"$permission" >/dev/null || fail 'substitute reviewer must have write access to the repository'
+  fi
   missing=$(jq -r --arg ready "$ready_at" '
     def named($name): [.check_runs[] | select(.name == $name and .started_at >= $ready)] | sort_by(.id) | if length == 0 then [] else [last] end;
     (named("CodeRabbit")) as $cr | (named("unresolved-review-threads")) as $threads |
-    [if ($cr | length) == 0 then "CodeRabbit is missing" elif any($cr[]; ((.output.title // "") + " " + (.output.summary // "")) | test("rate[- ]limit"; "i")) then "CodeRabbit did not review this PR because it was rate limited; after capacity returns, comment @coderabbitai review on the PR to rerun the review" elif any($cr[]; .status != "completed") then "CodeRabbit is pending" elif any($cr[]; .conclusion == "neutral") then "CodeRabbit returned neutral without a verified completed review" elif any($cr[]; .conclusion != "success") then "CodeRabbit did not succeed" else empty end,
+    [if ($cr | length) == 0 then "CodeRabbit is missing" elif any($cr[]; .output.title == "Review rate limited" and .status == "completed" and .conclusion == "neutral") then empty elif any($cr[]; .status != "completed") then "CodeRabbit is pending" elif any($cr[]; .conclusion == "neutral") then "CodeRabbit returned neutral without a verified completed review" elif any($cr[]; .conclusion != "success") then "CodeRabbit did not succeed" else empty end,
      if ($threads | length) == 0 then "unresolved-review-threads is missing" elif any($threads[]; .status != "completed") then "unresolved-review-threads is pending" elif any($threads[]; .conclusion != "success") then "unresolved-review-threads did not succeed" else empty end] | .[]' <<<"$check_runs") || fail 'could not evaluate required checks'
   if grep -Eq '^CodeRabbit (did not review|returned neutral|was skipped|did not succeed)' <<<"$missing"; then
     fail "required checks blocked: $(tr '\n' ';' <<<"$missing" | sed 's/;$//')"

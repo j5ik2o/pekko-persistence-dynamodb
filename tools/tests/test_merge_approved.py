@@ -32,6 +32,8 @@ class MergeApprovedTests(unittest.TestCase):
                      'if args[0:2]==["pr","view"]: print(open(os.environ["GH_PR" ]).read())\n'
                      'elif args[0:2]==["pr","checks"]: print(open(os.environ["GH_CHECKS"]).read())\n'
                      'elif args[:2]==["api","repos/owner/repo/commits/' + SHA + '/check-runs"]: print(json.dumps([{"check_runs": json.load(open(os.environ["GH_CHECK_RUNS"]))}]))\n'
+                     'elif args[:2]==["api","repos/owner/repo/issues/comments/42"]: print(open(os.environ["GH_REVIEW_COMMENT"]).read())\n'
+                     'elif args[:2]==["api","repos/owner/repo/collaborators/reviewer/permission"]: print(open(os.environ["GH_PERMISSION"]).read())\n'
                      'elif args[:2]==["api","repos/owner/repo/issues/7/timeline"]: print(json.dumps([[{ "event":"ready_for_review", "created_at":"2026-11-11T06:45:02Z"}]]))\n'
                      'elif args[:2]==["pr","diff"]: print(os.environ.get("GH_DIFF",""))\n'
                      'elif args[0:2]==["pr","merge"]: open(os.environ["MERGE_LOG"],"w").write(" ".join(args)); p=json.load(open(os.environ["GH_PR"])); p["state"]="MERGED" if os.environ.get("MERGE_LEAVES_OPEN") != "1" else "OPEN"; open(os.environ["GH_PR"],"w").write(json.dumps(p))\n'
@@ -49,9 +51,12 @@ class MergeApprovedTests(unittest.TestCase):
         (self.root / "pr.json").write_text(json.dumps(self.state))
         (self.root / "checks.json").write_text(json.dumps(self.checks))
         (self.root / "check-runs.json").write_text(json.dumps(self.check_runs))
+        (self.root / "review-comment.json").write_text(json.dumps({"issue_url": "https://api.github.com/repos/owner/repo/issues/7", "body": f"Reviewed.\nindependent-review: head={SHA} result=pass", "created_at": "2026-11-11T06:46:00Z", "user": {"login": "reviewer", "type": "User"}}))
+        (self.root / "permission.json").write_text(json.dumps({"permission": "write"}))
         self.env = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
                         GH_PR=str(self.root / "pr.json"), GH_CHECKS=str(self.root / "checks.json"),
                         GH_CHECK_RUNS=str(self.root / "check-runs.json"),
+                        GH_REVIEW_COMMENT=str(self.root / "review-comment.json"), GH_PERMISSION=str(self.root / "permission.json"),
                         GH_INPUT_LOG=str(self.root / "stdin.log"), MERGE_LOG=str(self.root / "merge.log"),
                         ISSUE_LOG=str(self.root / "issue.log"),
                         GIT_LOG=str(self.root / "git.log"),
@@ -65,6 +70,16 @@ class MergeApprovedTests(unittest.TestCase):
     def run_script(self, *args, stdin=""):
         return subprocess.run([str(SCRIPT), "owner/repo", "7", SHA, *args], input=stdin, text=True,
                               env=self.env, capture_output=True)
+
+    def set_rate_limited(self):
+        self.check_runs[0].update(status="completed", conclusion="neutral", completed_at="2026-11-11T06:45:30Z",
+                                  output={"title": "Review rate limited", "summary": "Review skipped"})
+        (self.root / "check-runs.json").write_text(json.dumps(self.check_runs))
+
+    def set_review_comment(self, **updates):
+        comment = json.loads((self.root / "review-comment.json").read_text())
+        comment.update(updates)
+        (self.root / "review-comment.json").write_text(json.dumps(comment))
 
     def test_gate_failures(self):
         cases = [
@@ -155,16 +170,73 @@ class MergeApprovedTests(unittest.TestCase):
         self.assertFalse((self.root / "merge.log").exists())
 
     def test_rate_limited_neutral_coderabbit_is_rejected(self):
-        self.check_runs[0].update(
-            conclusion="neutral",
-            output={"title": "Review rate limited", "summary": "### Review skipped\n\n### Walkthrough skipped"},
-        )
-        (self.root / "check-runs.json").write_text(json.dumps(self.check_runs))
+        self.set_rate_limited()
         result = self.run_script("--dry-run", "--subject", "fix(scope): x")
         self.assertNotEqual(result.returncode, 0, result.stdout)
         self.assertIn("did not review this PR because it was rate limited", result.stderr)
         self.assertIn("@coderabbitai review", result.stderr)
+        self.assertIn("--substitute-review", result.stderr)
         self.assertFalse((self.root / "merge.log").exists())
+
+    def test_rate_limited_neutral_accepts_valid_substitute_review(self):
+        self.set_rate_limited()
+        result = self.run_script("--substitute-review", "42", "--dry-run", "--subject", "fix(scope): x")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("gh pr merge", result.stdout)
+
+    def test_substitute_review_rejects_mismatched_head(self):
+        self.set_rate_limited()
+        self.set_review_comment(body=f"independent-review: head={'b' * 40} result=pass")
+        result = self.run_script("--substitute-review", "42", "--dry-run", "--subject", "fix(scope): x")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("marker head does not match", result.stderr)
+
+    def test_substitute_review_rejects_failed_result(self):
+        self.set_rate_limited()
+        self.set_review_comment(body=f"independent-review: head={SHA} result=fail")
+        result = self.run_script("--substitute-review", "42", "--dry-run", "--subject", "fix(scope): x")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("result must be pass", result.stderr)
+
+    def test_substitute_review_rejects_comment_on_another_pr(self):
+        self.set_rate_limited()
+        self.set_review_comment(issue_url="https://api.github.com/repos/owner/repo/issues/8")
+        result = self.run_script("--substitute-review", "42", "--dry-run", "--subject", "fix(scope): x")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("does not belong", result.stderr)
+
+    def test_substitute_review_rejects_non_writer(self):
+        self.set_rate_limited()
+        (self.root / "permission.json").write_text(json.dumps({"permission": "read"}))
+        result = self.run_script("--substitute-review", "42", "--dry-run", "--subject", "fix(scope): x")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("write access", result.stderr)
+
+    def test_substitute_review_rejects_bot_author(self):
+        self.set_rate_limited()
+        self.set_review_comment(user={"login": "reviewer", "type": "Bot"})
+        result = self.run_script("--substitute-review", "42", "--dry-run", "--subject", "fix(scope): x")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("non-bot", result.stderr)
+
+    def test_substitute_review_must_follow_rate_limited_run(self):
+        self.set_rate_limited()
+        self.set_review_comment(created_at="2026-11-11T06:45:29Z")
+        result = self.run_script("--substitute-review", "42", "--dry-run", "--subject", "fix(scope): x")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("created after", result.stderr)
+
+    def test_successful_coderabbit_rejects_substitute_argument(self):
+        result = self.run_script("--substitute-review", "42", "--dry-run", "--subject", "fix(scope): x")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("allowed only", result.stderr)
+
+    def test_rate_limit_without_substitute_stops(self):
+        self.set_rate_limited()
+        result = self.run_script("--dry-run", "--subject", "fix(scope): x")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("wait for capacity", result.stderr)
+        self.assertIn("--substitute-review", result.stderr)
 
     def test_unexplained_neutral_coderabbit_is_rejected(self):
         self.check_runs[0].update(conclusion="neutral", output={"title": "Review skipped", "summary": ""})
