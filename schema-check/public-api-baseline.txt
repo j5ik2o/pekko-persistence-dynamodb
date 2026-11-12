@@ -454,34 +454,6 @@ base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/T
 base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/TableSpec.scala	TableSpec	def column(name: AttributeName): Option[Column]
 base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/TableSpec.scala	TableSpec	def keyOf(values: AttributeMap): Either[KeyError, RowKey]
 base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/TableSpec.scala	TableSpec	def withColumns(columns: Vector[Column]): TableSpec
-base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala		final case class RenderedExpression( expression: String, names: Vector[(String, AttributeName)], values: Vector[(String, DdbValue)] )
-base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala		object RenderedOperation
-base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala		object RenderedTransactItem
-base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala		sealed trait RenderedOperation
-base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala		sealed trait RenderedTransactItem
-base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala	RenderedExpression	def normalized: RenderedExpression
-base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala	RenderedOperation	def normalized: RenderedOperation
-base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala	RenderedOperation	final case class BatchWrite(table: TableName, puts: Vector[AttributeMap], deletes: Vector[AttributeMap]) extends RenderedOperation
-base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala	RenderedOperation	final case class Delete(table: TableName, key: AttributeMap, condition: Option[RenderedExpression]) extends RenderedOperation
-base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala	RenderedOperation	final case class Get(table: TableName, key: AttributeMap, consistentRead: Boolean) extends RenderedOperation
-base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala	RenderedOperation	final case class Put(table: TableName, item: AttributeMap, condition: Option[RenderedExpression]) extends RenderedOperation
-base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala	RenderedOperation	final case class Query( table: TableName, index: Option[IndexName], keyCondition: RenderedExpression, filter: Option[RenderedExpression], limit: Option[Int], consistentRead: Boolean, scanForward: Boolean, exclusiveStartKey: Option[AttributeMap] ) extends RenderedOperation
-base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala	RenderedOperation	final case class TransactWrite(items: Vector[RenderedTransactItem]) extends RenderedOperation
-base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala	RenderedOperation	final case class Update( table: TableName, key: AttributeMap, update: RenderedExpression, condition: Option[RenderedExpression] ) extends RenderedOperation
-base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala	RenderedOperation.BatchWrite	override def normalized: RenderedOperation
-base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala	RenderedOperation.Delete	override def normalized: RenderedOperation
-base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala	RenderedOperation.Get	override def normalized: RenderedOperation
-base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala	RenderedOperation.Put	override def normalized: RenderedOperation
-base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala	RenderedOperation.Query	override def normalized: RenderedOperation
-base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala	RenderedOperation.TransactWrite	override def normalized: RenderedOperation
-base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala	RenderedOperation.Update	override def normalized: RenderedOperation
-base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala	RenderedTransactItem	def normalized: RenderedTransactItem
-base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala	RenderedTransactItem	final case class Delete(table: TableName, key: AttributeMap, condition: Option[RenderedExpression]) extends RenderedTransactItem
-base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala	RenderedTransactItem	final case class Put(table: TableName, item: AttributeMap, condition: Option[RenderedExpression]) extends RenderedTransactItem
-base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala	RenderedTransactItem	final case class Update( table: TableName, key: AttributeMap, update: RenderedExpression, condition: Option[RenderedExpression] ) extends RenderedTransactItem
-base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala	RenderedTransactItem.Delete	override def normalized: RenderedTransactItem
-base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala	RenderedTransactItem.Put	override def normalized: RenderedTransactItem
-base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/ddb/internal/RenderedOperation.scala	RenderedTransactItem.Update	override def normalized: RenderedTransactItem
 base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/exception/PluginException.scala		final class PluginException(message: String, cause: Option[Throwable] = None) extends Exception(message, cause.orNull)
 base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/metrics/MetricsReporter.scala		object MetricsReporter
 base	base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/metrics/MetricsReporter.scala		object MetricsReporterProvider
