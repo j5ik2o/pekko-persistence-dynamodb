@@ -77,9 +77,17 @@ while :; do
   fi
   missing=$(jq -r --arg ready "$ready_at" '
     def named($name): [.check_runs[] | select(.name == $name and .started_at >= $ready)] | sort_by(.id) | if length == 0 then [] else [last] end;
-    (named("CodeRabbit")) as $cr | (named("unresolved-review-threads")) as $threads |
-    [if ($cr | length) == 0 then "CodeRabbit is missing" elif any($cr[]; .output.title == "Review rate limited" and .status == "completed" and .conclusion == "neutral") then empty elif any($cr[]; .status != "completed") then "CodeRabbit is pending" elif any($cr[]; .conclusion == "neutral") then "CodeRabbit returned neutral without a verified completed review" elif any($cr[]; .conclusion != "success") then "CodeRabbit did not succeed" else empty end,
-     if ($threads | length) == 0 then "unresolved-review-threads is missing" elif any($threads[]; .status != "completed") then "unresolved-review-threads is pending" elif any($threads[]; .conclusion != "success") then "unresolved-review-threads did not succeed" else empty end] | .[]' <<<"$check_runs") || fail 'could not evaluate required checks'
+    (named("CodeRabbit")) as $cr |
+    [if ($cr | length) == 0 then "CodeRabbit is missing" elif any($cr[]; .output.title == "Review rate limited" and .status == "completed" and .conclusion == "neutral") then empty elif any($cr[]; .status != "completed") then "CodeRabbit is pending" elif any($cr[]; .conclusion == "neutral") then "CodeRabbit returned neutral without a verified completed review" elif any($cr[]; .conclusion != "success") then "CodeRabbit did not succeed" else empty end] | .[]' <<<"$check_runs") || fail 'could not evaluate required checks'
+  gate_status=$(gh api "repos/$repo/commits/$approved_sha/status" </dev/null) || fail 'could not read commit statuses for approved head'
+  gate_state=$(jq -r '[.statuses[]? | select(.context == "Check unresolved comments")] | first | .state // empty' <<<"$gate_status") || fail 'could not evaluate commit statuses'
+  case $gate_state in
+    success) gate_missing='' ;;
+    '') gate_missing='Check unresolved comments is missing' ;;
+    pending) gate_missing='Check unresolved comments is pending' ;;
+    *) gate_missing='Check unresolved comments did not succeed' ;;
+  esac
+  missing=$(printf '%s\n%s\n' "$missing" "$gate_missing" | sed '/^$/d')
   if grep -Eq '^CodeRabbit (did not review|returned neutral|was skipped|did not succeed)' <<<"$missing"; then
     fail "required checks blocked: $(tr '\n' ';' <<<"$missing" | sed 's/;$//')"
   fi
