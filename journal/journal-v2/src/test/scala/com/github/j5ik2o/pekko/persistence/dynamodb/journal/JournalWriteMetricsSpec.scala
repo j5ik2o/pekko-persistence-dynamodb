@@ -18,13 +18,17 @@ package com.github.j5ik2o.pekko.persistence.dynamodb.journal
 import org.apache.pekko.NotUsed
 import org.apache.pekko.actor.{ Actor, ActorSystem, ExtendedActorSystem, Extension, ExtensionId, IndirectActorProducer }
 import org.apache.pekko.persistence.{ AtomicWrite, Persistence, PersistentRepr }
+import org.apache.pekko.persistence.journal.Tagged
 import org.apache.pekko.serialization.Serializer
 import org.apache.pekko.stream.scaladsl.Flow
 import org.apache.pekko.testkit.TestProbe
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.dao.{ JournalRowWriteDriver, WriteJournalDaoQueueSpec }
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.head.{
+  JournalHeadItemTooLargeException,
   JournalHeadJournalRowTooLargeException,
   JournalHeadTooManyEventsException,
+  JournalHeadTransactionTooLargeException,
+  JournalHeadWriteRejectedException,
   JournalHeadWriteRequest
 }
 import com.github.j5ik2o.pekko.persistence.dynamodb.metrics.{ MetricsReporter, MetricsReporterProvider }
@@ -165,6 +169,27 @@ final class JournalWriteMetricsSpec extends AnyFreeSpec with Matchers {
     failure shouldBe a[JournalHeadTooManyEventsException]
     expectCallbacks(recording, Vector.fill(102)(Success(())), Failure(failure))
     recording.writes.isEmpty shouldBe true
+  }
+
+  "every JournalHead size limit fails the outer call and reports write.error with its own exception type" - {
+    def taggedEvents(count: Int, tagLength: Int): Seq[Tagged] =
+      Vector.fill(count)(Tagged("event", Set("t" * tagLength)))
+
+    val cases: Seq[(String, Seq[Any], Class[_])] = Seq(
+      ("a JournalHead item over 400 KB", Seq("x" * 410000), classOf[JournalHeadItemTooLargeException]),
+      ("a journal row over 400 KB", taggedEvents(1, 410000), classOf[JournalHeadJournalRowTooLargeException]),
+      ("a transaction over 4 MB", taggedEvents(99, 43000), classOf[JournalHeadTransactionTooLargeException])
+    )
+    cases.foreach { case (name, payloads, expectedType) =>
+      name in withJournal(headEnabled = true) { (journal, recording) =>
+        val result  = journal.asyncWriteMessages(Vector(write("valid first"), write(payloads: _*)))
+        val failure = Await.result(result.failed, 10.seconds)
+        failure.getClass shouldBe expectedType
+        failure shouldBe a[JournalHeadWriteRejectedException]
+        expectCallbacks(recording, Vector.fill(payloads.size + 1)(Success(())), Failure(failure))
+        recording.writes.isEmpty shouldBe true
+      }
+    }
   }
 
   "serialization rejection reports serialize.error and write.after with an inner Failure" in withJournal(headEnabled =

@@ -487,10 +487,25 @@ Journal write callbacks describe two different results.
 
 - `afterJournalAsyncWriteMessages` means the outer `asyncWriteMessages` Future completed successfully. It does not mean every event persisted. The returned sequence can contain a serialization `Failure` for an individual `AtomicWrite`.
 - `errorJournalSerializeJournal` reports a serialization failure. That `AtomicWrite` is rejected without reaching the row driver. The outer write Future can still succeed and call `afterJournalAsyncWriteMessages`. Pekko handles the rejection through `onPersistRejected`.
-- `errorJournalAsyncWriteMessages` reports failure of the outer write Future. Plugin preflight limits, including JournalHead event limits and oversized journal rows with head mode disabled, use this path. The plugin checks all serialized writes before sending the first one. A limit violation sends none of them. Pekko handles the failure through `onPersistFailure` and stops the persistent actor.
+- `errorJournalAsyncWriteMessages` reports failure of the outer write Future. The plugin's preflight limits use this path. The next section lists them. The plugin checks all serialized writes before sending the first one. A limit violation sends none of them. Pekko handles the failure through `onPersistFailure` and stops the persistent actor.
 
 Monitor serialization errors as well as outer write errors. Completion callbacks run asynchronously, so completion of the returned Future does not guarantee that the reporter has received its callback yet.
 These plugin callbacks also cover failures before an SDK request exists. The SDK `MetricPublisher` below observes SDK requests.
+
+(metrics-write-limits)=
+#### Write limit failures
+
+Before the plugin sends anything, it checks a write against the limits in the table below, and only those. A write that exceeds one of them fails without being sent. The plugin calls `errorJournalAsyncWriteMessages` once for the whole `asyncWriteMessages` call, and its `ex` argument is the exception of the first violation it finds. `errorJournalSerializeJournal` is not called for a limit violation, and `afterJournalAsyncWriteMessages` is not called for that write.
+
+| `head.enabled` | Limit                                         | `ex` type                                  |
+|:---------------|:----------------------------------------------|:-------------------------------------------|
+| `true`         | more than 99 events in one write              | `JournalHeadTooManyEventsException`        |
+| `true`         | the `JournalHead` item would exceed 400 KB    | `JournalHeadItemTooLargeException`         |
+| `true`         | a journal row would exceed 400 KB             | `JournalHeadJournalRowTooLargeException`   |
+| `true`         | the transaction would exceed 4 MB             | `JournalHeadTransactionTooLargeException`  |
+| `false`        | a journal row would exceed 400 KB             | `JournalHeadJournalRowTooLargeException`   |
+
+Each type is a subclass of `JournalHeadWriteRejectedException`, so a reporter can count the limits apart by the type of `ex`. Match on `JournalHeadWriteRejectedException` to count all of them, and on a subclass to count one limit. Each exception carries the measured value and the limit, for example `itemSizeBytes` and `limitBytes`. A serialization failure, a DynamoDB error, and a failed JournalHead condition use other exception types. A limit violation is a bug in the design of the events. Pekko calls `onPersistFailure` and stops the persistent actor. After you fix the code and restart the actor, the next write continues from the last written sequence number. See {ref}`journal-head-limits` for the limits themselves.
 
 ### MetricPublisher 
 
