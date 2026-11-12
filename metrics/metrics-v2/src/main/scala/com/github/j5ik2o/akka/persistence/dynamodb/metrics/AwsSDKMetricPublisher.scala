@@ -19,7 +19,6 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.config.PluginConfig
 import software.amazon.awssdk.core.metrics.CoreMetric
 import software.amazon.awssdk.metrics.{ MetricCollection, MetricPublisher }
 
-import scala.annotation.unused
 import scala.jdk.StreamConverters._
 
 trait Histogram {
