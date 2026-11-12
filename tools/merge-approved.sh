@@ -61,6 +61,7 @@ while :; do
     reviewer_type=$(jq -r '.user.type // empty' <<<"$review_comment")
     [[ -n $reviewer && $reviewer_type != Bot ]] || fail 'substitute review must be written by a non-bot user'
     review_body=$(jq -r '.body // empty' <<<"$review_comment")
+    review_body=${review_body//$'\r'/}
     marker_count=$(grep -Ec '^independent-review: head=[[:xdigit:]]{40} result=(pass|fail)$' <<<"$review_body" || true)
     [[ $marker_count == 1 ]] || fail 'substitute review must contain exactly one machine-readable independent-review marker line'
     marker=$(grep -E '^independent-review:' <<<"$review_body")
@@ -116,8 +117,8 @@ fi
 gh pr merge "$pr" --repo "$repo" --squash --match-head-commit "$approved_sha" --subject "$subject" --body "$body" </dev/null || fail 'GitHub rejected the merge'
 if ! merged_data=$(gh pr view "$pr" --repo "$repo" --json state </dev/null); then fail 'merge command returned, but could not verify pull request state'; fi
 [[ $(jq -r '.state // empty' <<<"$merged_data") == MERGED ]] || fail 'pull request did not reach MERGED state; issue actions were not run'
-for issue in "${close_issues[@]}"; do gh issue close "$issue" --repo "$repo" </dev/null || fail "pull request merged, but could not close issue $issue"; done
-for comment in "${comments[@]}"; do
+for issue in ${close_issues[@]+"${close_issues[@]}"}; do gh issue close "$issue" --repo "$repo" </dev/null || fail "pull request merged, but could not close issue $issue"; done
+for comment in ${comments[@]+"${comments[@]}"}; do
   issue=${comment%%=*}; message=${comment#*=}
   gh issue comment "$issue" --repo "$repo" --body "$message" </dev/null || fail "pull request merged, but could not comment on issue $issue"
 done

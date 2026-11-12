@@ -288,6 +288,24 @@ class MergeApprovedTests(unittest.TestCase):
         self.assertIn("close 12", (self.root / "issue.log").read_text())
         self.assertIn("comment 13", (self.root / "issue.log").read_text())
 
+    def test_merge_without_issue_actions_succeeds_on_every_bash(self):
+        shells = ["bash"] + (["/bin/bash"] if Path("/bin/bash").exists() else [])
+        for shell in shells:
+            with self.subTest(shell=shell):
+                (self.root / "pr.json").write_text(json.dumps(self.state))
+                (self.root / "merge.log").unlink(missing_ok=True)
+                result = subprocess.run([shell, str(SCRIPT), "owner/repo", "7", SHA, "--subject", "fix(scope): x"],
+                                        input="", text=True, env=self.env, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertTrue((self.root / "merge.log").exists())
+                self.assertFalse((self.root / "issue.log").exists())
+
+    def test_substitute_review_accepts_crlf_marker(self):
+        self.set_rate_limited()
+        self.set_review_comment(body=f"Reviewed.\r\nindependent-review: head={SHA} result=pass\r\n")
+        result = self.run_script("--dry-run", "--subject", "fix(scope): x", "--substitute-review", "42")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_issue_actions_stop_when_pr_is_not_merged(self):
         self.env["MERGE_LEAVES_OPEN"] = "1"
         result = self.run_script("--close", "12", "--comment", "13=recorded", "--subject", "fix(scope): x")
