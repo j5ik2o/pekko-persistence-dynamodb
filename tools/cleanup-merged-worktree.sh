@@ -30,16 +30,16 @@ merge_sha=$(jq -r '.[0].mergeCommit.oid // empty' <<<"$prs")
 [[ $state == MERGED && -n $merged_at ]] || fail "pull request is not merged (state: ${state:-unknown})"
 [[ $merge_sha =~ ^[[:xdigit:]]{40}$ ]] || fail 'pull request merge commit is missing'
 
-if ! git -C "$worktree" -c fetch.prune=false fetch origin "+pull/$pr/head:refs/pm/$pr" </dev/null; then fail 'could not fetch pull request head'; fi
+if ! git -C "$worktree" -c fetch.prune=false fetch origin "+refs/pull/$pr/head:refs/pm/$pr" </dev/null; then fail 'could not fetch pull request head'; fi
 if ! pr_details=$(gh pr view "$pr" --repo "$repo" --json headRefOid </dev/null); then fail 'could not read pull request head SHA'; fi
 if ! pr_head=$(jq -r '.headRefOid // empty' <<<"$pr_details"); then fail 'could not parse pull request head SHA'; fi
 [[ $pr_head =~ ^[[:xdigit:]]{40}$ ]] || fail 'pull request head SHA is missing'
 if ! fetched_head=$(git -C "$worktree" rev-parse "refs/pm/$pr" </dev/null); then fail 'could not read fetched pull request head'; fi
 [[ $fetched_head == "$pr_head" ]] || fail 'fetched pull request head does not match GitHub head SHA'
-if ! git -C "$worktree" fetch origin main:refs/remotes/origin/main </dev/null; then fail 'could not fetch origin/main'; fi
+if ! git -C "$worktree" -c fetch.prune=false fetch origin +refs/heads/main:refs/pm/main </dev/null; then fail 'could not fetch main'; fi
 if ! git -C "$worktree" merge-base --is-ancestor "$head" "refs/pm/$pr" </dev/null &&
-   ! git -C "$worktree" merge-base --is-ancestor "$head" "origin/main" </dev/null; then
-  fail 'worktree HEAD is not in the pull request or origin/main history'
+   ! git -C "$worktree" merge-base --is-ancestor "$head" "refs/pm/main" </dev/null; then
+  fail 'worktree HEAD is not in the pull request or main history'
 fi
 
 if ! runs=$(gh run list --repo "$repo" --commit "$merge_sha" --workflow CI --json status,conclusion,headSha </dev/null); then fail 'could not read CI runs for merge commit'; fi

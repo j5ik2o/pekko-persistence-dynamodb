@@ -28,6 +28,7 @@ class CleanupMergedWorktreeTests(unittest.TestCase):
         self.run_git("-C", str(self.repo), "commit", "-m", "base")
         self.run_git("-C", str(self.repo), "remote", "add", "origin", str(self.remote))
         self.run_git("-C", str(self.repo), "push", "-u", "origin", "main")
+        self.run_git("-C", str(self.repo), "config", "fetch.prune", "true")
         self.run_git("-C", str(self.repo), "switch", "-c", "feature/test")
         (self.repo / "feature.txt").write_text("feature\n")
         self.run_git("-C", str(self.repo), "add", "feature.txt")
@@ -149,7 +150,7 @@ class CleanupMergedWorktreeTests(unittest.TestCase):
         self.run_git("-C", str(self.repo), "commit", "-m", "orphan")
         orphan = self.git("-C", str(self.repo), "rev-parse", "HEAD").strip()
         self.run_git("-C", str(self.repo), "-C", str(self.worktree), "reset", "--hard", orphan)
-        self.assert_stopped("not in the pull request or origin/main history")
+        self.assert_stopped("not in the pull request or main history")
 
     def test_rejects_running_or_failed_ci(self):
         for run in [
@@ -200,6 +201,15 @@ class CleanupMergedWorktreeTests(unittest.TestCase):
         self.assertIn("worktree remove", result.stdout)
         self.assertTrue(self.worktree.exists())
         self.assertIn("feature/test", self.git("-C", str(self.repo), "branch", "--list", "feature/test"))
+
+    def test_repeated_dry_run_preserves_tracking_and_pm_refs_with_pruning_enabled(self):
+        for _ in range(2):
+            result = self.run_script("--dry-run")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(self.worktree.exists())
+            for ref in ["refs/remotes/origin/main", "refs/pm/8", "refs/pm/main"]:
+                with self.subTest(run=_, ref=ref):
+                    self.run_git("-C", str(self.repo), "show-ref", "--verify", "--quiet", ref)
 
     def test_removes_worktree_and_keeps_branch(self):
         result = self.run_script()
