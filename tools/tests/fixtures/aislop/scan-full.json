@@ -1,0 +1,179 @@
+{
+  "schemaVersion": "1",
+  "cliVersion": "0.20.0",
+  "version": "0.20.0",
+  "score": 90,
+  "label": "Healthy",
+  "scoreable": true,
+  "coverage": {
+    "supportedFiles": 243,
+    "unsupportedFiles": 227,
+    "dominantUnsupported": "Scala",
+    "scoreable": true
+  },
+  "engines": {
+    "format": {
+      "issues": 0,
+      "skipped": true,
+      "elapsed": 687.9081249999999,
+      "skipReason": "missing tools: ruff, scalafmt",
+      "missingTools": [
+        "ruff",
+        "scalafmt"
+      ]
+    },
+    "lint": {
+      "issues": 0,
+      "skipped": true,
+      "elapsed": 687.8112080000001,
+      "skipReason": "missing tools: ruff, pmd",
+      "missingTools": [
+        "ruff",
+        "pmd"
+      ]
+    },
+    "code-quality": {
+      "issues": 3,
+      "skipped": false,
+      "elapsed": 687.924583
+    },
+    "ai-slop": {
+      "issues": 55,
+      "skipped": false,
+      "elapsed": 615.841083
+    },
+    "security": {
+      "issues": 0,
+      "skipped": false,
+      "elapsed": 64.5285409999999
+    }
+  },
+  "engineDefinitions": {},
+  "diagnostics": [
+    {
+      "filePath": "journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/store/JournalRowStore.scala",
+      "engine": "code-quality",
+      "rule": "complexity/file-too-large",
+      "severity": "warning",
+      "message": "File too large (limit: 400, flagged above 441 lines)",
+      "help": "Consider splitting this file into smaller modules",
+      "line": 0,
+      "column": 0,
+      "category": "Complexity",
+      "fixable": false,
+      "detail": "639 lines",
+      "baselined": true,
+      "assessment": {
+        "kind": "style-policy",
+        "confidence": "medium",
+        "label": "style/policy"
+      },
+      "scoreImpact": {
+        "tier": "style",
+        "multiplier": 0.5,
+        "cap": 8,
+        "rationale": "Large files are reviewability pressure, but size alone is not a confirmed defect."
+      },
+      "forceFixable": false
+    },
+    {
+      "filePath": "journal/journal-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/head/JournalHeadMigration.scala",
+      "engine": "code-quality",
+      "rule": "complexity/file-too-large",
+      "severity": "warning",
+      "message": "File too large (limit: 400, flagged above 441 lines)",
+      "help": "Consider splitting this file into smaller modules",
+      "line": 0,
+      "column": 0,
+      "category": "Complexity",
+      "fixable": false,
+      "detail": "565 lines",
+      "baselined": true,
+      "assessment": {
+        "kind": "style-policy",
+        "confidence": "medium",
+        "label": "style/policy"
+      },
+      "scoreImpact": {
+        "tier": "style",
+        "multiplier": 0.5,
+        "cap": 8,
+        "rationale": "Large files are reviewability pressure, but size alone is not a confirmed defect."
+      },
+      "forceFixable": false
+    },
+    {
+      "filePath": "schema-check/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/schemacheck/PublicApiSurface.scala",
+      "engine": "code-quality",
+      "rule": "complexity/file-too-large",
+      "severity": "warning",
+      "message": "File too large (limit: 400, flagged above 441 lines)",
+      "help": "Consider splitting this file into smaller modules",
+      "line": 0,
+      "column": 0,
+      "category": "Complexity",
+      "fixable": false,
+      "detail": "451 lines",
+      "baselined": true,
+      "assessment": {
+        "kind": "style-policy",
+        "confidence": "medium",
+        "label": "style/policy"
+      },
+      "scoreImpact": {
+        "tier": "style",
+        "multiplier": 0.5,
+        "cap": 8,
+        "rationale": "Large files are reviewability pressure, but size alone is not a confirmed defect."
+      },
+      "forceFixable": false
+    }
+  ],
+  "findingAssessment": {
+    "rows": [
+      {
+        "kind": "ai-slop-indicator",
+        "label": "AI-slop indicators",
+        "count": 55,
+        "errors": 0,
+        "warnings": 55,
+        "info": 0,
+        "fixable": 0
+      },
+      {
+        "kind": "style-policy",
+        "label": "style/policy",
+        "count": 3,
+        "errors": 0,
+        "warnings": 3,
+        "info": 0,
+        "fixable": 0
+      }
+    ],
+    "byKind": {
+      "confirmed-defect": 0,
+      "conservative-security": 0,
+      "style-policy": 3,
+      "ai-slop-indicator": 55
+    },
+    "byConfidence": {
+      "high": 0,
+      "medium": 58,
+      "low": 0
+    }
+  },
+  "summary": {
+    "errors": 0,
+    "warnings": 58,
+    "fixable": 0,
+    "files": 243,
+    "elapsed": "698ms"
+  },
+  "baseline": {
+    "path": ".aislop/ci-baseline.json",
+    "status": "ok",
+    "accepted": 3,
+    "new": 0,
+    "stale": 0
+  }
+}

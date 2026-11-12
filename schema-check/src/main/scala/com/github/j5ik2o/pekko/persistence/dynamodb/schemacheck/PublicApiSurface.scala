@@ -1,5 +1,7 @@
 package com.github.j5ik2o.pekko.persistence.dynamodb.schemacheck
 
+import com.github.j5ik2o.pekko.persistence.dynamodb.ddb.internal.RenderedOperation
+
 import java.nio.charset.StandardCharsets
 import java.nio.file.attribute.BasicFileAttributes
 import java.nio.file.{ FileVisitResult, Files, Path, SimpleFileVisitor }
@@ -40,7 +42,18 @@ object PublicApiSurface {
     "state-v2"      -> "state/state-v2/src/main"
   )
 
+  /** Packages whose declarations stay outside the gate, each with the reason. A file is excluded when its package is a
+    * listed package or a subpackage of one. Each package is named through one of its types, so moving the package
+    * breaks the build instead of silently excluding nothing.
+    */
+  val ExcludedPackages: Map[String, String] = Map(
+    classOf[RenderedOperation].getPackage.getName ->
+    "Renderer input that base, base-v1, and base-v2 use. It is internal and has no compatibility guarantee (#862)."
+  )
+
   private val ExcludedDirectories = Set("target", ".git", ".bsp", ".bloop", ".metals", ".idea")
+
+  private val PackageClause: Regex = """(?m)^\s*package\s+([A-Za-z_][A-Za-z0-9_.]*)\s*;?\s*$""".r
 
   private val StartPattern: Regex =
     """(?:package\s+)?((?:(?:@[A-Za-z_][A-Za-z0-9_.]*(?:\([^)]*\))?|sealed|final|abstract|implicit|override|lazy|case|transient|private(?:\[[^\]]*\])?|protected(?:\[[^\]]*\])?)\s+)*)(class|trait|object|def|val|var|type)\b""".r
@@ -59,7 +72,7 @@ object PublicApiSurface {
         scalaFiles(moduleRoot).foreach { file =>
           val text     = new String(Files.readAllBytes(file), StandardCharsets.UTF_8)
           val relative = root.relativize(file).toString.replace('\\', '/')
-          declarations ++= scan(module, relative, text)
+          if (!isExcludedPackage(packageOf(text))) declarations ++= scan(module, relative, text)
         }
       }
     }
@@ -89,6 +102,12 @@ object PublicApiSurface {
     val baselineSet = baseline.toSet
     current.filterNot(baselineSet.contains)
   }
+
+  private def packageOf(text: String): String =
+    PackageClause.findAllMatchIn(stripComments(text)).map(_.group(1)).mkString(".")
+
+  private def isExcludedPackage(name: String): Boolean =
+    ExcludedPackages.keys.exists(excluded => name == excluded || name.startsWith(excluded + "."))
 
   private def scan(module: String, path: String, text: String): Vector[ApiDeclaration] = {
     val clean        = stripComments(text)

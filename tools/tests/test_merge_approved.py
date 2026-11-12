@@ -34,7 +34,7 @@ class MergeApprovedTests(unittest.TestCase):
                      'elif args[:2]==["api","repos/owner/repo/commits/' + SHA + '/check-runs"]: print(json.dumps([{"check_runs": json.load(open(os.environ["GH_CHECK_RUNS"]))}]))\n'
                      'elif args[:2]==["api","repos/owner/repo/issues/comments/42"]: print(open(os.environ["GH_REVIEW_COMMENT"]).read())\n'
                      'elif args[:2]==["api","repos/owner/repo/collaborators/reviewer/permission"]: print(open(os.environ["GH_PERMISSION"]).read())\n'
-                     'elif args[:2]==["api","repos/owner/repo/issues/7/timeline"]: print(json.dumps([[{ "event":"ready_for_review", "created_at":"2026-11-11T06:45:02Z"}]]))\n'
+                     'elif args[:2]==["api","repos/owner/repo/issues/7/timeline"]: print(os.environ.get("GH_TIMELINE", json.dumps([[{ "event":"ready_for_review", "created_at":"2026-11-11T06:45:02Z"}]])))\n'
                      'elif args[:2]==["pr","diff"]: print(os.environ.get("GH_DIFF",""))\n'
                      'elif args[0:2]==["pr","merge"]: open(os.environ["MERGE_LOG"],"w").write(" ".join(args)); p=json.load(open(os.environ["GH_PR"])); p["state"]="MERGED" if os.environ.get("MERGE_LEAVES_OPEN") != "1" else "OPEN"; open(os.environ["GH_PR"],"w").write(json.dumps(p))\n'
                      'elif args[:2]==["issue","close"]: open(os.environ["ISSUE_LOG"],"a").write("close " + " ".join(args[2:]) + "\\n")\n'
@@ -137,6 +137,13 @@ class MergeApprovedTests(unittest.TestCase):
         result = self.run_script("--dry-run", "--subject", "fix(scope): x")
         self.assertNotEqual(result.returncode, 0, result.stdout)
         self.assertIn("checks are empty", result.stderr)
+
+    def test_missing_ready_event_names_the_draft_round_trip(self):
+        self.env["GH_TIMELINE"] = json.dumps([[{"event": "committed"}]])
+        result = self.run_script("--dry-run", "--subject", "fix(scope): x")
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("no ready_for_review event; convert it to draft and mark it ready again (gh pr ready --undo, then gh pr ready)", result.stderr)
+        self.assertFalse((self.root / "merge.log").exists())
 
     def test_ready_then_unregistered_coderabbit_is_rejected(self):
         self.check_runs = [self.check_runs[1]]
