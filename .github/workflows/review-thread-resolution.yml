@@ -35,4 +35,6 @@ jobs:
       wait_for_other_checks: ${{ inputs.wait_for_other_checks }}
       base_branch: main
       required_context: Check unresolved comments
+      # Publish the status on Dependabot PRs too, so that a required status does not leave them waiting.
+      skip_status_for_dependabot: "false"
       ci_ref: v1
