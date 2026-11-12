@@ -17,7 +17,7 @@ on:
       - '.scalafmt.conf'
       - 'project/build.properties'
       - '.tool-versions'
-      - '.github/workflows/ci.yml'
+      - '.github/workflows/**'
   pull_request:
     paths:
       - '**.scala'
@@ -30,7 +30,7 @@ on:
       - '.scalafmt.conf'
       - 'project/build.properties'
       - '.tool-versions'
-      - '.github/workflows/ci.yml'
+      - '.github/workflows/**'
 env:
   JAVA_OPTS: -Xms2048M -Xmx2048M -Xss6M -XX:ReservedCodeCacheSize=256M -Dfile.encoding=UTF-8
   JVM_OPTS:  -Xms2048M -Xmx2048M -Xss6M -XX:ReservedCodeCacheSize=256M -Dfile.encoding=UTF-8
