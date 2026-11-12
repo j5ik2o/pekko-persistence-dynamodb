@@ -543,6 +543,7 @@ $ aws dynamodb describe-continuous-backups --table-name JournalHead
    advance a checkpoint.
 9. Set `head.enabled = true`, start every node, and then start the consumer.
 
+(journal-head-limits)=
 ## Limits
 
 A single write fails, before anything is sent to DynamoDB, when:
@@ -572,6 +573,8 @@ you fix the code and restart the actor, recovery finds the last written sequence
 from the one after it. The journal has no gap, and a reader such as a read model updater does not need to handle one.
 
 The head-less path (`head.enabled = false`) applies the same rule to a journal row over 400 KB.
+
+A `MetricsReporter` receives each of the four limit exceptions, and the head-less row exception, through `errorJournalAsyncWriteMessages`. See {ref}`metrics-write-limits`.
 
 A write that Pekko itself refuses, such as an event it cannot serialize, stays a failure of that one `AtomicWrite`. A
 write that reaches DynamoDB but fails there (a failed condition or a service error) is a journal failure too.
