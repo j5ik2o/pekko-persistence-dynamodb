@@ -21,8 +21,8 @@ class MergeApprovedTests(unittest.TestCase):
         self.checks = [{"bucket": "pass"}]
         self.check_runs = [
             {"id": 1, "name": "CodeRabbit", "status": "completed", "conclusion": "success", "output": {"title": "Review completed", "summary": "Review completed."}, "started_at": "2026-11-11T06:45:03Z"},
-            {"id": 2, "name": "unresolved-review-threads", "status": "completed", "conclusion": "success", "started_at": "2026-11-11T06:45:03Z"},
         ]
+        self.status = {"statuses": [{"context": "Check unresolved comments", "state": "success"}]}
         self.review_exit = 0
         self.diff = ""
         self.inputs = []
@@ -32,6 +32,7 @@ class MergeApprovedTests(unittest.TestCase):
                      'if args[0:2]==["pr","view"]: print(open(os.environ["GH_PR" ]).read())\n'
                      'elif args[0:2]==["pr","checks"]: print(open(os.environ["GH_CHECKS"]).read())\n'
                      'elif args[:2]==["api","repos/owner/repo/commits/' + SHA + '/check-runs"]: print(json.dumps([{"check_runs": json.load(open(os.environ["GH_CHECK_RUNS"]))}]))\n'
+                     'elif args[:2]==["api","repos/owner/repo/commits/' + SHA + '/status"]: print(open(os.environ["GH_STATUS"]).read())\n'
                      'elif args[:2]==["api","repos/owner/repo/issues/comments/42"]: print(open(os.environ["GH_REVIEW_COMMENT"]).read())\n'
                      'elif args[:2]==["api","repos/owner/repo/collaborators/reviewer/permission"]: print(open(os.environ["GH_PERMISSION"]).read())\n'
                      'elif args[:2]==["api","repos/owner/repo/issues/7/timeline"]: print(os.environ.get("GH_TIMELINE", json.dumps([[{ "event":"ready_for_review", "created_at":"2026-11-11T06:45:02Z"}]])))\n'
@@ -51,11 +52,13 @@ class MergeApprovedTests(unittest.TestCase):
         (self.root / "pr.json").write_text(json.dumps(self.state))
         (self.root / "checks.json").write_text(json.dumps(self.checks))
         (self.root / "check-runs.json").write_text(json.dumps(self.check_runs))
+        (self.root / "status.json").write_text(json.dumps(self.status))
         (self.root / "review-comment.json").write_text(json.dumps({"issue_url": "https://api.github.com/repos/owner/repo/issues/7", "body": f"Reviewed.\nindependent-review: head={SHA} result=pass", "created_at": "2026-11-11T06:46:00Z", "user": {"login": "reviewer", "type": "User"}}))
         (self.root / "permission.json").write_text(json.dumps({"permission": "write"}))
         self.env = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
                         GH_PR=str(self.root / "pr.json"), GH_CHECKS=str(self.root / "checks.json"),
                         GH_CHECK_RUNS=str(self.root / "check-runs.json"),
+                        GH_STATUS=str(self.root / "status.json"),
                         GH_REVIEW_COMMENT=str(self.root / "review-comment.json"), GH_PERMISSION=str(self.root / "permission.json"),
                         GH_INPUT_LOG=str(self.root / "stdin.log"), MERGE_LOG=str(self.root / "merge.log"),
                         ISSUE_LOG=str(self.root / "issue.log"),
@@ -146,7 +149,7 @@ class MergeApprovedTests(unittest.TestCase):
         self.assertFalse((self.root / "merge.log").exists())
 
     def test_ready_then_unregistered_coderabbit_is_rejected(self):
-        self.check_runs = [self.check_runs[1]]
+        self.check_runs = []
         (self.root / "check-runs.json").write_text(json.dumps(self.check_runs))
         time.sleep(1)
         result = self.run_script("--dry-run", "--subject", "fix(scope): x")
@@ -162,13 +165,26 @@ class MergeApprovedTests(unittest.TestCase):
         self.assertIn("CodeRabbit is missing", result.stderr)
         self.assertFalse((self.root / "merge.log").exists())
 
-    def test_stale_review_threads_success_is_rejected_when_fresh_run_is_missing(self):
-        self.check_runs[1]["started_at"] = "2026-11-11T06:45:01Z"
-        (self.root / "check-runs.json").write_text(json.dumps(self.check_runs))
+    def test_missing_review_thread_status_is_rejected(self):
+        (self.root / "status.json").write_text(json.dumps({"statuses": []}))
         result = self.run_script("--dry-run", "--subject", "fix(scope): x")
         self.assertNotEqual(result.returncode, 0, result.stdout)
-        self.assertIn("unresolved-review-threads is missing", result.stderr)
+        self.assertIn("Check unresolved comments is missing", result.stderr)
         self.assertFalse((self.root / "merge.log").exists())
+
+    def test_failed_review_thread_status_is_rejected(self):
+        (self.root / "status.json").write_text(json.dumps({"statuses": [{"context": "Check unresolved comments", "state": "failure"}]}))
+        result = self.run_script("--dry-run", "--subject", "fix(scope): x")
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("Check unresolved comments did not succeed", result.stderr)
+        self.assertFalse((self.root / "merge.log").exists())
+
+    def test_review_thread_status_needs_no_ready_ordering(self):
+        self.env["GH_TIMELINE"] = json.dumps([[{"event": "ready_for_review", "created_at": "2026-11-11T06:45:02Z"}]])
+        (self.root / "status.json").write_text(json.dumps({"statuses": [{"context": "Check unresolved comments", "state": "success", "created_at": "2026-11-11T06:40:00Z"}]}))
+        result = self.run_script("--dry-run", "--subject", "fix(scope): x")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("gh pr merge", result.stdout)
 
     def test_completed_required_runs_after_ready_are_accepted(self):
         result = self.run_script("--dry-run", "--subject", "fix(scope): x")
@@ -277,7 +293,7 @@ class MergeApprovedTests(unittest.TestCase):
         self.env["MERGE_APPROVED_WAIT_SECONDS"] = "10"
         self.install("sleep", "#!/usr/bin/env bash\nexit 0\n")
         original = self.check_runs[:]
-        self.check_runs = [original[1]]
+        self.check_runs = []
         (self.root / "check-runs.json").write_text(json.dumps(self.check_runs))
         self.install("gh", self.bin.joinpath("gh").read_text().replace(
             'print(json.dumps([{"check_runs": json.load(open(os.environ["GH_CHECK_RUNS"]))}]))',
