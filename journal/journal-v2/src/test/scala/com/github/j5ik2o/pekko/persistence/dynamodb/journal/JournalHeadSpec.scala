@@ -2101,7 +2101,7 @@ final class JournalHeadSpec extends AnyWordSpec with Matchers with ScalaFutures 
 }
 
 // The tests below drive the real V2JournalRowWriteDriver flow with a fake v2 async client. They need the AWS SDK v2
-// types, so they live in this allowlisted file; project/module-boundaries.allowlist only shrinks.
+// types, so they live in this allowlisted file.
 object V2JournalRowWriteDriverSpec {
 
   /** What the fake answers when the driver reads the JournalHead item after a failed head condition. */
