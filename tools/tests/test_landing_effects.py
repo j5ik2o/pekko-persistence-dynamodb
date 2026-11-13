@@ -120,6 +120,7 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(report["workflows"][0]["trigger"]["status"], "excluded")
         self.assertEqual(report["indirect_candidates"][0]["raw"]["workflows"], ["CI"])
 
+    @unittest.skipUnless(HAVE_PYYAML, PYYAML_REASON)
     def test_bad_yaml(self):
         bad = ["on: push\non: pull_request\njobs: {}", "on: push\njobs: &j {a: *j}",
                "on: [push\njobs: {}", "on: push\njobs: []", "on: push\njobs: {a: null}",
