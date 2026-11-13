@@ -11,6 +11,18 @@ SPEC = importlib.util.spec_from_file_location("landing_effects", Path(__file__).
 le = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(le)
 
+try:
+    import yaml
+    HAVE_PYYAML = True
+except ImportError:
+    HAVE_PYYAML = False
+
+PYYAML_REASON = (
+    "requires PyYAML; see tools/README.md and tools/landing-effects.md — install with "
+    "`python3 -m venv target/docs-venv && target/docs-venv/bin/pip install -r docs/requirements.txt` "
+    "(docs/requirements.txt pins PyYAML==6.0.2)"
+)
+
 PUBLISH = """name: Publish
 on:
   push:
@@ -53,6 +65,7 @@ class EvidenceTests(unittest.TestCase):
             le.save(root / "snapshot.json", snapshot)
             return le.analyze(root / "snapshot.json")
 
+    @unittest.skipUnless(HAVE_PYYAML, PYYAML_REASON)
     def test_ppd_publish_survives_disabled_bump(self):
         report = self.report([("publish", "active", PUBLISH), ("Bump", "disabled_manually", CI)])
         publish = report["workflows"][0]
@@ -65,11 +78,13 @@ class EvidenceTests(unittest.TestCase):
         self.assertIn("strategy", publish["conditions"]["jobs"]["publish"])
         self.assertFalse(report["prospective_tree_verified"])
 
+    @unittest.skipUnless(HAVE_PYYAML, PYYAML_REASON)
     def test_example_ci_inventory_keeps_opaque_unknowns(self):
         report = self.report([("ci", "active", CI)])
         self.assertFalse(report["workflows"][0]["effect_candidates"])
         self.assertTrue({"external_action", "run_or_local_script"}.issubset({x["kind"] for x in report["unknowns"]}))
 
+    @unittest.skipUnless(HAVE_PYYAML, PYYAML_REASON)
     def test_unquoted_on(self):
         self.assertIn("on", le.load_yaml(PUBLISH.encode()))
 
@@ -92,17 +107,20 @@ class EvidenceTests(unittest.TestCase):
                 self.assertEqual(result["raw"], config)
                 self.assertEqual(result["pointer"], "/on")
 
+    @unittest.skipUnless(HAVE_PYYAML, PYYAML_REASON)
     def test_reusable_cycle_is_explicitly_unexpanded(self):
         raw = "on: push\njobs:\n  loop:\n    uses: ./.github/workflows/loop.yml\n"
         report = self.report([("loop", "active", raw)])
         self.assertIn("unexpanded_reusable_workflow", {x["kind"] for x in report["unknowns"]})
 
+    @unittest.skipUnless(HAVE_PYYAML, PYYAML_REASON)
     def test_indirect_candidates_separate(self):
         raw = CI.replace("on: [push, pull_request]", "on:\n  workflow_run:\n    workflows: [CI]\n    branches: [main]\n    types: [completed]")
         report = self.report([("after", "active", raw)])
         self.assertEqual(report["workflows"][0]["trigger"]["status"], "excluded")
         self.assertEqual(report["indirect_candidates"][0]["raw"]["workflows"], ["CI"])
 
+    @unittest.skipUnless(HAVE_PYYAML, PYYAML_REASON)
     def test_bad_yaml(self):
         bad = ["on: push\non: pull_request\njobs: {}", "on: push\njobs: &j {a: *j}",
                "on: [push\njobs: {}", "on: push\njobs: []", "on: push\njobs: {a: null}",
@@ -117,6 +135,7 @@ class EvidenceTests(unittest.TestCase):
         report = self.report([], collection_complete=False)
         self.assertIn("missing_collection", {x["kind"] for x in report["unknowns"]})
 
+    @unittest.skipUnless(HAVE_PYYAML, PYYAML_REASON)
     def test_shared_aliases_remain_unknown(self):
         raw = "on: push\njobs:\n  test:\n    steps:\n      - &step {run: echo hello}\n      - *step\n"
         report = self.report([("shared", "active", raw)])
@@ -124,6 +143,7 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(report["workflows"][0]["trigger"]["status"], "unknown")
         self.assertIn("shared YAML alias", report["workflows"][0]["trigger"]["reason"])
 
+    @unittest.skipUnless(HAVE_PYYAML, PYYAML_REASON)
     def test_alias_fanout_returns_unknown_without_expansion(self):
         raw = "on: push\njobs: {}\na0: &a0 [leaf]\n" + "".join(
             f"a{i}: &a{i} [*a{i - 1}, *a{i - 1}]\n" for i in range(1, 28))
