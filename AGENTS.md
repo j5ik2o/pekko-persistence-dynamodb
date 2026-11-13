@@ -184,7 +184,7 @@ sbt -batch "state-v1/testOnly *DynamoDBStateV1SyncSpec"
 
 Before you merge, run `tools/check-review-threads.sh <owner/repo> <pr>` and confirm exit 0. Reply to every review thread with the fix, the reason for dismissal, or a follow-up issue, then resolve the thread. An unresolved thread means a real finding can ship.
 
-Branch protection on `main` requires conversation resolution and the `Check unresolved comments` status, so GitHub blocks the merge while any thread is unresolved. The `review-thread-resolution` workflow publishes that status through the shared workflow in `j5ik2o/ci`. It refreshes the status on review, review comment, and issue comment events and every 15 minutes, so the status can lag behind a thread that was just resolved. Treat the local `tools/check-review-threads.sh` run as the check of the current state.
+Branch protection on `main` requires conversation resolution and the `Check unresolved comments` status, so GitHub blocks the merge while any thread is unresolved. The `review-thread-resolution` workflow publishes that status through the shared workflow in `j5ik2o/ci`. It refreshes the status on review, review comment, and issue comment events, and refreshes every open pull request once a day at 18:17 UTC, so the status can lag behind a thread that was just resolved. Treat the local `tools/check-review-threads.sh` run as the check of the current state.
 
 ## Rule table
 
