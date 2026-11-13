@@ -38,7 +38,7 @@ Run `python3 tools/aislop-gate.py` to scan with the local `aislop` (never `npx`)
 python3 -m unittest discover -s tools/tests -v
 ```
 
-Seven tests in `tools/tests/test_landing_effects.py` need PyYAML. Without it they are skipped with a reason that names this file, and the other tests still run. Install PyYAML to run them: `python3 -m venv target/docs-venv && target/docs-venv/bin/pip install -r docs/requirements.txt` pins `PyYAML==6.0.2`, and `tools/landing-effects.md` uses the same environment for `landing-effects.py`. Run the suite with `target/docs-venv/bin/python` to exercise those tests.
+Eight tests in `tools/tests/test_landing_effects.py` need PyYAML. Without it they are skipped with a reason that names this file, and the other tests still run. Install PyYAML to run them: `python3 -m venv target/docs-venv && target/docs-venv/bin/pip install -r docs/requirements.txt` pins `PyYAML==6.0.2`, and `tools/landing-effects.md` uses the same environment for `landing-effects.py`. Run the suite with `target/docs-venv/bin/python` to exercise those tests.
 
 ## Collect and assess PR evidence
 
