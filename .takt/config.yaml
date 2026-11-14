@@ -1,0 +1,23 @@
+language: ja
+base_branch: main
+
+# provider が rate limit に達したときの切替先（順に試す）。同格のクラウド provider に
+# 限る。chain が尽きた run は失敗で止まり、成果は .takt/runs/ と作業ツリーに残る
+# （直接実行の run は takt resume、manager タスクは requeue で再開）。
+# Ollama Cloud の受け皿（opencode / ollama/glm-5.3:cloud など）は、月間利用上限の
+# 到達（2026-11-14）に伴い外した。作業は DGX Spark へ寄せている
+rate_limit_fallback:
+  switch_chain:
+    - provider: claude
+
+# ワークフロー内の system step が固定コマンド（検証コマンド）を実行するために必要
+workflow_system_commands:
+  custom_scripts: true
+
+# manager（ゴール管理）がタスクに使ってよいワークフロー
+manager:
+  workflows:
+    - default
+    - simple
+    - ppd-tools-change
+    - ppd-code-change

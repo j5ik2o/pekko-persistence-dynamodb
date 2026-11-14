@@ -1,0 +1,126 @@
+version: 1
+provider:
+  profiles:
+    # 強いモデル（クラウド上位の既定）。計画・設計・レビューが使う
+    cloud-codex:
+      provider: codex
+    # 強いモデルの代替。codex の使用量上限中の暫定 assignment が使う
+    cloud-claude:
+      provider: claude-sdk
+    # 弱いモデル（DGX）。実装・テストが使う。opencode は model 必須
+    dgx-flash:
+      provider: opencode
+      model: dgx/deepseek-v4.1-flash
+    # Ollama Cloud（Max プラン）。弱いモデルの Cloud 版。手順を固定できる作業で
+    # DGX の代わりや溢れ分に使う。月間利用上限の到達（2026-11-14）中は使わない
+    ollama-flash:
+      provider: opencode
+      model: ollama/deepseek-v4.1-flash:cloud
+    # 強いモデル（Opus 級）の Cloud 版。月間利用上限の到達（2026-11-14）中は使わない
+    ollama-strong:
+      provider: opencode
+      model: ollama/glm-5.3:cloud
+    # 強いモデルの Cloud 版の別系統（Kimi）。ollama-strong と並べて使える
+    ollama-strong-kimi:
+      provider: opencode
+      model: ollama/kimi-k3:cloud
+  defaults:
+    # Ollama Cloud の月間利用上限に到達したため（2026-11-14）、当面の既定は
+    # すべてを DGX Spark へ寄せる interim-dgx とする
+    assignment: interim-dgx
+  assignments:
+    # 割り当て原則（coordinator 指示書 §2-2）: 計画・設計・レビューは強いモデル、
+    # 実装・テストは弱いモデル。やり直し（差し戻し後の再実行）は ladder の次の段へ
+    # 上がる（昇格の宣言はワークフロー側の promotion {at: N}）
+    ppd-standard:
+      defaults:
+        profile: cloud-codex
+      targets:
+        personas:
+          coder:
+            ladder:
+              - dgx-flash
+              - cloud-codex
+        steps:
+          mini-core/ai-antipattern-fix:
+            profile: cloud-codex
+          mini-core/supervise_fix:
+            profile: cloud-codex
+          mini-core/ai-antipattern-fix-parallel:
+            profile: cloud-codex
+          mini-core/supervise_fix_parallel:
+            profile: cloud-codex
+        internal_agents:
+          loop-judge:
+            profile: cloud-codex
+    # 強いモデルを claude に置き換えた ppd-standard。Claude の週次制限中に、
+    # 発行時の --runtime-assignment ppd-interim-claude で選ぶ
+    ppd-interim-claude:
+      defaults:
+        profile: cloud-claude
+      targets:
+        personas:
+          coder:
+            ladder:
+              - dgx-flash
+              - cloud-claude
+        steps:
+          mini-core/ai-antipattern-fix:
+            profile: cloud-claude
+          mini-core/supervise_fix:
+            profile: cloud-claude
+          mini-core/ai-antipattern-fix-parallel:
+            profile: cloud-claude
+          mini-core/supervise_fix_parallel:
+            profile: cloud-claude
+        internal_agents:
+          loop-judge:
+            profile: cloud-claude
+    # 強いモデルを Ollama Cloud（ollama-strong）にした暫定。
+    # 発行時の --runtime-assignment ppd-interim-ollama で選ぶ。
+    # 2026-11-14 の月間利用上限の回復後に戻す先はこの割り当て
+    ppd-interim-ollama:
+      defaults:
+        profile: ollama-strong
+      targets:
+        personas:
+          coder:
+            ladder:
+              - dgx-flash
+              - ollama-strong
+        steps:
+          mini-core/ai-antipattern-fix:
+            profile: ollama-strong
+          mini-core/supervise_fix:
+            profile: ollama-strong
+          mini-core/ai-antipattern-fix-parallel:
+            profile: ollama-strong
+          mini-core/supervise_fix_parallel:
+            profile: ollama-strong
+        internal_agents:
+          loop-judge:
+            profile: ollama-strong
+    # Ollama Cloud の月間利用上限到達（2026-11-14）に伴う暫定。強いモデルも含めて
+    # すべて DGX Spark（dgx-flash）に寄せる（takt-dash の interim-dgx と同じ形）。
+    # coder の ladder は1段だけなので、ワークフローの promotion は段を上げず
+    # 終端の段を維持する。Ollama Cloud の残高が回復したら ppd-interim-ollama に戻す
+    interim-dgx:
+      defaults:
+        profile: dgx-flash
+      targets:
+        personas:
+          coder:
+            ladder:
+              - dgx-flash
+        steps:
+          mini-core/ai-antipattern-fix:
+            profile: dgx-flash
+          mini-core/supervise_fix:
+            profile: dgx-flash
+          mini-core/ai-antipattern-fix-parallel:
+            profile: dgx-flash
+          mini-core/supervise_fix_parallel:
+            profile: dgx-flash
+        internal_agents:
+          loop-judge:
+            profile: dgx-flash
