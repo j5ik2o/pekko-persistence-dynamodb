@@ -1,0 +1,26 @@
+name: Tools Tests
+permissions:
+  contents: read
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'tools/**'
+  pull_request:
+    paths:
+      - 'tools/**'
+jobs:
+  tools-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install PyYAML
+        run: python3 -m pip install "PyYAML==6.0.2"
+      - name: Run the tools tests
+        run: python3 -m unittest discover -s tools/tests -v
