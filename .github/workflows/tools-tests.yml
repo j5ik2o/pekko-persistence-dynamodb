@@ -23,4 +23,33 @@ jobs:
       - name: Install PyYAML
         run: python3 -m pip install "PyYAML==6.0.2"
       - name: Run the tools tests
-        run: python3 -m unittest discover -s tools/tests -v
+        id: run-tests
+        run: |
+          set -o pipefail
+          python3 -m unittest discover -s tools/tests -v 2>&1 | tee "$RUNNER_TEMP/tools-tests.log"
+      - name: Check the test counts
+        if: steps.run-tests.outcome == 'success'
+        run: |
+          expected=180
+          summary=$(grep -E '^Ran [0-9]+ tests? in ' "$RUNNER_TEMP/tools-tests.log" | tail -n 1)
+          if [ -z "$summary" ]; then
+            echo "::error::Could not find the unittest summary line in the test output."
+            exit 1
+          fi
+          ran=$(printf '%s\n' "$summary" | sed -E 's/^Ran ([0-9]+) tests? in .*/\1/')
+          echo "Ran $ran tests (expected $expected)"
+          # unittest reports skips on the result line (`OK (skipped=N)`), not on the
+          # summary line, so scan the whole log for the skip marker.
+          if grep -qE 'skipped=|expected failures=|unexpected successes=' "$RUNNER_TEMP/tools-tests.log"; then
+            echo "::error::The run reported skips or unexpected outcomes."
+            grep -nE 'skipped=|expected failures=|unexpected successes=' "$RUNNER_TEMP/tools-tests.log"
+            echo "::error::Skipped tests mean PyYAML was not installed. A skipped run must fail."
+            exit 1
+          fi
+          if [ "$ran" -lt "$expected" ]; then
+            echo "::error::Ran $ran tests but expected at least $expected."
+            exit 1
+          fi
+          if [ "$ran" -ne "$expected" ]; then
+            echo "::warning::Expected $expected tests but ran $ran."
+          fi
