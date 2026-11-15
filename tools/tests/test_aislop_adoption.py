@@ -1,4 +1,4 @@
-"""Check the repository's adoption of the canonical aislop gate (j5ik2o/ci, tag aislop-check-v1).
+"""Check the repository's adoption of the canonical aislop gate (j5ik2o/ci, tag aislop-check-v3).
 
 The canonical checker and bootstrap live in j5ik2o/ci. This repository keeps
 only its own data (the accepted list) and a verbatim copy of the bootstrap.
@@ -20,10 +20,10 @@ PIN = SCRIPTS / "aislop-check-pin.json"
 ACCEPTED = SCRIPTS / "aislop-accepted.json"
 PACKAGE = ROOT / "package.json"
 
-PINNED_REF = "aislop-check-v1"
-PINNED_BOOTSTRAP_SHA256 = "7d72727e7f74b047b1095763ac0710ce3acb21deddcd60eb66bfd82acb58511c"
-PINNED_CHECKER_SHA256 = "02b80fcc0f03a305ab12e659942508597b3ff9bad678878ead32deede275976b"
-PINNED_TEST_SHA256 = "a4afe18535bc8312bc6f730a5ffbfc77e7faa39180979c6af0b0dd7231208b2e"
+PINNED_REF = "aislop-check-v3"
+PINNED_BOOTSTRAP_SHA256 = "04f58b167f7b94066f7afe294cd0289f160efa5a768818ef1aa343ab26ab54e5"
+PINNED_CHECKER_SHA256 = "c53e1b91dd45ead4bfdfd3dc4bbec794e2fd81b96857a90f7c5aaea414f8e30c"
+PINNED_TEST_SHA256 = "95dda876c46cea1ca3be454d82be31080ecf9ff1f387d0a06ea014e5bc1c9130"
 
 V2_HASHES = {
     "3cb6f3059008382927c73f10be2ea2cdede9c31ff4821f36c6cb074f9873453a",
@@ -75,6 +75,7 @@ class PinTest(unittest.TestCase):
         self.assertNotIn("aislop-check-v2", joined)
 
     def test_pin_covers_exactly_the_two_canonical_files(self):
+        self.assertEqual(sorted(self.pin), ["files", "ref"])
         self.assertEqual(
             sorted(self.pin["files"]),
             ["check-aislop.mjs", "check-aislop.test.mjs"],
@@ -85,16 +86,19 @@ class PinTest(unittest.TestCase):
         # the pin hash; a pin key the bootstrap does not request (or a missing key)
         # breaks the check.
         requested = set(
-            re.findall(r'fetchCanonicalFile\(\s*pin\.ref,\s*"([^"]+)"', self.bootstrap_source)
+            re.findall(r'fetchWithinBudget\("([^"]+)"\)', self.bootstrap_source)
         )
         self.assertEqual(requested, {"check-aislop.mjs", "check-aislop.test.mjs"})
         self.assertEqual(requested, set(self.pin["files"]))
 
     def test_bootstrap_passes_pin_files_to_the_fetcher(self):
         # Each fetched file must be verified against the pin hash for that name.
-        referenced = set(re.findall(r'pin\.files\["([^"]+)"\]', self.bootstrap_source))
-        self.assertEqual(referenced, {"check-aislop.mjs", "check-aislop.test.mjs"})
-        self.assertEqual(referenced, set(self.pin["files"]))
+        self.assertIsNotNone(
+            re.search(
+                r"fetchCanonicalFile\(\s*pin\.ref,\s*name,\s*pin\.files\[name\],",
+                self.bootstrap_source,
+            )
+        )
 
     def test_bootstrap_uses_the_pin_ref_for_the_fetch_url_and_cache(self):
         # The fetched URL and the cache path must both use pin.ref, so the pin's
@@ -157,33 +161,55 @@ class AcceptedListTest(unittest.TestCase):
 
 
 class WorkflowWiringTest(unittest.TestCase):
-    def verify_aislop_block(self, path):
-        text = path.read_text(encoding="utf-8")
-        start = text.index("  - name: verify_aislop")
+    def step_block(self, text, name):
+        start = text.index(f"  - name: {name}")
         rest = text[start + 1:]
         end = rest.find("\n  - name: ")
         return text[start:start + 1 + end] if end != -1 else text[start:]
 
+    def rule_pairs(self, block):
+        return re.findall(r"-\s*condition:\s*(.+?)\s*\n\s*next:\s*(\S+)", block)
+
     def test_each_workflow_runs_npm_ci_then_the_bootstrap(self):
         for path in WORKFLOWS:
             with self.subTest(workflow=path.name):
-                block = self.verify_aislop_block(path)
+                block = self.step_block(path.read_text(encoding="utf-8"), "verify_aislop")
                 self.assertIn("npm ci", block)
                 self.assertIn("node scripts/aislop-check-bootstrap.mjs check", block)
                 self.assertLess(
                     block.index("npm ci"),
                     block.index("node scripts/aislop-check-bootstrap.mjs check"),
                 )
+                self.assertIn("timeout_ms: 900000", block)
+                self.assertIn("output: json", block)
 
     def test_workflows_no_longer_call_the_local_gate(self):
         for path in WORKFLOWS:
             with self.subTest(workflow=path.name):
-                self.assertNotIn("aislop-gate.py", self.verify_aislop_block(path))
+                block = self.step_block(path.read_text(encoding="utf-8"), "verify_aislop")
+                self.assertNotIn("aislop-gate.py", block)
 
-    def test_workflow_reports_all_pass_false_on_failure(self):
+    def test_workflow_rules_map_each_condition_to_its_next_step(self):
         for path in WORKFLOWS:
             with self.subTest(workflow=path.name):
-                self.assertIn('"all_pass": false', self.verify_aislop_block(path))
+                text = path.read_text(encoding="utf-8")
+                block = self.step_block(text, "verify_aislop")
+                self.assertIn('"all_pass": false', block)
+                names = re.findall(r"^  - name: (\S+)$", text, re.MULTILINE)
+                predecessor = names[names.index("verify_aislop") - 1]
+                self.assertIn(
+                    (
+                        f"when(context.{predecessor}.result.json.all_pass == true)",
+                        "verify_aislop",
+                    ),
+                    self.rule_pairs(self.step_block(text, predecessor)),
+                )
+                aislop_pairs = self.rule_pairs(block)
+                self.assertIn(
+                    ("when(context.verify_aislop.result.json.all_pass == true)", "COMPLETE"),
+                    aislop_pairs,
+                )
+                self.assertIn(("when(true)", "develop"), aislop_pairs)
 
 
 class OldGateRemovalTest(unittest.TestCase):

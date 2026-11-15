@@ -19,6 +19,7 @@ PPD（pekko-persistence-dynamodb、サンプルの pekko-cqrs-es-example を含�
 
 - push の前に `sbt -batch lint` を通す。
 - 変更した tools スクリプトの該当テストを `python3 -m unittest` で実行する。
+- aislop の検査は `npm ci` の後に `npm run check:aislop` で行う（ワークフローの `verify_aislop` ステップ）。受け入れる指摘は `scripts/aislop-accepted.json` に理由付きで書く。aislop の版は `package.json` の `"aislop": "0.20.1"`、正本はタグ `aislop-check-v3` で固定されている（加藤の指示、2026-11-14）。
 - Docker が要るテスト（journal、snapshot、state の各スイート）は、変更が書き込み経路に触れるときに Docker を起動してから実行する。
 
 ## コードの規約
