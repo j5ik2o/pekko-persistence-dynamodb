@@ -82,6 +82,21 @@ steps:
         output: json
     rules:
       - condition: when(context.verify_tools.result.json.all_pass == true)
+        next: verify_aislop
+      - condition: when(true)
+        next: develop
+  - name: verify_aislop
+    description: aislop の正本チェッカーを取得して実行し、受け入れ一覧との一致を機械判定する
+    kind: system
+    system_inputs:
+      - type: command
+        as: result
+        command: |
+          if (npm ci && node scripts/aislop-check-bootstrap.mjs check) > .takt-verify-aislop.log 2>&1; then printf '{"all_pass": true}'; else printf '{"all_pass": false}'; fi
+        timeout_ms: 900000
+        output: json
+    rules:
+      - condition: when(context.verify_aislop.result.json.all_pass == true)
         next: COMPLETE
       - condition: when(true)
         next: develop
