@@ -1,0 +1,25 @@
+{
+  "engines": ["format", "code-quality", "ai-slop", "security"],
+  "missingToolsAllowed": {
+    "ruff": "Python のファイルも aislop の走査対象に含まれる（tools/ と tools/tests/ に .py がある）が、このリポジトリは ruff を導入しないため、format エンジンの Python の整形は実行されない。ruff で整形しない方針なので、その欠落を許可する。"
+  },
+  "accepted": [
+    {
+      "reason": "Sphinx テーマ（sphinx_rtd_theme）が同梱する CSS のクラスをテーマ側で参照しており、このリポジトリのソースからは参照が見えない。テーマ由来の誤検出なので受け入れる。",
+      "findings": [
+        {
+          "engine": "ai-slop",
+          "rule": "ai-slop/unused-css",
+          "file": "docs/src/sphinx/static/css/my_theme.css",
+          "message": "CSS class '.wy-nav-content' is defined but never referenced in the codebase"
+        },
+        {
+          "engine": "ai-slop",
+          "rule": "ai-slop/unused-css",
+          "file": "docs/src/sphinx/static/css/my_theme.css",
+          "message": "CSS class '.wy-table-responsive' is defined but never referenced in the codebase"
+        }
+      ]
+    }
+  ]
+}
