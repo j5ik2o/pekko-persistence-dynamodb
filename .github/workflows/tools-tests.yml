@@ -2,6 +2,7 @@ name: Tools Tests
 permissions:
   contents: read
 on:
+  workflow_call:
   workflow_dispatch:
   push:
     branches:
@@ -9,6 +10,8 @@ on:
     paths:
       - 'tools/**'
   pull_request:
+    branches-ignore:
+      - main
     paths:
       - 'tools/**'
 jobs:
