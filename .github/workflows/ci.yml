@@ -82,8 +82,10 @@ jobs:
       - name: sbt lint
         run: sbt -v lint
   test:
-    # Evaluate the full matrix even when lint fails or the Scala checks are out of scope.
-    if: always()
+    # Main PRs need every legacy check even when lint fails or Scala is out of scope.
+    if: >-
+      always() && (github.event_name != 'pull_request' || github.base_ref == 'main' ||
+      needs.changes.outputs.scala == 'true')
     timeout-minutes: 90
     strategy:
       fail-fast: false
