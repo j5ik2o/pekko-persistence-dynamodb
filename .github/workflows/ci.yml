@@ -55,7 +55,8 @@ jobs:
             git diff --no-renames --name-only -z "$BASE_SHA...$HEAD_SHA" -- > "$paths"
             while IFS= read -r -d '' path; do
               case "$path" in
-                *.scala|*.java|*.sbt|*.md|*.conf|*.allowlist|tools/*|project/build.properties|.tool-versions|.github/workflows/*)
+                *.scala|*.java|*.sbt|*.md|*.conf|*.allowlist|tools/*|project/build.properties|.tool-versions|.github/workflows/*|\
+                */src/main/resources/*|*/src/test/resources/*|schema-check/public-api-baseline.txt)
                   scala=true ;;
               esac
               case "$path" in
