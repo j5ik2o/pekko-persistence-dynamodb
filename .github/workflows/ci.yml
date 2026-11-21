@@ -37,8 +37,18 @@ jobs:
       scala: ${{ steps.select.outputs.scala }}
       tools: ${{ steps.select.outputs.tools }}
     steps:
-      - uses: actions/checkout@v5
+      - name: Checkout the event merge commit
+        id: event-merge
+        uses: actions/checkout@v5
         if: github.event_name == 'pull_request'
+        # The merge ref is a fallback if GitHub no longer serves the event commit.
+        continue-on-error: true
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@v5
+        if: github.event_name == 'pull_request' && steps.event-merge.outcome == 'failure'
         with:
           ref: refs/pull/${{ github.event.pull_request.number }}/merge
           fetch-depth: 0
