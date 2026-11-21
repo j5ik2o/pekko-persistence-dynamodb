@@ -2,13 +2,15 @@ name: Tools Tests
 permissions:
   contents: read
 on:
+  workflow_call:
+    inputs:
+      checkout_sha:
+        type: string
+        required: true
   workflow_dispatch:
   push:
     branches:
       - main
-    paths:
-      - 'tools/**'
-  pull_request:
     paths:
       - 'tools/**'
 jobs:
@@ -17,6 +19,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.checkout_sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
