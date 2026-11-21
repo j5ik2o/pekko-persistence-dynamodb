@@ -84,7 +84,7 @@ jobs:
   test:
     # Main PRs need every legacy check even when lint fails or Scala is out of scope.
     if: >-
-      always() && (github.event_name != 'pull_request' || github.base_ref == 'main' ||
+      !cancelled() && (github.event_name != 'pull_request' || github.base_ref == 'main' ||
       needs.changes.outputs.scala == 'true')
     timeout-minutes: 90
     strategy:
