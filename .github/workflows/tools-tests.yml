@@ -9,11 +9,6 @@ on:
       - main
     paths:
       - 'tools/**'
-  pull_request:
-    branches-ignore:
-      - main
-    paths:
-      - 'tools/**'
 jobs:
   tools-tests:
     runs-on: ubuntu-latest

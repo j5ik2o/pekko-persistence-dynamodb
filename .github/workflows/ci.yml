@@ -125,7 +125,7 @@ jobs:
         run: sbt -v ++${{ matrix.scala }} test
   tools:
     needs: changes
-    if: github.base_ref == 'main' && needs.changes.outputs.tools == 'true'
+    if: needs.changes.outputs.tools == 'true'
     uses: ./.github/workflows/tools-tests.yml
   required:
     name: ${{ github.base_ref == 'main' && 'PR CI Required' || 'CI Summary (other refs)' }}
@@ -156,11 +156,11 @@ jobs:
 
           # A matrix has one needs.result. Verify each named job in this run,
           # including results retained from earlier attempts when rerunning failed jobs.
-          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?filter=latest&per_page=100" |
-            jq -e --arg scala "$RUN_SCALA" --arg tools "$RUN_TOOLS" '
-              [.[].jobs[]] as $jobs |
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?filter=all&per_page=100" |
+            jq -e --arg scala "$RUN_SCALA" --arg tools "$RUN_TOOLS" --argjson attempt "$GITHUB_RUN_ATTEMPT" '
+              [.[].jobs[] | select(.run_attempt >= 1 and .run_attempt <= $attempt)] as $jobs |
               def passed($name; $step):
-                ([ $jobs[] | select(.name == $name) ]) as $matches |
+                ([ $jobs[] | select(.name == $name) ] | group_by(.run_attempt) | last // []) as $matches |
                 ($matches | length) == 1 and
                 ($matches[0] | .status == "completed" and .conclusion == "success" and
                   ([.steps[] | select(.name == $step and .conclusion == "success")] | length) == 1);
