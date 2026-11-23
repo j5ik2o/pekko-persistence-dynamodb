@@ -54,7 +54,7 @@ active_pids=''
 needles=("$worktree_arg")
 [[ $worktree_arg == "$worktree" ]] || needles+=("$worktree")
 for needle in "${needles[@]}"; do
-  if matching_pids=$(pgrep -f "$(escape_ere "$needle")" </dev/null); then
+  if matching_pids=$(exec pgrep -f "$(escape_ere "$needle")" </dev/null); then
     :
   else
     pgrep_status=$?
