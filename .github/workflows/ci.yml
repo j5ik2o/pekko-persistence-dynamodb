@@ -95,7 +95,7 @@ jobs:
                   scala=true ;;
               esac
               case "$path" in
-                tools/*) tools=true ;;
+                tools/*|.github/workflows/tools-tests.yml) tools=true ;;
               esac
             done < "$paths"
           fi
