@@ -143,6 +143,15 @@ final class JournalRowStore(
     }
   }
 
+  /** Writes the rows, each with its own conditional PutItem, at most `batchWriteLimit` at a time.
+    *
+    * A row is written only when its key holds no row or a row of the same persistence id. Two persistence ids can
+    * resolve to the same key (issue #1009), and an unconditional write would replace the event of the other id without
+    * a trace. Such a write fails with `JournalRowStoreException.KeyConflict` and writes nothing under that key; the
+    * other new events of the same write are deleted again (see `undoWrites`). A rewrite of an event of the same
+    * persistence id, such as a soft delete, is accepted. BatchWriteItem is not used, because it cannot carry a
+    * condition.
+    */
   def write(rows: Seq[JournalRow]): Source[Long, NotUsed] = {
     if (rows.isEmpty) {
       Source.single(0L)
@@ -154,43 +163,120 @@ final class JournalRowStore(
         val persistenceId = rows.head.persistenceId.asString
         val keys          = entries.map { case (_, key) => key.toString }
         Source.failed(WriteRejection.DuplicateJournalKeys(persistenceId, keys).toJournalHeadException)
-      } else if (entries.size == 1) {
-        val (row, key) = entries.head
-        run(Operation.Put(schema.table, rowCodec.encode(row, key)), writeBackoffConfig).map(expectWritten)
       } else {
-        Source(entries.grouped(batchWriteLimit).toVector)
-          .flatMapConcat { batch =>
-            runBatch(
-              Operation.BatchWrite(
-                schema.table,
-                batch.map { case (row, key) => rowCodec.encode(row, key) }.toVector,
-                Vector.empty
-              )
-            )
+        Source(entries.toVector)
+          .flatMapMerge(
+            batchWriteLimit,
+            { case (row, key) =>
+              run(
+                Operation.Put(schema.table, rowCodec.encode(row, key), Some(sameRowOrNone(row.persistenceId))),
+                writeBackoffConfig
+              ).map {
+                case OperationResult.ConditionRejected(_) => Left(row -> key)
+                case other                                => expectWritten(other); Right(row -> key)
+              }
+            }
+          )
+          .fold(Vector.empty[Either[(JournalRow, RowKey), (JournalRow, RowKey)]])(_ :+ _)
+          .flatMapConcat { results =>
+            results.collectFirst { case Left(rejected) => rejected } match {
+              case None => Source.single(results.size.toLong)
+              case Some((row, key)) =>
+                val written = results.collect { case Right(entry) => entry }
+                undoWrites(written)
+                  .flatMapConcat(_ => conflict(key)).flatMapConcat(other =>
+                    Source.failed(
+                      new JournalRowStoreException.KeyConflict(
+                        row.persistenceId.asString,
+                        row.sequenceNumber.value,
+                        other,
+                        key.values.entries.map { case (name, value) => s"${name.value}=$value" }.mkString(", ")
+                      )
+                    )
+                  )
+            }
           }
-          .map(expectWritten)
-          .fold(0L)(_ + _)
       }
     }
   }
 
+  /** Deletes the new events of a write that failed with a key conflict, so the failed write leaves no part of itself: a
+    * restarted actor must not replay the later events of a `persistAll` without the event that was refused. A row is
+    * deleted only while it still holds the message that this write put there. A rewrite of an existing event, such as a
+    * soft delete (`deleted = true`), is not undone, because deleting it would delete the event.
+    */
+  private def undoWrites(written: Vector[(JournalRow, RowKey)]): Source[Unit, NotUsed] =
+    Source(written.filterNot { case (row, _) => row.deleted })
+      .flatMapMerge(
+        batchWriteLimit,
+        { case (row, key) =>
+          val sameWrite = Condition.And(
+            Condition.And(samePersistenceId(row.persistenceId), sameSequenceNr(row.sequenceNumber)),
+            Condition.Compare(
+              Operand.Column(schema.message),
+              CompareOp.Eq,
+              Operand.Literal(DdbValue.Bin(row.message.toVector))
+            )
+          )
+          run(Operation.Delete(schema.table, key, Some(sameWrite)), writeBackoffConfig).map(_ => ())
+        }
+      )
+      .fold(())((_, _) => ())
+
+  private def sameSequenceNr(sequenceNumber: SequenceNumber): Condition =
+    Condition.Compare(
+      Operand.Column(schema.sequenceNr),
+      CompareOp.Eq,
+      Operand.Literal(DdbValue.Num(BigDecimal(sequenceNumber.value)))
+    )
+
+  /** Deletes the rows, each with its own conditional DeleteItem, at most `batchWriteLimit` at a time. A key that holds
+    * the row of another persistence id is left as it is, because that row is not the event to delete.
+    */
   def delete(keys: Seq[PersistenceIdWithSeqNr]): Source[Long, NotUsed] = {
     if (keys.isEmpty) {
       Source.single(0L)
-    } else if (keys.size == 1) {
-      val key = keys.head
-      run(Operation.Delete(schema.table, keyOf(key.persistenceId, key.sequenceNumber)), writeBackoffConfig)
-        .map(expectWritten)
     } else {
-      Source(keys.grouped(batchWriteLimit).toVector)
-        .flatMapConcat { batch =>
-          val deletes = batch.map(key => keyOf(key.persistenceId, key.sequenceNumber)).toVector
-          runBatch(Operation.BatchWrite(schema.table, Vector.empty, deletes))
-        }
-        .map(expectWritten)
+      Source(keys.toVector)
+        .flatMapMerge(
+          batchWriteLimit,
+          key =>
+            run(
+              Operation.Delete(
+                schema.table,
+                keyOf(key.persistenceId, key.sequenceNumber),
+                Some(sameRowOrNone(key.persistenceId))
+              ),
+              writeBackoffConfig
+            ).map {
+              case OperationResult.ConditionRejected(_) => 0L
+              case other                                => expectWritten(other)
+            }
+        )
         .fold(0L)(_ + _)
     }
   }
+
+  /** The key holds no row, or a row of `persistenceId`. */
+  private def sameRowOrNone(persistenceId: PersistenceId): Condition =
+    Condition.Or(Condition.AttributeNotExists(schema.partitionKey), samePersistenceId(persistenceId))
+
+  private def samePersistenceId(persistenceId: PersistenceId): Condition =
+    Condition.Compare(
+      Operand.Column(schema.persistenceId),
+      CompareOp.Eq,
+      Operand.Literal(DdbValue.Str(persistenceId.asString))
+    )
+
+  /** The persistence id of the row under `key` that refused a write, or none when it cannot be read. */
+  private def conflict(key: RowKey): Source[Option[String], NotUsed] =
+    run(Operation.Get(schema.table, key, consistentRead = true), readBackoffConfig)
+      .map {
+        case OperationResult.Item(item) =>
+          item.flatMap(_.get(schema.persistenceId)).collect { case DdbValue.Str(value) => value }
+        case _ => None
+      }
+      .recover { case _ => None }
 
   /** Rewrites one journal row. With `head.enabled`, the JournalHead event of the same sequence number is rewritten in
     * the same transaction, so the journal and the head stream cannot disagree about the event.
@@ -217,7 +303,7 @@ final class JournalRowStore(
         schema.table,
         keyOf(row.persistenceId, row.sequenceNumber),
         rowContentUpdates(row) :+ AttributeUpdate.Set(schema.deleted, DdbValue.Bool(row.deleted)),
-        Some(updatableRowCondition)
+        Some(updatableRowCondition(row.persistenceId))
       ),
       writeBackoffConfig
     ).flatMapConcat {
@@ -256,10 +342,12 @@ final class JournalRowStore(
     }
   }
 
-  /** The journal row exists and is not soft deleted. */
-  private val updatableRowCondition: Condition =
+  /** The journal row exists, is a row of `persistenceId`, and is not soft deleted. Another persistence id can resolve
+    * to the same key (issue #1009), and its row must not be changed.
+    */
+  private def updatableRowCondition(persistenceId: PersistenceId): Condition =
     Condition.And(
-      Condition.AttributeExists(schema.partitionKey),
+      Condition.And(Condition.AttributeExists(schema.partitionKey), samePersistenceId(persistenceId)),
       Condition.Not(
         Condition.Compare(Operand.Column(schema.deleted), CompareOp.Eq, Operand.Literal(DdbValue.Bool(true)))
       )
@@ -388,19 +476,23 @@ final class JournalRowStore(
           schema.table,
           keyOf(row.persistenceId, row.sequenceNumber),
           rowContentUpdates(row),
-          Some(updatableRowCondition)
+          Some(updatableRowCondition(row.persistenceId))
         ),
         TransactItem.Put(head.spec.table, newHeadItem, Some(headCondition))
       )
     )
 
-  /** The `deleted` flag of the journal row, or none when the row does not exist. */
+  /** The `deleted` flag of the journal row, or none when the row does not exist or is a row of another persistence id.
+    */
   private def readRowState(row: JournalRow): Source[Option[Boolean], NotUsed] =
     run(
       Operation.Get(schema.table, keyOf(row.persistenceId, row.sequenceNumber), consistentRead = true),
       readBackoffConfig
     ).map {
-      case OperationResult.Item(item) => item.map(_.get(schema.deleted).contains(DdbValue.Bool(true)))
+      case OperationResult.Item(item) =>
+        item
+          .filter(_.get(schema.persistenceId).contains(DdbValue.Str(row.persistenceId.asString)))
+          .map(_.get(schema.deleted).contains(DdbValue.Bool(true)))
       case other => throw new IllegalStateException(s"unexpected result for a journal row read: $other")
     }
 
@@ -554,43 +646,6 @@ final class JournalRowStore(
       case OperationResult.Written(count) => count.toLong
       case other                          => throw new IllegalStateException(s"unexpected result for a write: $other")
     }
-
-  /** DynamoDB can leave a batch write partly unprocessed, which is a transient condition that the adapter reports as
-    * `BatchWriteUnprocessedItemsException`. The write is idempotent, so the whole batch is sent again, at most
-    * `write-backoff.max-restarts` + 1 times. When the attempts are used up the failure is
-    * `JournalRowStoreException.BatchWriteRetriesExhausted`, which the caller can retry.
-    *
-    * The retry follows the same contract as every other write. When `write-backoff` is enabled, `run` restarts the
-    * batch after any failure with a backoff, as it did before, and that restart is the only retry, so the attempts are
-    * not multiplied. When it is disabled the batch is sent again at once, and only the unprocessed-items signal is
-    * retried, because retrying every failure would also retry a bug or a permanent rejection.
-    */
-  private def runBatch(operation: Operation.BatchWrite): Source[OperationResult, NotUsed] = {
-    val maxAttempts = math.max(0, writeBackoffConfig.maxRestarts) + 1
-
-    def exhausted(cause: BatchWriteUnprocessedItemsException): Throwable =
-      new JournalRowStoreException.BatchWriteRetriesExhausted(operation.table, maxAttempts, cause)
-
-    def attempt(attemptNo: Int): Source[OperationResult, NotUsed] =
-      adapter
-        .run(operation).recoverWithRetries(
-          1,
-          {
-            case _: BatchWriteUnprocessedItemsException if attemptNo < maxAttempts =>
-              attempt(attemptNo + 1)
-            case cause: BatchWriteUnprocessedItemsException =>
-              Source.failed(exhausted(cause))
-          }
-        )
-
-    if (writeBackoffConfig.enabled) {
-      run(operation, writeBackoffConfig).mapError { case cause: BatchWriteUnprocessedItemsException =>
-        exhausted(cause)
-      }
-    } else {
-      attempt(1)
-    }
-  }
 
   /** With `write-backoff` enabled the operation restarts after any failure, at most `max-restarts` times in total
     * however long each attempt takes.

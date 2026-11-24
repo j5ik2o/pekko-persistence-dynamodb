@@ -17,7 +17,7 @@ package com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.store
 
 import com.github.j5ik2o.pekko.persistence.dynamodb.ddb.TableName
 
-/** A snapshot store failure that a caller can recover from. */
+/** A snapshot store failure that a caller can tell apart from a failure of DynamoDB. */
 sealed abstract class SnapshotStoreException(message: String, cause: Throwable) extends RuntimeException(message, cause)
 
 object SnapshotStoreException {
@@ -27,5 +27,23 @@ object SnapshotStoreException {
       extends SnapshotStoreException(
         s"the batch write to ${table.value} failed after $attempts attempt(s)",
         cause
+      )
+
+  /** A save was refused because the key of the snapshot already holds a snapshot of another persistence id.
+    *
+    * The default key resolvers give two persistence ids the same key when they differ only after the second separator
+    * (issue #1009). Earlier releases overwrote the other snapshot; the save now fails and leaves it as it is. Retrying
+    * does not help: give the persistence id at most one separator, or see the compatibility note on the persistence id
+    * separator in the documentation.
+    */
+  final class KeyConflict(
+      val persistenceId: String,
+      val sequenceNr: Long,
+      val conflictingPersistenceId: Option[String],
+      val key: String
+  ) extends SnapshotStoreException(
+        s"persistenceId=[$persistenceId]: the snapshot at sequence number $sequenceNr was not saved because its key ($key) already holds a snapshot of ${conflictingPersistenceId
+            .fold("another persistence id")(id => s"persistenceId=[$id]")}. The two ids resolve to the same key; see https://github.com/j5ik2o/pekko-persistence-dynamodb/issues/1009 for the workaround.",
+        null
       )
 }
