@@ -66,6 +66,7 @@ jobs:
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_BASE_REF: ${{ github.event.pull_request.base.ref }}
           GH_TOKEN: ${{ github.token }}
         run: bash .github/scripts/pr-test-merge.sh
       - uses: actions/upload-artifact@v4
