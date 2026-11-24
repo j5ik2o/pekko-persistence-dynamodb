@@ -79,8 +79,27 @@ ThisBuild / publishMavenStyle := true
 ThisBuild / pomIncludeRepository := (_ => false)
 ThisBuild / credentials += Credentials(Path.userHome / ".sbt" / "1.0" / "sonatype_credentials")
 
+// MiMa compares each published module with this release on Maven Central.
+// Set it to the new version after each release is on Maven Central (docs/src/sphinx/release-notes.md).
+// A fixed value, not the previous dynver tag, so that a tag whose artifacts are not yet on Maven Central
+// and a checkout without tags compare with the same, resolvable release.
+val mimaPreviousVersion = "1.3.0"
+
+// Every published module uses these settings. Add an accepted incompatibility to
+// mimaBinaryIssueFilters of the module, with the comment that AGENTS.md requires.
+lazy val publishedModuleSettings = Seq(
+  mimaPreviousArtifacts := Set(organization.value %% name.value % mimaPreviousVersion)
+)
+
+// A project that is not published has no previous artifact to compare with.
+lazy val unpublishedModuleSettings = Seq(
+  publish / skip := true,
+  mimaFailOnNoPrevious := false
+)
+
 lazy val test = (project in file("test"))
   .settings(
+    publishedModuleSettings,
     name := "pekko-persistence-dynamodb-test",
     libraryDependencies ++= Seq(
       pekko.stream(pekkoVersion),
@@ -112,7 +131,7 @@ lazy val `schema-check` = (project in file("schema-check"))
   )
   .settings(
     name := "pekko-persistence-dynamodb-schema-check",
-    publish / skip := true,
+    unpublishedModuleSettings,
     libraryDependencies ++= Seq(
       scalatest.scalatest(scalaTest32Version) % Test
     ),
@@ -132,6 +151,7 @@ lazy val `schema-check` = (project in file("schema-check"))
 
 lazy val `base` = (project in file("base/base"))
   .settings(
+    publishedModuleSettings,
     name := "pekko-persistence-dynamodb-base",
     libraryDependencies ++= Seq(
       slf4j.api,
@@ -159,6 +179,7 @@ lazy val `base` = (project in file("base/base"))
 
 lazy val `base-v1` = (project in file("base/base-v1"))
   .settings(
+    publishedModuleSettings,
     name := "pekko-persistence-dynamodb-base-v1",
     libraryDependencies ++= Seq(
       slf4j.api,
@@ -171,6 +192,7 @@ lazy val `base-v1` = (project in file("base/base-v1"))
 
 lazy val `base-v2` = (project in file("base/base-v2"))
   .settings(
+    publishedModuleSettings,
     name := "pekko-persistence-dynamodb-base-v2",
     libraryDependencies ++= Seq(
       slf4j.api,
@@ -183,6 +205,7 @@ lazy val `base-v2` = (project in file("base/base-v2"))
 
 lazy val `journal-base` = (project in file("journal/journal-base"))
   .settings(
+    publishedModuleSettings,
     name := "pekko-persistence-dynamodb-journal-base",
     libraryDependencies ++= Seq(
       pekko.persistence(pekkoVersion),
@@ -197,6 +220,7 @@ lazy val `journal-base` = (project in file("journal/journal-base"))
 
 lazy val `journal-v1` = (project in file("journal/journal-v1"))
   .settings(
+    publishedModuleSettings,
     name := "pekko-persistence-dynamodb-journal-v1",
     libraryDependencies ++= Seq(
       pekko.persistence(pekkoVersion),
@@ -211,6 +235,7 @@ lazy val `journal-v1` = (project in file("journal/journal-v1"))
 
 lazy val `journal-v2` = (project in file("journal/journal-v2"))
   .settings(
+    publishedModuleSettings,
     name := "pekko-persistence-dynamodb-journal-v2",
     libraryDependencies ++= Seq(
       pekko.persistence(pekkoVersion),
@@ -231,6 +256,7 @@ lazy val `journal-v2` = (project in file("journal/journal-v2"))
 
 lazy val `snapshot-base` = (project in file("snapshot/snapshot-base"))
   .settings(
+    publishedModuleSettings,
     name := "pekko-persistence-dynamodb-snapshot-base",
     libraryDependencies ++= Seq(
       pekko.persistence(pekkoVersion),
@@ -240,6 +266,7 @@ lazy val `snapshot-base` = (project in file("snapshot/snapshot-base"))
 
 lazy val `snapshot-v1` = (project in file("snapshot/snapshot-v1"))
   .settings(
+    publishedModuleSettings,
     name := "pekko-persistence-dynamodb-snapshot-v1",
     libraryDependencies ++= Seq(
       pekko.persistence(pekkoVersion),
@@ -254,6 +281,7 @@ lazy val `snapshot-v1` = (project in file("snapshot/snapshot-v1"))
 
 lazy val `snapshot-v2` = (project in file("snapshot/snapshot-v2"))
   .settings(
+    publishedModuleSettings,
     name := "pekko-persistence-dynamodb-snapshot-v2",
     libraryDependencies ++= Seq(
       logback.classic  % Test,
@@ -268,6 +296,7 @@ lazy val `snapshot-v2` = (project in file("snapshot/snapshot-v2"))
 
 lazy val `state-base` = (project in file("state/state-base"))
   .settings(
+    publishedModuleSettings,
     name := "pekko-persistence-dynamodb-state-base",
     libraryDependencies ++= Seq(
       pekko.persistence(pekkoVersion),
@@ -282,6 +311,7 @@ lazy val `state-base` = (project in file("state/state-base"))
 
 lazy val `state-v1` = (project in file("state/state-v1"))
   .settings(
+    publishedModuleSettings,
     name := "pekko-persistence-dynamodb-state-v1",
     libraryDependencies ++= Seq(
       pekko.persistence(pekkoVersion),
@@ -301,6 +331,7 @@ lazy val `state-v1` = (project in file("state/state-v1"))
 
 lazy val `state-v2` = (project in file("state/state-v2"))
   .settings(
+    publishedModuleSettings,
     name := "pekko-persistence-dynamodb-state-v2",
     libraryDependencies ++= Seq(
       pekko.persistence(pekkoVersion),
@@ -321,7 +352,7 @@ lazy val `state-v2` = (project in file("state/state-v2"))
 lazy val benchmark = (project in file("benchmark"))
   .settings(
     name := "pekko-persistence-dynamodb-benchmark",
-    publish / skip := true,
+    unpublishedModuleSettings,
     libraryDependencies ++= Seq(
       logback.classic,
       slf4j.api,
@@ -336,7 +367,7 @@ lazy val benchmark = (project in file("benchmark"))
 lazy val example = (project in file("example"))
   .settings(
     name := "pekko-persistence-dynamodb-example",
-    publish / skip := true,
+    unpublishedModuleSettings,
     libraryDependencies ++= Seq(
       logback.classic,
       slf4j.api,
@@ -364,7 +395,7 @@ lazy val example = (project in file("example"))
 lazy val root = (project in file("."))
   .settings(
     name := "pekko-persistence-dynamodb-root",
-    publish / skip := true
+    unpublishedModuleSettings
   )
   .aggregate(
     test,
