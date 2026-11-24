@@ -20,7 +20,9 @@ PYYAML_REASON = (
 )
 
 CI = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "ci.yml"
-MATRIX = [f"test ({jdk}, {scala})" for jdk in (11, 17, 19) for scala in ("2.12.20", "2.13.16", "3.6.4")]
+SCALA_VERSIONS = ("2.12.20", "2.13.16", "3.6.4")
+MATRIX = [f"test ({jdk}, {scala})" for jdk in (11, 17, 19) for scala in SCALA_VERSIONS]
+MIMA = [f"mima ({scala})" for scala in SCALA_VERSIONS]
 
 
 def job(name, step, status="completed", conclusion="success", step_conclusion="success"):
@@ -30,6 +32,7 @@ def job(name, step, status="completed", conclusion="success", step_conclusion="s
 
 def passed_jobs():
     return [job("changes", "Select PR checks"), job("lint", "sbt lint")] + \
+        [job(name, "sbt mimaReportBinaryIssues") for name in MIMA] + \
         [job(name, "sbt test") for name in MATRIX]
 
 
@@ -68,7 +71,8 @@ class PrCiRequiredTests(unittest.TestCase):
         self.env = dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
                         CALLS=str(self.calls), READS=str(self.reads), GITHUB_REPOSITORY="owner/repo",
                         GITHUB_RUN_ID="1", GITHUB_RUN_ATTEMPT="1", CHANGES_RESULT="success",
-                        RUN_SCALA="true", LINT_RESULT="success", MATRIX_RESULT="success",
+                        RUN_SCALA="true", LINT_RESULT="success", MIMA_RESULT="success",
+                        MATRIX_RESULT="success",
                         RUN_TOOLS="false", TOOLS_RESULT="skipped")
 
     def answer(self, *reads):
@@ -159,6 +163,56 @@ class PrCiRequiredTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertEqual(reads, 0)
         self.assertIn("::error::Required jobs did not complete as expected.", result.stdout)
+
+    def test_fails_without_reading_the_api_when_mima_did_not_pass(self):
+        self.answer(passed_jobs())
+        for mima in ("failure", "cancelled", "skipped"):
+            with self.subTest(mima=mima):
+                self.calls.unlink(missing_ok=True)
+                result, reads = self.run_step(MIMA_RESULT=mima)
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(reads, 0)
+                self.assertIn("::error::Required jobs did not complete as expected.", result.stdout)
+
+    def test_fails_when_a_mima_job_failed(self):
+        failed = passed_jobs()
+        index = failed.index(job(MIMA[2], "sbt mimaReportBinaryIssues"))
+        failed[index] = job(MIMA[2], "sbt mimaReportBinaryIssues", conclusion="failure",
+                            step_conclusion="failure")
+        self.answer(failed)
+        result, reads = self.run_step()
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(reads, 6)
+        self.assertIn("::error::A required job or step did not succeed.", result.stdout)
+
+    def test_fails_when_a_mima_step_was_skipped(self):
+        skipped = passed_jobs()
+        index = skipped.index(job(MIMA[0], "sbt mimaReportBinaryIssues"))
+        skipped[index] = job(MIMA[0], "sbt mimaReportBinaryIssues", step_conclusion="skipped")
+        self.answer(skipped)
+        result, reads = self.run_step()
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(reads, 6)
+
+    def test_fails_when_a_mima_job_is_missing(self):
+        missing = [j for j in passed_jobs() if j["name"] != MIMA[1]]
+        self.answer(missing)
+        result, reads = self.run_step()
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(reads, 6)
+
+    def test_passes_without_lint_and_mima_when_scala_is_out_of_scope(self):
+        self.answer([job("changes", "Select PR checks")] +
+                    [job(name, "Validate CI selection") for name in MATRIX])
+        result, reads = self.run_step(RUN_SCALA="false", LINT_RESULT="skipped", MIMA_RESULT="skipped")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(reads, 1)
+
+    def test_fails_when_scala_is_out_of_scope_but_mima_ran(self):
+        self.answer(passed_jobs())
+        result, reads = self.run_step(RUN_SCALA="false", LINT_RESULT="skipped", MIMA_RESULT="success")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(reads, 0)
 
 
 if __name__ == "__main__":

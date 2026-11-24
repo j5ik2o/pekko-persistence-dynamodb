@@ -29,7 +29,7 @@ def verify_steps():
     """The verify step of each job that checks out the test merge."""
     ci = yaml.safe_load((ROOT / ".github" / "workflows" / "ci.yml").read_text())
     tools = yaml.safe_load((ROOT / ".github" / "workflows" / "tools-tests.yml").read_text())
-    jobs = {"lint": ci["jobs"]["lint"], "test": ci["jobs"]["test"],
+    jobs = {"lint": ci["jobs"]["lint"], "mima": ci["jobs"]["mima"], "test": ci["jobs"]["test"],
             "tools-tests": tools["jobs"]["tools-tests"]}
     return {name: next(step for step in job["steps"] if step.get("name") == VERIFY_STEP)
             for name, job in jobs.items()}

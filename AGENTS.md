@@ -101,6 +101,23 @@ A published module's POM is what a user resolves. An `.exclude(...)` on a depend
 
 The script exits 0 when every step passes and 1 at the first failure. A pass covers only the suite you named. Run it again with another suite when other modules use the excluded code path.
 
+## Keep binary compatibility
+
+MiMa compares each of the 13 published modules with the release that `mimaPreviousVersion` in `build.sbt` names. The `mima` job of `.github/workflows/ci.yml` runs `mimaReportBinaryIssues` once for each of Scala 2.12, 2.13, and 3, and `PR CI Required` fails when one of the three fails. Run `sbt -batch mimaReportBinaryIssues` before you push a change to the main sources of a published module, and add `++2.12.20` or `++3.6.4` for the other versions. It starts no Docker container. A published module uses `publishedModuleSettings`, and a project that is not published uses `unpublishedModuleSettings`. A new published module has no artifact to compare with until `mimaPreviousVersion` names a release that contains it, so set `mimaPreviousArtifacts := Set.empty` and `mimaFailOnNoPrevious := false` in it until then.
+
+Accept an incompatibility only on purpose. Add a `ProblemFilters.exclude[...]` entry to `mimaBinaryIssueFilters` of the module in `build.sbt`, with `import com.typesafe.tools.mima.core._` at the top of the file. Write a comment directly above each entry that names the pull request, the member that it changes, and why users can accept the break, such as "only test code calls it" or "the class is internal". A filter without that comment does not pass review. Describe the same break in the release notes of the next version. When `mimaPreviousVersion` moves to a release that contains the change, remove the entry, because the new baseline no longer reports it.
+
+```scala
+lazy val test = (project in file("test"))
+  .settings(
+    publishedModuleSettings,
+    // #1234 removes DynamoDBContainerHelper.createLegacySnapshotTable, which only test code calls.
+    // Users compile their tests again with the new version.
+    mimaBinaryIssueFilters += ProblemFilters.exclude[DirectMissingMethodProblem](
+      "com.github.j5ik2o.pekko.persistence.dynamodb.utils.DynamoDBContainerHelper.createLegacySnapshotTable"
+    ),
+```
+
 ## Build matrix
 
 Read `.github/workflows/ci.yml` for the current matrix. At the time of writing it is:
@@ -150,6 +167,7 @@ sbt -batch "++2.12.20 schema-check/Test/compile"
 sbt -batch "++3.6.4 schema-check/Test/compile"
 sbt -batch lint
 sbt -batch checkModuleBoundaries
+sbt -batch mimaReportBinaryIssues
 ```
 
 Each of these starts no Docker container:
