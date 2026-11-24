@@ -17,6 +17,10 @@ package com.github.j5ik2o.pekko.persistence.dynamodb.snapshot
 
 import com.github.j5ik2o.pekko.persistence.dynamodb.model.PersistenceId
 
+/** Splits a persistence id as releases up to 1.2.0 did for their keys: `String.split`, which reads the separator as a
+  * regular expression, with `body` as the second element only. The default key resolvers no longer use it, because ids
+  * that differ only after the second separator have the same `prefix` and `body` (issue #1009).
+  */
 final class PersistenceIdOps(self: PersistenceId, separator: String) {
   private def value                       = self.asString
   def hasHyphen: Boolean                  = value.contains(separator)

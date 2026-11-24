@@ -15,7 +15,7 @@
  */
 package com.github.j5ik2o.pekko.persistence.dynamodb.journal
 
-import com.github.j5ik2o.pekko.persistence.dynamodb.model.{ PersistenceId, SequenceNumber }
+import com.github.j5ik2o.pekko.persistence.dynamodb.model.{ PersistenceId, PersistenceIdKeyParts, SequenceNumber }
 import net.ceedubs.ficus.Ficus._
 
 import java.nio.charset.StandardCharsets
@@ -57,6 +57,22 @@ object PartitionKeyResolverProvider {
 
 object PartitionKeyResolver {
 
+  private def persistenceIdBased(
+      persistenceId: PersistenceId,
+      modelName: Option[String],
+      shardCount: Int
+  ): PartitionKey = {
+    val md5   = MessageDigest.getInstance("MD5")
+    val df    = new DecimalFormat("0000000000000000000000000000000000000000")
+    val bytes = persistenceId.asString.reverse.getBytes(StandardCharsets.UTF_8)
+    val hash  = BigInt(md5.digest(bytes))
+    val mod   = (hash.abs % shardCount) + 1
+    modelName match {
+      case Some(name) => PartitionKey("%s-%s".format(name, df.format(mod)))
+      case None       => PartitionKey(df.format(mod)) // fallback
+    }
+  }
+
   final class SequenceNumberBased(pluginContext: JournalPluginContext) extends PartitionKeyResolver {
     import pluginContext._
 
@@ -77,21 +93,21 @@ object PartitionKeyResolver {
       pluginConfig.sourceConfig.getAs[String]("persistence-id-separator").getOrElse(PersistenceId.Separator)
 
     // ${persistenceId.prefix}-${md5(persistenceId.reverse) % shardCount}
-    override def resolve(persistenceId: PersistenceId, sequenceNumber: SequenceNumber): PartitionKey = {
-      val md5          = MessageDigest.getInstance("MD5")
-      val df           = new DecimalFormat("0000000000000000000000000000000000000000")
-      val bytes        = persistenceId.asString.reverse.getBytes(StandardCharsets.UTF_8)
-      val hash         = BigInt(md5.digest(bytes))
-      val mod          = (hash.abs % pluginConfig.shardCount) + 1
-      val modelNameOpt = persistenceId.prefix
-      val pkey = modelNameOpt match {
-        case Some(modelName) =>
-          "%s-%s".format(modelName, df.format(mod))
-        case None => // fallback
-          df.format(mod)
-      }
-      PartitionKey(pkey)
-    }
+    // The prefix is the text before the first separator, which is matched as plain text.
+    override def resolve(persistenceId: PersistenceId, sequenceNumber: SequenceNumber): PartitionKey =
+      persistenceIdBased(
+        persistenceId,
+        PersistenceIdKeyParts.split(persistenceId, separator).map(_._1),
+        pluginConfig.shardCount
+      )
+
+    /** The partition key that releases up to 1.2.0 gave the row, or none when they could not write a row for the id.
+      * Rows they wrote keep that key until they are deleted.
+      */
+    private[journal] def resolveBeforeFix(persistenceId: PersistenceId): Option[PartitionKey] =
+      PersistenceIdKeyParts
+        .prefixBeforeFix(persistenceId, separator)
+        .map(persistenceIdBased(persistenceId, _, pluginConfig.shardCount))
 
   }
 

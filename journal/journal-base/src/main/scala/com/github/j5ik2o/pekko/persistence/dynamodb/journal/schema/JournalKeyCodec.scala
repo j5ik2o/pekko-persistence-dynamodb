@@ -26,10 +26,46 @@ final class JournalKeyCodec(schema: JournalSchema) {
       sequenceNumber: SequenceNumber,
       partitionKeyResolver: PartitionKeyResolver,
       sortKeyResolver: SortKeyResolver
-  ): Either[KeyError, RowKey] = schema.tableSpec.keyOf(
-    AttributeMap.of(
-      schema.partitionKey -> DdbValue.Str(partitionKeyResolver.resolve(persistenceId, sequenceNumber).asString),
-      schema.sortKey      -> DdbValue.Str(sortKeyResolver.resolve(persistenceId, sequenceNumber).asString)
+  ): Either[KeyError, RowKey] =
+    rowKey(
+      partitionKeyResolver.resolve(persistenceId, sequenceNumber).asString,
+      sortKeyResolver.resolve(persistenceId, sequenceNumber).asString
     )
-  )
+
+  /** The key that releases up to 1.2.0 gave the row, when it differs from `keyOf`.
+    *
+    * Those releases split the persistence id of the default resolvers differently (issue #1009), so a row they wrote
+    * can be stored under another key than the one `keyOf` gives now. It is none when the key did not change, when the
+    * resolvers are not the default ones, and when those releases could not write a row for the id. The key can hold the
+    * row of another persistence id that shared it, so an operation on it must check the persistence id and the sequence
+    * number of the row.
+    */
+  private[journal] def keyBeforeFixOf(
+      persistenceId: PersistenceId,
+      sequenceNumber: SequenceNumber,
+      partitionKeyResolver: PartitionKeyResolver,
+      sortKeyResolver: SortKeyResolver
+  ): Option[RowKey] = {
+    val partitionKey = partitionKeyResolver.resolve(persistenceId, sequenceNumber)
+    val sortKey      = sortKeyResolver.resolve(persistenceId, sequenceNumber)
+    val partitionKeyBeforeFix = partitionKeyResolver match {
+      case resolver: PartitionKeyResolver.PersistenceIdBased => resolver.resolveBeforeFix(persistenceId)
+      case _                                                 => Some(partitionKey)
+    }
+    val sortKeyBeforeFix = sortKeyResolver match {
+      case resolver: SortKeyResolver.PersistenceIdWithSeqNr => resolver.resolveBeforeFix(persistenceId, sequenceNumber)
+      case _                                                => Some(sortKey)
+    }
+    for {
+      oldPartitionKey <- partitionKeyBeforeFix
+      oldSortKey <- sortKeyBeforeFix
+      if oldPartitionKey != partitionKey || oldSortKey != sortKey
+      key <- rowKey(oldPartitionKey.asString, oldSortKey.asString).toOption
+    } yield key
+  }
+
+  private def rowKey(partitionKey: String, sortKey: String): Either[KeyError, RowKey] =
+    schema.tableSpec.keyOf(
+      AttributeMap.of(schema.partitionKey -> DdbValue.Str(partitionKey), schema.sortKey -> DdbValue.Str(sortKey))
+    )
 }

@@ -13,6 +13,33 @@ Replace `v1.2.0` and `<SHA>` with the approved version and commit. If the lookup
 
 ## Unreleased
 
+### Persistence ids with two or more separators no longer share a journal or snapshot key
+
+The default `PersistenceIdBased` partition key and `PersistenceIdWithSeqNr` sort key of the journal and the snapshot
+store now split the `persistenceId` at its first separator, and match the separator as plain text (#1009). Releases up
+to 1.2.0 kept only the text between the first and the second separator, so `persistenceId`s that differed only after
+the second separator could share a key. With the JournalHead disabled, one `persistenceId` silently replaced the
+journal rows of the other, with the JournalHead enabled the later one failed with `DuplicateJournalEventsException`,
+and snapshots were replaced in both cases. With `persistence-id-separator = "|"`, a single separator was enough.
+
+The key changes for a `persistenceId` that contains the separator two or more times, and with a separator that is a
+regular expression metacharacter such as `|`, for every `persistenceId` that contains it. A `persistenceId` that ends
+with the separator, and every `persistenceId` with the separator `.`, failed with `ArrayIndexOutOfBoundsException`
+before and can now be written. Other `persistenceId`s keep their key.
+
+No migration and no configuration change is needed. Rows written by earlier releases keep their key, and replay, the
+highest sequence number, deletes, in-place updates, and snapshot loads and deletes find them there. For a
+`persistenceId` whose key changed, a delete, an in-place update, and a snapshot save send one more conditional request
+per event or snapshot. Events and snapshots that were already replaced cannot be restored. A release up to 1.2.0 still
+replays the rows written by this release, but its deletes do not reach them, so upgrade every node before you delete
+events. The compatibility note in {ref}`Persistence id separator <persistence-id-separator>` lists the affected
+`persistenceId`s and how to find the ones that shared a key.
+
+An in-place update and a delete through the journal row driver could also change the row of another `persistenceId`
+that shared the key. Under an old key, they now change a row only when its `persistence-id` and `sequence-nr` match.
+
+The state plugin keeps its keys: its `skey` is the whole `persistenceId`, so two `persistenceId`s never shared a key.
+
 ### JournalHead migration dry-run reports source details
 
 The dry-run now defines a raised item as a journal or snapshot sequence ahead of the head. This can indicate writes

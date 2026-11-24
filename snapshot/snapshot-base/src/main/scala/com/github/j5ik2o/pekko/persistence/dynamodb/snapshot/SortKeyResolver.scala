@@ -15,7 +15,7 @@
  */
 package com.github.j5ik2o.pekko.persistence.dynamodb.snapshot
 
-import com.github.j5ik2o.pekko.persistence.dynamodb.model.{ PersistenceId, SequenceNumber }
+import com.github.j5ik2o.pekko.persistence.dynamodb.model.{ PersistenceId, PersistenceIdKeyParts, SequenceNumber }
 import net.ceedubs.ficus.Ficus._
 
 final case class SortKey(value: String) {
@@ -54,20 +54,30 @@ object SortKeyResolverProvider {
 
 object SortKeyResolver {
 
+  /** `${the text after the first separator}-${sequenceNumber}`, or `${persistenceId}-${sequenceNumber}` when the id
+    * does not contain the separator. The separator is matched as plain text, so two different ids never share a key.
+    */
   private[snapshot] def persistenceIdWithSeqNrSKey(
       persistenceId: PersistenceId,
       sequenceNumber: SequenceNumber,
       separator: String
-  ): String = {
-    val bodyOpt = new PersistenceIdOps(persistenceId, separator).body
-    val seq     = sequenceNumber.value
-    bodyOpt match {
-      case Some(pid) =>
-        "%s-%019d".format(pid, seq)
-      case None =>
-        "%s-%019d".format(persistenceId.asString, seq)
-    }
-  }
+  ): String =
+    withSeqNr(PersistenceIdKeyParts.split(persistenceId, separator).fold(persistenceId.asString)(_._2), sequenceNumber)
+
+  /** The sort key that releases up to 1.2.0 gave the row: the second element of a split that reads the separator as a
+    * regular expression. It is none when they could not write a row for the id.
+    */
+  private[snapshot] def persistenceIdWithSeqNrSKeyBeforeFix(
+      persistenceId: PersistenceId,
+      sequenceNumber: SequenceNumber,
+      separator: String
+  ): Option[String] =
+    PersistenceIdKeyParts
+      .bodyBeforeFix(persistenceId, separator)
+      .map(body => withSeqNr(body.getOrElse(persistenceId.asString), sequenceNumber))
+
+  private def withSeqNr(body: String, sequenceNumber: SequenceNumber): String =
+    "%s-%019d".format(body, sequenceNumber.value)
 
   final class SeqNr extends SortKeyResolver {
 
@@ -87,10 +97,17 @@ object SortKeyResolver {
     override def separator: String =
       pluginConfig.sourceConfig.getAs[String]("persistence-id-separator").getOrElse(PersistenceId.Separator)
 
-    // ${persistenceId.bodyOrFullPersistenceId}-${sequenceNumber}
+    // ${the text after the first separator, or the whole persistenceId}-${sequenceNumber}
     override def resolve(persistenceId: PersistenceId, sequenceNumber: SequenceNumber): SortKey = {
       SortKey(persistenceIdWithSeqNrSKey(persistenceId, sequenceNumber, separator))
     }
+
+    /** The sort key that releases up to 1.2.0 gave the row, or none when they could not write a row for the id. */
+    private[snapshot] def resolveBeforeFix(
+        persistenceId: PersistenceId,
+        sequenceNumber: SequenceNumber
+    ): Option[SortKey] =
+      persistenceIdWithSeqNrSKeyBeforeFix(persistenceId, sequenceNumber, separator).map(SortKey)
 
   }
 

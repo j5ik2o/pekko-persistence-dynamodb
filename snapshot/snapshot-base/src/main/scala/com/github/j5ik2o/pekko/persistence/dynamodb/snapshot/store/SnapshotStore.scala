@@ -40,8 +40,16 @@ final class SnapshotStore(
   private val schema: SnapshotSchema       = codec.schema
   private val tableSpec: SnapshotTableSpec = codec.tableSpec
 
+  /** Writes the snapshot. Releases up to 1.2.0 may have stored a snapshot of the same sequence number under another
+    * key, and that copy is deleted after the write, so a load cannot return the older snapshot.
+    */
   def save(row: SnapshotRow): Source[Unit, NotUsed] =
-    written(Operation.Put(codec.key(row).table, codec.encode(row)))
+    written(Operation.Put(codec.key(row).table, codec.encode(row))).flatMapConcat { _ =>
+      tableSpec.keyBeforeFixOf(row.persistenceId, row.sequenceNumber) match {
+        case None         => Source.single(())
+        case Some(oldKey) => deleteRowBeforeFix(oldKey, row.persistenceId, row.sequenceNumber)
+      }
+    }
 
   def latest(persistenceId: PersistenceId): Source[Option[SnapshotRow], NotUsed] =
     first(query(persistenceId, SequenceNumber.MinValue, SequenceNumber.MaxValue, None, Some(1), scanForward = false))
@@ -137,15 +145,49 @@ final class SnapshotStore(
       }
       .fold(Option.empty[SnapshotRow]) { (_, row) => row }
 
+  /** Deletes the rows that a query of the persistence id returned. A row is deleted under the key it is stored under. A
+    * row that releases up to 1.2.0 stored under another key than the current one is deleted on its own, under the
+    * condition that it is still the snapshot that was read.
+    */
   private def deleteRows(rows: Source[AttributeMap, NotUsed]): Source[Unit, NotUsed] =
     rows
-      .map(codec.decode)
+      .map(values => codec.decode(values).map(row => (row, codec.key(row), tableSpec.table.keyOf(values))))
       .flatMapConcat {
-        case Right(row)  => Source.single(codec.key(row))
+        case Right((row, key, Right(storedKey))) if storedKey != key =>
+          deleteRowBeforeFix(storedKey, row.persistenceId, row.sequenceNumber).map(_ => Option.empty[RowKey])
+        case Right((_, key, _)) => Source.single(Some(key))
         case Left(error) => Source.failed(new IllegalArgumentException(s"cannot decode the snapshot row: $error"))
       }
+      .collect { case Some(key) => key }
       .grouped(batchWriteLimit)
       .flatMapConcat(keys => deleteBatch(keys.toVector))
+
+  /** Deletes the snapshot under a key of a release up to 1.2.0, when it is still the snapshot `sequenceNumber` of
+    * `persistenceId`. The key can hold the snapshot of another persistence id that shared it, and that row is left as
+    * it is.
+    */
+  private def deleteRowBeforeFix(
+      key: RowKey,
+      persistenceId: PersistenceId,
+      sequenceNumber: SequenceNumber
+  ): Source[Unit, NotUsed] = {
+    val sameRow = Condition.And(
+      Condition.Compare(
+        Operand.Column(schema.persistenceId),
+        CompareOp.Eq,
+        Operand.Literal(DdbValue.Str(persistenceId.asString))
+      ),
+      Condition.Compare(
+        Operand.Column(schema.sequenceNumber),
+        CompareOp.Eq,
+        Operand.Literal(number(sequenceNumber.value))
+      )
+    )
+    adapter.run(Operation.Delete(tableSpec.table.table, key, Some(sameRow))).flatMapConcat {
+      case OperationResult.Written(_) | OperationResult.ConditionRejected(_) => Source.single(())
+      case other => Source.failed(new IllegalStateException(s"unexpected write result: $other"))
+    }
+  }
 
   /** DynamoDB can leave a batch write partly unprocessed. The adapter reports that transient condition as a
     * `BatchWriteUnprocessedItemsException`, so retry only that failure. Other failures propagate unchanged, because a

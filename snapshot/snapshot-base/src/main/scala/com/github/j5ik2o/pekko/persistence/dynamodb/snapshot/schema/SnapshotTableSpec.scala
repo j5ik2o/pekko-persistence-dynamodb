@@ -51,6 +51,39 @@ final case class SnapshotTableSpec(
         )
     }
 
+  /** The key that releases up to 1.2.0 gave the row, when it differs from `keyOf`.
+    *
+    * Those releases split the persistence id of the default resolvers differently (issue #1009), so a snapshot they
+    * wrote can be stored under another key than the one `keyOf` gives now. It is none when the key did not change, when
+    * the resolvers are not the default ones, and when those releases could not write a row for the id. The key can hold
+    * the snapshot of another persistence id that shared it, so an operation on it must check the persistence id and the
+    * sequence number of the row.
+    */
+  private[snapshot] def keyBeforeFixOf(persistenceId: PersistenceId, sequenceNumber: SequenceNumber): Option[RowKey] =
+    keyDerivation match {
+      case SnapshotKeyDerivation.Identity => None
+      case SnapshotKeyDerivation.Sharded(partitionKeyResolver, sortKeyResolver) =>
+        val partitionKey = partitionKeyResolver.resolve(persistenceId, sequenceNumber)
+        val sortKey      = sortKeyResolver.resolve(persistenceId, sequenceNumber)
+        val partitionKeyBeforeFix = partitionKeyResolver match {
+          case resolver: PartitionKeyResolver.PersistenceIdBased => resolver.resolveBeforeFix(persistenceId)
+          case _                                                 => Some(partitionKey)
+        }
+        val sortKeyBeforeFix = sortKeyResolver match {
+          case resolver: SortKeyResolver.PersistenceIdWithSeqNr =>
+            resolver.resolveBeforeFix(persistenceId, sequenceNumber)
+          case _ => Some(sortKey)
+        }
+        for {
+          oldPartitionKey <- partitionKeyBeforeFix
+          oldSortKey <- sortKeyBeforeFix
+          if oldPartitionKey != partitionKey || oldSortKey != sortKey
+        } yield RowKey(
+          table.table,
+          keyFrom(DdbValue.Str(oldPartitionKey.asString), DdbValue.Str(oldSortKey.asString))
+        )
+    }
+
   private def keyFrom(partitionKey: DdbValue, sortKey: DdbValue): AttributeMap = {
     val partitionEntry = Vector(table.primaryKey.hash -> partitionKey)
     val sortEntry      = table.primaryKey.range.toVector.map(_ -> sortKey)
