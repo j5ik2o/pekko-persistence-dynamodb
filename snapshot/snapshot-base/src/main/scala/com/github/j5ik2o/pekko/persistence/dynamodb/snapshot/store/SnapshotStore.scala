@@ -210,8 +210,11 @@ final class SnapshotStore(
   /** Deletes the rows, each with its own conditional DeleteItem, at most `batchWriteLimit` at a time.
     *
     * A row that a release up to 1.3.0 stored under another key than the current one (see
-    * `SnapshotTableSpec.legacyKeyOf`) is deleted under that key, while it is still the snapshot that was read. Any
-    * other row is deleted under its current key.
+    * `SnapshotTableSpec.legacyKeyOf`) is deleted under that key, while it is still the snapshot that was read, and then
+    * under the current key, while it is the same snapshot with the same `created`. The key migration tool can move the
+    * row to the current key between the query and the delete (issue #1014); the second delete removes the moved row and
+    * leaves a snapshot that was saved again at the same sequence number. Any other row is deleted under its current
+    * key.
     */
   private def deleteRows(rows: Source[AttributeMap, NotUsed]): Source[Unit, NotUsed] =
     rows
@@ -219,11 +222,18 @@ final class SnapshotStore(
       .flatMapConcat {
         case Right((row, storedKey))
             if storedKey.isDefined && tableSpec.legacyKeyOf(row.persistenceId, row.sequenceNumber) == storedKey =>
-          Source.single(storedKey.get -> sameSnapshot(row.persistenceId, row.sequenceNumber))
-        case Right((row, _)) => Source.single(codec.key(row) -> sameRowOrNone(row.persistenceId))
+          val moved = Condition.And(
+            sameSnapshot(row.persistenceId, row.sequenceNumber),
+            Condition.Compare(Operand.Column(schema.created), CompareOp.Eq, Operand.Literal(number(row.created)))
+          )
+          Source.single(
+            deleteRow(storedKey.get, sameSnapshot(row.persistenceId, row.sequenceNumber))
+              .flatMapConcat(_ => deleteRow(codec.key(row), moved))
+          )
+        case Right((row, _)) => Source.single(deleteRow(codec.key(row), sameRowOrNone(row.persistenceId)))
         case Left(error)     => Source.failed(new IllegalArgumentException(s"cannot decode the snapshot row: $error"))
       }
-      .flatMapMerge(batchWriteLimit, { case (key, condition) => deleteRow(key, condition) })
+      .flatMapMerge(batchWriteLimit, identity)
 
   /** Deletes the row under `key` when `condition` holds. A key that holds the snapshot of another persistence id (issue
     * #1009) is left as it is, because that row is not the snapshot to delete.

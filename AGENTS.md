@@ -14,13 +14,13 @@ Every module is an sbt project in `build.sbt`. The `Depends on` column lists the
 | `schema-check` | `schema-check/` | Repository checks that read files instead of running the product code | `base`; `journal-base`, `snapshot-base`, and `state-base` (test only) |
 | `base` | `base/base/` | Configuration parsing, the model wrappers, metrics and trace interfaces, and the client-neutral `PluginContext` | `test` (test only) |
 | `base-v1` | `base/base-v1/` | AWS SDK v1 client builders and client factories, including DAX | `base` |
-| `base-v2` | `base/base-v2/` | AWS SDK v2 client builders and client factories, including DAX | `base` |
+| `base-v2` | `base/base-v2/` | AWS SDK v2 client builders and client factories, including DAX, and the key migration engine (`KeyMigration`) | `base` |
 | `journal-base` | `journal/journal-base/` | The journal plugin, its config, the shared `JournalRowStore`, the row codec and schema, the serializer, and the JournalHead types and validation | `base` |
 | `journal-v1` | `journal/journal-v1/` | The v1 binding: the deprecated journal row drivers and their factories | `journal-base`, `base-v1`, `snapshot-base` (test only) |
-| `journal-v2` | `journal/journal-v2/` | The v2 binding: the deprecated journal row drivers and their factories, and the JournalHead migration tool | `journal-base`, `base-v2`, `snapshot-base` and `snapshot-v2` (test only) |
+| `journal-v2` | `journal/journal-v2/` | The v2 binding: the deprecated journal row drivers and their factories, the JournalHead migration tool, and the journal key migration tool (`JournalKeyMigration`) | `journal-base`, `base-v2`, `snapshot-base` and `snapshot-v2` (test only) |
 | `snapshot-base` | `snapshot/snapshot-base/` | The shared `SnapshotStore`, the row codec and schema, the config, and the key resolvers | `base` |
 | `snapshot-v1` | `snapshot/snapshot-v1/` | The v1 binding: the deprecated snapshot DAO and factory | `snapshot-base`, `base-v1` |
-| `snapshot-v2` | `snapshot/snapshot-v2/` | The v2 binding: the deprecated snapshot DAO and factory | `snapshot-base`, `base-v2` |
+| `snapshot-v2` | `snapshot/snapshot-v2/` | The v2 binding: the deprecated snapshot DAO and factory, and the snapshot key migration tool (`SnapshotKeyMigration`) | `snapshot-base`, `base-v2` |
 | `state-base` | `state/state-base/` | The shared `StateStore`, the row codec and schema, the config, and the key resolvers | `base` |
 | `state-v1` | `state/state-v1/` | The v1 binding: the deprecated durable state store and factory | `state-base`, `base-v1` |
 | `state-v2` | `state/state-v2/` | The v2 binding: the deprecated durable state store and factory | `state-base`, `base-v2` |
@@ -136,22 +136,23 @@ The README still claims Java 1.8+. CI tests Java 11, 17, and 19. Treat CI as the
 
 ## Docker cost
 
-30 concrete test classes extend `DynamoDBContainerHelper`, directly or through `BaseCounterSpec`, and each one starts an `amazon/dynamodb-local` container on a temporary port with an in-memory database. Each name below works as a `testOnly` pattern of its module, such as `sbt -batch "journal-v2/testOnly *JournalHeadPreflightIntegrationSpec"`.
+32 concrete test classes extend `DynamoDBContainerHelper`, directly or through `BaseCounterSpec`, and each one starts an `amazon/dynamodb-local` container on a temporary port with an in-memory database. Each name below works as a `testOnly` pattern of its module, such as `sbt -batch "journal-v2/testOnly *JournalHeadPreflightIntegrationSpec"`.
 
 | Module | Suites |
 |:--|:--|
 | `journal-v1` | `DynamoDBJournalV1SyncSpec`, `DynamoDBJournalV1AsyncSpec`, `PersistenceIdKeyConflictSpec`, `PersistenceIdKeySpec` |
-| `journal-v2` | `DynamoDBJournalV2SyncSpec`, `DynamoDBJournalV2AsyncSpec`, `JournalHeadSpec`, `JournalHeadInPlaceUpdateSpec`, `JournalHeadMigrationSpec`, `JournalHeadPreflightIntegrationSpec`, `PersistenceIdKeyConflictSpec`, `PersistenceIdKeySpec` |
+| `journal-v2` | `DynamoDBJournalV2SyncSpec`, `DynamoDBJournalV2AsyncSpec`, `JournalHeadSpec`, `JournalHeadInPlaceUpdateSpec`, `JournalHeadMigrationSpec`, `JournalHeadPreflightIntegrationSpec`, `PersistenceIdKeyConflictSpec`, `PersistenceIdKeySpec`, `JournalKeyMigrationSpec` |
 | `snapshot-v1` | `DynamoDBSnapshotStoreV1SyncSpec`, `DynamoDBSnapshotStoreV1AsyncSpec`, `DynamoDBSnapshotStoreV1LegacySyncSpec` |
 | `snapshot-v2` | `DynamoDBSnapshotStoreV2SyncSpec`, `DynamoDBSnapshotStoreV2AsyncSpec` |
 | `state-v1` | `DynamoDBStateV1SyncSpec`, `DynamoDBStateV1AsyncSpec` |
 | `state-v2` | `DynamoDBStateV2SyncSpec`, `DynamoDBStateV2AsyncSpec` |
 | `test` | `DynamoDBContainerHelperSpec` |
+| `base-v2` | `KeyMigrationSpec` |
 | `example` | `CounterV1AsyncSpec`, `CounterV1SyncSpec`, `CounterV2AsyncSpec`, `CounterV2SyncSpec` |
 
 The `example` module declares each Counter suite twice, once in the `softdelete` package and once in the `harddelete` package, so `example/testOnly *CounterV1AsyncSpec` runs two classes. The file `CounterSpec.scala` declares no class named `CounterSpec`, so `example/testOnly *CounterSpec` runs no test. `DockerSuiteReferenceSpec` checks this table and every `testOnly` pattern in Verification commands against the test sources.
 
-Tests do not run in parallel, so the full suite starts and stops the 30 containers one after another. Each start waits for a log message and retries a table check up to 10 times at one second, and table creation and deletion add fixed 500 millisecond sleeps. The full `sbt test` therefore spends minutes in Docker even when the code is correct.
+Tests do not run in parallel, so the full suite starts and stops the 32 containers one after another. Each start waits for a log message and retries a table check up to 10 times at one second, and table creation and deletion add fixed 500 millisecond sleeps. The full `sbt test` therefore spends minutes in Docker even when the code is correct.
 
 The fast gates start no container. Run `schema-check/test`, `lint`, `checkModuleBoundaries`, and the cross-compiles before the Docker-backed suites. Start Docker before any command that names a suite.
 

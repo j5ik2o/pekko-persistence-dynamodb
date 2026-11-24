@@ -29,10 +29,10 @@ separator `.`. When `skey` would exceed 1,024 bytes or `pkey` 2,048 bytes, its t
 
 These resolvers are experimental. {ref}`The new key format <key-format-change>` describes them; before you select them:
 
-- No migration tool for the rows of 1.3.0 exists yet; it comes in a later change. The resolvers still replay, delete,
-  and update the old rows and load and delete their snapshots, next to the rows written under the new keys. For a
-  `persistenceId` whose key changes, that costs extra conditional requests, which `legacy-keys-enabled = false` stops
-  after the migration.
+- The rows of 1.3.0 keep their old keys until you move them with the key migration tools below. Until then, the
+  resolvers still replay, delete, and update the old rows and load and delete their snapshots, next to the rows written
+  under the new keys. For a `persistenceId` whose key changes, that costs extra conditional requests, which
+  `legacy-keys-enabled = false` stops after the migration.
 - They change the keys of `persistenceId`s that the 1.3.0 split, which read the separator as a regular expression,
   divided differently from the split at the first separator: with `-`, those that contain it two or more times; with
   `|`, nearly every one that contains it.
@@ -40,7 +40,26 @@ These resolvers are experimental. {ref}`The new key format <key-format-change>` 
   `Order--23`, or `A|B` and `AB|98` with the separator `|`. Such a write fails with `KeyConflict` (with the JournalHead,
   `DuplicateJournalEventsException`), and the row of the other `persistenceId` stays as it is.
 - They were measured on DynamoDB Local only, not on DynamoDB or with DAX.
-- A later release, together with the migration tool, is planned to make them the default.
+- A later release is planned to make them the default.
+
+### Key migration tools for the rows of 1.3.0
+
+`JournalKeyMigration` (`journal-v2`) and `SnapshotKeyMigration` (`snapshot-v2`) move the journal and snapshot rows
+that 1.3.0 wrote to the keys of the PlainText resolvers (#1014). You need them only after you select those resolvers;
+with the default resolvers the keys do not change. Both tools run as a dry-run unless you pass `--execute`, move each
+row in one `TransactWriteItems` (a conditional `Put` under the new key and a conditional `Delete` under the old key),
+and can be run again after a stop. `--reverse` moves the rows back to the keys of 1.3.0 before a rollback, and lists the
+rows that cannot go back. `--max-rate`, `--parallelism`, `--segments`, and `--persistence-id` limit the run. The rows
+of issue #831 (`skey` is the sequence number alone) move too, also with the default resolvers. The dry-run lists the
+`persistenceId`s that shared keys in 1.3.0 with the sequence numbers that have no row, which may be events that were
+replaced up to 1.2.0; the tools cannot restore them. {ref}`Moving the old rows <key-migration>` gives the steps and the
+cost measured on DynamoDB Local. DynamoDB and DAX were not measured.
+
+With the PlainText resolvers selected, a hard delete now deletes the copy under the key of 1.3.0 before the row under
+the current key, and a snapshot delete that finds a snapshot under the key of 1.3.0 deletes it under the current key
+too, while it is the same snapshot (the same `created`). This keeps a row that the tool moves during the delete from
+being left behind. The snapshot delete sends one more conditional `DeleteItem` for each snapshot still under the key of
+1.3.0. Nothing changes with the default resolvers.
 
 ## 1.3.0
 
