@@ -182,7 +182,9 @@ the sequence number, and a closing `#`. In the same way, when `${prefix}-${shard
 largest partition key that DynamoDB accepts, `pkey` is `#h1#${sha256(prefix)}-${shard}#`. Whether a `persistenceId` gets
 these forms depends on its `prefix` and `body` alone, so every event of the `persistenceId` gets the same form. A key
 without a hash always ends with a digit, so a `persistenceId` whose text looks like a hashed key never gets the key of
-another `persistenceId`. A `persistenceId` cannot be read back from a hashed key.
+another `persistenceId`. A `persistenceId` cannot be read back from a hashed key. The sequence number and the shard are
+written with the digits of the default format locale, as in 1.3.0, and the limits are checked with the UTF-8 bytes that
+they take.
 
 (key-format-change)=
 
@@ -204,11 +206,15 @@ now give the keys below. The keys of every other `persistenceId` stay the same, 
 The rows that 1.3.0 and earlier releases wrote keep their old keys until they are migrated. The default resolvers
 still handle them: a replay, the highest sequence number, and a snapshot load read every row of the `persistenceId`
 through the `persistence-id` index, and a hard delete, a soft delete, an in-place update, a snapshot delete, and a
-snapshot save also reach the row under the old key. A soft delete marks an event deleted where it is stored, so it works
-even when the new key holds a row of another `persistenceId`. An operation on the old key changes the row only while it
+snapshot save also reach the row under the old key. A soft delete marks the event deleted in place under both keys, so it
+works even when the new key holds a row of another `persistenceId`. Every operation on the old key is conditional only
+on the `persistenceId` and the sequence number of the row, so a request that `write-backoff` sends again after a lost
+response gives the same result. A snapshot save succeeds once the snapshot is written under the current key; when the
+copy under the old key cannot be deleted, the failure is logged as a warning, and a load still returns the new snapshot. An operation on the old key changes the row only while it
 is the event or the snapshot of the same `persistenceId` and sequence number, so the row of another `persistenceId` that
 shares the old key is never changed. When a snapshot of the same sequence number exists under both keys, a load returns
-the one under the current key, whichever was saved later.
+the one under the current key, whichever was saved later. With the separator matched as plain text, a `persistenceId`
+whose key changes always contains it, so it has no rows in the format of issue #831 (see the compatibility note below).
 
 A migration tool that moves the old rows to the current keys comes in a later change. Until then, the new key of a
 `persistenceId` can be the old key of another `persistenceId`, for example `Order-` and `Order--23`, or with the
@@ -221,8 +227,7 @@ The extra requests for the old keys, measured on DynamoDB Local with the AWS SDK
 | :-- | :-- | :-- |
 | Persist | none | none |
 | Hard delete | one conditional `DeleteItem` per event | none |
-| Soft delete, the row is under the current key | one refused `UpdateItem` per event | none |
-| Soft delete, the row is under the old key | none; one conditional `UpdateItem` per event instead of the `PutItem` of 1.3.0 | none |
+| Soft delete | two conditional `UpdateItem` per event, one under each key, instead of the `PutItem` of 1.3.0 | none |
 | In-place update, the row is under the current key | none | none |
 | In-place update, the row is under the old key | one refused `UpdateItem` and two `GetItem`; with the JournalHead, one refused `TransactWriteItems` and three `GetItem` | none |
 | Snapshot save | one conditional `DeleteItem` | none |

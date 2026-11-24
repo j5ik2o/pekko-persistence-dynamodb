@@ -55,10 +55,13 @@ private[dynamodb] object PersistenceIdKeyParts {
     * depends on the body alone, so every sequence number of an id gets a sort key of the same form.
     */
   def sortKey(body: String, sequenceNumber: SequenceNumber): String = {
+    // The digits follow the default format locale, as in 1.3.0, so the suffix is measured instead of assumed to be 20
+    // bytes. Its length is the same for every sequence number, so the choice still depends on the body alone.
+    val suffix    = "%019d".format(sequenceNumber.value)
     val bodyBytes = body.getBytes(StandardCharsets.UTF_8)
-    if (bodyBytes.length + 20 > MaxSortKeyBytes)
-      "%s%s-%019d%s".format(HashMarker, sha256Hex(bodyBytes), sequenceNumber.value, HashTerminator)
-    else "%s-%019d".format(body, sequenceNumber.value)
+    if (bodyBytes.length + 1 + utf8Length(suffix) > MaxSortKeyBytes)
+      s"$HashMarker${sha256Hex(bodyBytes)}-$suffix$HashTerminator"
+    else s"$body-$suffix"
   }
 
   /** `${prefix}-${shard}`, or `${shard}` without a prefix, where `shard` is the 40-digit shard number. When that
@@ -70,7 +73,7 @@ private[dynamodb] object PersistenceIdKeyParts {
       case None => shard
       case Some(text) =>
         val prefixBytes = text.getBytes(StandardCharsets.UTF_8)
-        if (prefixBytes.length + 1 + shard.length > MaxPartitionKeyBytes)
+        if (prefixBytes.length + 1 + utf8Length(shard) > MaxPartitionKeyBytes)
           s"$HashMarker${sha256Hex(prefixBytes)}-$shard$HashTerminator"
         else s"$text-$shard"
     }
@@ -99,6 +102,8 @@ private[dynamodb] object PersistenceIdKeyParts {
   def fitsDynamoDB(partitionKey: String, sortKey: String): Boolean =
     partitionKey.getBytes(StandardCharsets.UTF_8).length <= MaxPartitionKeyBytes &&
     sortKey.getBytes(StandardCharsets.UTF_8).length <= MaxSortKeyBytes
+
+  private def utf8Length(text: String): Int = text.getBytes(StandardCharsets.UTF_8).length
 
   private def sha256Hex(bytes: Array[Byte]): String =
     MessageDigest.getInstance("SHA-256").digest(bytes).map(b => "%02x".format(b & 0xff)).mkString

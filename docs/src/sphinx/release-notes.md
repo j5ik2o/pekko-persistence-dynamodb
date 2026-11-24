@@ -30,8 +30,8 @@ no extra request. {ref}`Key format changes after 1.3.0 <key-format-change>` list
 No migration is needed before the upgrade. The rows that 1.3.0 and earlier releases wrote keep their old keys, and the
 default resolvers still replay, delete, and update them and load and delete their snapshots, next to the rows written
 under the new keys. For a `persistenceId` whose key changes, a hard delete sends one extra conditional `DeleteItem` per
-event, a soft delete of a row under the new key one extra `UpdateItem` per event, a snapshot save one extra conditional
-`DeleteItem`, and an in-place update of a row under the old key one refused update and two or three `GetItem`. These
+event, a soft delete two conditional `UpdateItem` per event instead of one `PutItem`, a snapshot save one extra
+conditional `DeleteItem`, and an in-place update of a row under the old key one refused update and two or three `GetItem`. These
 numbers were measured on DynamoDB Local.
 
 - A tool that moves the old rows to the new keys comes in a later change. Until the old rows are moved, a new key can

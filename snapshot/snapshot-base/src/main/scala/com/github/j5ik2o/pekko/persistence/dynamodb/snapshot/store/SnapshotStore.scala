@@ -47,16 +47,24 @@ final class SnapshotStore(
     * the snapshot of the other id is not replaced, and the save fails with `SnapshotStoreException.KeyConflict`.
     *
     * Releases up to 1.3.0 may have stored a snapshot of the same sequence number under another key (see
-    * `SnapshotTableSpec.legacyKeyOf`). That copy is deleted after the write. When the delete does not happen, a load
-    * still returns the snapshot under the current key (see `first`).
+    * `SnapshotTableSpec.legacyKeyOf`). That copy is deleted after the write, with the retries of `write-backoff`. The
+    * save has succeeded once the write has, so a failure of that delete is logged and does not fail the save: a failed
+    * save would make Pekko delete the snapshot that was just written. A load returns the snapshot under the current key
+    * while the copy remains (see `first`).
     */
   def save(row: SnapshotRow): Source[Unit, NotUsed] = {
     val key = codec.key(row)
     adapter.run(Operation.Put(key.table, codec.encode(row), Some(sameRowOrNone(row.persistenceId)))).flatMapConcat {
       case OperationResult.Written(_) =>
         tableSpec.legacyKeyOf(row.persistenceId, row.sequenceNumber) match {
-          case None            => Source.single(())
-          case Some(legacyKey) => deleteRow(legacyKey, sameSnapshot(row.persistenceId, row.sequenceNumber))
+          case None => Source.single(())
+          case Some(legacyKey) =>
+            deleteRow(legacyKey, sameSnapshot(row.persistenceId, row.sequenceNumber)).recover { case cause =>
+              SnapshotStore.logger.warn(
+                s"persistenceId=[${row.persistenceId.asString}]: the snapshot at sequence number ${row.sequenceNumber.value} was saved, but its copy under the key of a release up to 1.3.0 was not deleted; a load still returns the saved snapshot",
+                cause
+              )
+            }
         }
       case OperationResult.ConditionRejected(_) =>
         conflict(key).flatMapConcat(other =>
@@ -162,13 +170,18 @@ final class SnapshotStore(
     }
   }
 
-  /** The first of the rows, which come newest first. When the first two rows have the same sequence number, a save of a
-    * snapshot under the current key stopped before it deleted the copy under the key of a release up to 1.3.0, and the
-    * row under the current key is the newer one.
+  /** The first of the rows, which come newest first. When rows have the same top sequence number, a save of a snapshot
+    * under the current key did not delete the copy under the key of a release up to 1.3.0, and the row under the
+    * current key is the newer one. Every row read with that sequence number is a candidate.
     */
   private def first(rows: Source[AttributeMap, NotUsed]): Source[Option[SnapshotRow], NotUsed] =
     rows
-      .take(2)
+      .prefixAndTail(1)
+      .flatMapConcat { case (head, tail) =>
+        // every row read with the top sequence number, not only the first two
+        val sequenceNr = head.headOption.flatMap(_.get(schema.sequenceNumber))
+        Source(head).concat(tail.takeWhile(_.get(schema.sequenceNumber) == sequenceNr))
+      }
       .fold(Vector.empty[AttributeMap])(_ :+ _)
       .flatMapConcat { values =>
         val chosen = values.headOption.map { head =>
@@ -267,4 +280,8 @@ final class SnapshotStore(
       .recover { case _ => None }
 
   private def number(value: Long): DdbValue = DdbValue.Num(BigDecimal(value))
+}
+
+private object SnapshotStore {
+  private val logger: org.slf4j.Logger = org.slf4j.LoggerFactory.getLogger(classOf[SnapshotStore])
 }

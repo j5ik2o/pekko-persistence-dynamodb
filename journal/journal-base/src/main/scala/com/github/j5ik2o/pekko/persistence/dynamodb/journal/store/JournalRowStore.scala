@@ -153,10 +153,9 @@ final class JournalRowStore(
     * condition.
     *
     * A row with `deleted = true` is the rewrite of an existing event by a soft delete. Releases up to 1.3.0 may have
-    * stored that event under another key (see `legacyKeyOf`). Such an event is marked deleted where it is stored, under
-    * the condition that the row there is the event and is not deleted yet, and nothing is written under the current
-    * key, which can hold a row of another persistence id. Only an event that is not stored under that key is written
-    * under the current key.
+    * stored that event under another key (see `legacyKeyOf`), and the current key can hold a row of another persistence
+    * id. Such an event is marked deleted in place under both keys instead (see `softDeleteInPlace`). Only an event that
+    * neither key holds is written under the current key.
     */
   def write(rows: Seq[JournalRow]): Source[Long, NotUsed] = {
     val (underLegacyKey, others) =
@@ -165,29 +164,34 @@ final class JournalRowStore(
       writeRows(rows)
     } else {
       Source(underLegacyKey.toVector)
-        .flatMapMerge(batchWriteLimit, row => softDeleteUnderLegacyKey(row).map(row -> _))
+        .flatMapMerge(batchWriteLimit, row => softDeleteInPlace(row).map(row -> _))
         .fold(Vector.empty[(JournalRow, Boolean)])(_ :+ _)
         .flatMapConcat { results =>
-          val notThere = results.collect { case (row, false) => row }
-          writeRows(others ++ notThere).map(_ + results.count(_._2))
+          val notStored = results.collect { case (row, false) => row }
+          writeRows(others ++ notStored).map(_ + results.count(_._2))
         }
     }
   }
 
-  /** Marks the event of `row` deleted under its key of a release up to 1.3.0. The result is false when that key holds
-    * no such event that is not deleted yet: no row, a row of another persistence id or sequence number, or a row that
-    * is already deleted.
+  /** Marks the event of `row` deleted in place under the current key and under the key of a release up to 1.3.0. Each
+    * update is conditional only on the row being the event (the persistence id and the sequence number), not on its
+    * `deleted` flag, so a retry after a lost response succeeds again instead of looking like a missing event. Both keys
+    * are updated, because a release up to 1.3.0 run after a rollback can leave the event under both keys. The result is
+    * true when either key held the event.
     */
-  private def softDeleteUnderLegacyKey(row: JournalRow): Source[Boolean, NotUsed] =
-    legacyKeyOf(row.persistenceId, row.sequenceNumber) match {
-      case None => Source.single(false)
-      case Some(legacyKey) =>
+  private def softDeleteInPlace(row: JournalRow): Source[Boolean, NotUsed] = {
+    val keys =
+      keyOf(row.persistenceId, row.sequenceNumber) +: legacyKeyOf(row.persistenceId, row.sequenceNumber).toVector
+    val storedEvent =
+      Condition.And(Condition.AttributeExists(schema.partitionKey), sameEvent(row.persistenceId, row.sequenceNumber))
+    Source(keys)
+      .flatMapConcat { key =>
         run(
           Operation.Update(
             schema.table,
-            legacyKey,
+            key,
             Vector(AttributeUpdate.Set(schema.deleted, DdbValue.Bool(true))),
-            Some(updatableRowCondition(row, legacyKey))
+            Some(storedEvent)
           ),
           writeBackoffConfig
         ).map {
@@ -195,7 +199,9 @@ final class JournalRowStore(
           case OperationResult.ConditionRejected(_) => false
           case other => throw new IllegalStateException(s"unexpected result for a soft delete: $other")
         }
-    }
+      }
+      .fold(false)(_ || _)
+  }
 
   private def writeRows(rows: Seq[JournalRow]): Source[Long, NotUsed] = {
     if (rows.isEmpty) {

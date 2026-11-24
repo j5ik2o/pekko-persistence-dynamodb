@@ -1103,7 +1103,8 @@ final class JournalRowStoreSpec extends AnyFreeSpec with Matchers with BeforeAnd
       adapter: DdbClientAdapter,
       currentPad: String = "",
       legacyPad: String = "",
-      headConfig: Option[JournalHeadConfig] = None
+      headConfig: Option[JournalHeadConfig] = None,
+      writeBackoff: BackoffConfig = disabledBackoff
   ): (JournalRowStore, JournalRowStore) = {
     def store(resolver: PartitionKeyResolver) = new JournalRowStore(
       schema = schema,
@@ -1114,7 +1115,7 @@ final class JournalRowStoreSpec extends AnyFreeSpec with Matchers with BeforeAnd
       consistentRead = false,
       batchWriteLimit = 25,
       readBackoffConfig = disabledBackoff,
-      writeBackoffConfig = disabledBackoff,
+      writeBackoffConfig = writeBackoff,
       headConfig = headConfig
     )
     (
@@ -1271,5 +1272,98 @@ final class JournalRowStoreSpec extends AnyFreeSpec with Matchers with BeforeAnd
     val (tooLarge, tooLargeResult) = scenario(currentPad = "", legacyPad = pad)
     tooLargeResult.left.toOption.get shouldBe a[JournalHeadJournalRowTooLargeException]
     tooLarge.transactions shouldBe empty
+  }
+
+  /** Applies the first `times` operations that `lose` selects and then fails them, as when DynamoDB applied a request
+    * but its response was lost, so the store sends the request again.
+    */
+  private final class LostResponseAdapter(delegate: InMemoryDdbAdapter, lose: Operation => Boolean, times: Int)
+      extends DdbClientAdapter {
+    private val lost = new AtomicInteger(0)
+
+    def lostResponses: Int = lost.get()
+
+    override val capabilities: CapabilityProfile = delegate.capabilities
+
+    override def run(operation: Operation): Source[OperationResult, NotUsed] =
+      if (lose(operation) && lost.get() < times) {
+        JournalRowStoreSpec.this.run(delegate.run(operation)) // applied
+        lost.incrementAndGet()
+        Source.failed(new RuntimeException("the response was lost"))
+      } else delegate.run(operation)
+
+    override def queryAll(query: Operation.Query): Source[AttributeMap, NotUsed] = delegate.queryAll(query)
+
+    override def close(): Unit = delegate.close()
+  }
+
+  private val retryingBackoff = fastBackoff.copy(enabled = true, maxRestarts = 3)
+
+  private def underKey(partitionKey: String)(operation: Operation): Boolean = operation match {
+    case Operation.Update(_, key, _, _) => key.values.get(schema.partitionKey).contains(DdbValue.Str(partitionKey))
+    case Operation.Delete(_, key, _)    => key.values.get(schema.partitionKey).contains(DdbValue.Str(partitionKey))
+    case _                              => false
+  }
+
+  "an operation on a 1.3.0 key is applied once when its response is lost and it is sent again" - {
+
+    "a soft delete, also when the current key holds another id's event" in {
+      val inMemory   = new InMemoryDdbAdapter(Map(schema.table -> Vector(schema.partitionKey, schema.sortKey)))
+      val (in130, _) = legacyStores(inMemory)
+      run(in130.write(Seq(JournalTestSupport.row(accountX, 1L, "x1"))))
+      run(in130.write(Seq(JournalTestSupport.row(accountY, 1L, "y1"))))
+      val adapter    = new LostResponseAdapter(inMemory, underKey("k-account-"), times = 1)
+      val (_, store) = legacyStores(adapter, writeBackoff = retryingBackoff)
+
+      run(store.write(Seq(JournalTestSupport.row(accountX, 1L, "x1", deleted = true)))) shouldBe Vector(1L)
+
+      adapter.lostResponses shouldBe 1
+      storedAt(inMemory, "k-account-", 1L).flatMap(_.get(schema.deleted)) shouldBe Some(DdbValue.Bool(true))
+      val other = storedAt(inMemory, "k-account-1", 1L).get
+      other.get(schema.persistenceId) shouldBe Some(DdbValue.Str(accountY.asString))
+      other.get(schema.deleted) shouldBe Some(DdbValue.Bool(false))
+    }
+
+    "a soft delete of an event under the current key, which writes no copy of it" in {
+      val inMemory   = new InMemoryDdbAdapter(Map(schema.table -> Vector(schema.partitionKey, schema.sortKey)))
+      val adapter    = new LostResponseAdapter(inMemory, underKey("k-account-1"), times = 1)
+      val (_, store) = legacyStores(adapter, writeBackoff = retryingBackoff)
+      run(store.write(Seq(JournalTestSupport.row(accountX, 2L, "x2"))))
+
+      run(store.write(Seq(JournalTestSupport.row(accountX, 2L, "x2", deleted = true)))) shouldBe Vector(1L)
+
+      adapter.lostResponses shouldBe 1
+      storedAt(inMemory, "k-account-1", 2L).flatMap(_.get(schema.deleted)) shouldBe Some(DdbValue.Bool(true))
+      storedAt(inMemory, "k-account-", 2L) shouldBe None
+    }
+
+    "a hard delete" in {
+      val inMemory   = new InMemoryDdbAdapter(Map(schema.table -> Vector(schema.partitionKey, schema.sortKey)))
+      val (in130, _) = legacyStores(inMemory)
+      run(in130.write(Seq(JournalTestSupport.row(accountX, 1L, "x1"))))
+      val adapter    = new LostResponseAdapter(inMemory, underKey("k-account-"), times = 1)
+      val (_, store) = legacyStores(adapter, writeBackoff = retryingBackoff)
+
+      run(store.delete(Seq(PersistenceIdWithSeqNr(accountX, SequenceNumber(1)))))
+
+      adapter.lostResponses shouldBe 1
+      storedAt(inMemory, "k-account-", 1L) shouldBe None
+    }
+
+    "an in-place update" in {
+      val inMemory   = new InMemoryDdbAdapter(Map(schema.table -> Vector(schema.partitionKey, schema.sortKey)))
+      val (in130, _) = legacyStores(inMemory)
+      run(in130.write(Seq(JournalTestSupport.row(accountX, 3L, "x3"))))
+      val adapter    = new LostResponseAdapter(inMemory, underKey("k-account-"), times = 1)
+      val (_, store) = legacyStores(adapter, writeBackoff = retryingBackoff)
+
+      run(store.update(JournalTestSupport.row(accountX, 3L, "x3-new", ordering = 3L)))
+
+      adapter.lostResponses shouldBe 1
+      storedAt(inMemory, "k-account-", 3L).flatMap(_.get(schema.message)) shouldBe Some(
+        DdbValue.Bin("x3-new".getBytes("UTF-8").toVector)
+      )
+      storedAt(inMemory, "k-account-1", 3L) shouldBe None
+    }
   }
 }

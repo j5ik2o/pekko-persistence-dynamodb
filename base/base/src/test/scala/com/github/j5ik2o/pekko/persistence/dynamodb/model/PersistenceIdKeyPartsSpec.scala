@@ -119,6 +119,26 @@ final class PersistenceIdKeyPartsSpec extends AnyFreeSpec with Matchers {
     }
   }
 
+  "with a format locale whose digits take two bytes in UTF-8 (review of #1022)" - {
+
+    "keeps the sort key and the partition key within the DynamoDB limits" in {
+      val saved = java.util.Locale.getDefault(java.util.Locale.Category.FORMAT)
+      java.util.Locale.setDefault(java.util.Locale.Category.FORMAT, java.util.Locale.forLanguageTag("ar-EG"))
+      try {
+        val sortKey = PersistenceIdKeyParts.sortKey("x" * 990, SequenceNumber(1))
+        "%019d".format(1L).getBytes("UTF-8").length shouldBe 38 // the digits are localized, as in 1.3.0
+        sortKey.getBytes("UTF-8").length should be <= PersistenceIdKeyParts.MaxSortKeyBytes
+        sortKey should startWith("#h1#")
+        PersistenceIdKeyParts.sortKey("x" * 980, SequenceNumber(1)) should startWith("x")
+
+        val shard        = "\u0660" * 39 + "\u0667" // 40 digits, 80 bytes
+        val partitionKey = PersistenceIdKeyParts.partitionKey(Some("A" * 1980), shard)
+        partitionKey.getBytes("UTF-8").length should be <= PersistenceIdKeyParts.MaxPartitionKeyBytes
+        partitionKey should startWith("#h1#")
+      } finally java.util.Locale.setDefault(java.util.Locale.Category.FORMAT, saved)
+    }
+  }
+
   "fitsDynamoDB" - {
 
     "accepts keys up to the DynamoDB limits in UTF-8 bytes" in {

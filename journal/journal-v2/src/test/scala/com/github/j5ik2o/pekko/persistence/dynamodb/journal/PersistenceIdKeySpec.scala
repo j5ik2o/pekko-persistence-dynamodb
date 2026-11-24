@@ -1000,19 +1000,19 @@ final class PersistenceIdKeySpec extends AnyWordSpec with Matchers with DynamoDB
       info(s"changed id, rows under the 1.3.0 key: ${oldRows.extraOver(base)}")
       info(s"changed id, legacy-keys-enabled = false: ${noLegacy.extraOver(base)}")
       newRows.extraOver(base) shouldBe Map(
-        "persist"        -> Map.empty,
-        "update"         -> Map.empty,
-        "softDelete"     -> Map("UpdateItem" -> 1L),
+        "persist" -> Map.empty,
+        "update"  -> Map.empty,
+        // marked deleted in place under both keys: two UpdateItem instead of the PutItem of 1.3.0
+        "softDelete"     -> Map("UpdateItem" -> 2L, "PutItem" -> -1L),
         "hardDelete"     -> Map("DeleteItem" -> 1L),
         "snapshotSave"   -> Map("DeleteItem" -> 1L),
         "snapshotLoad"   -> Map.empty,
         "snapshotDelete" -> Map.empty
       )
       oldRows.extraOver(base) shouldBe Map(
-        "persist" -> Map.empty,
-        "update"  -> Map("UpdateItem" -> 1L, "GetItem" -> 2L),
-        // marked deleted in place under the 1.3.0 key: one UpdateItem instead of the PutItem of 1.3.0
-        "softDelete"     -> Map("UpdateItem" -> 1L, "PutItem" -> -1L),
+        "persist"        -> Map.empty,
+        "update"         -> Map("UpdateItem" -> 1L, "GetItem" -> 2L),
+        "softDelete"     -> Map("UpdateItem" -> 2L, "PutItem" -> -1L),
         "hardDelete"     -> Map("DeleteItem" -> 1L),
         "snapshotSave"   -> Map("DeleteItem" -> 1L),
         "snapshotLoad"   -> Map.empty,
