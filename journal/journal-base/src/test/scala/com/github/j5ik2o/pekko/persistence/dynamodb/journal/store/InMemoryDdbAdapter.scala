@@ -38,15 +38,26 @@ final class InMemoryDdbAdapter(keyColumns: Map[TableName, Vector[AttributeName]]
 
   override def close(): Unit = ()
 
+  private def rejected: OperationResult =
+    OperationResult.ConditionRejected(Vector(ConditionFailure(0, "ConditionalCheckFailed")))
+
   private def apply(operation: Operation): OperationResult = operation match {
-    case Operation.Put(table, item, _) =>
-      tableItems(table).update(itemId(table, item), item)
-      OperationResult.Written(1)
+    case Operation.Put(table, item, condition) =>
+      val existing = tables.get(table).flatMap(_.get(itemId(table, item)))
+      if (condition.exists(c => !matchesCondition(existing.getOrElse(AttributeMap.empty), c))) rejected
+      else {
+        tableItems(table).update(itemId(table, item), item)
+        OperationResult.Written(1)
+      }
     case Operation.Get(table, key, _) =>
       OperationResult.Item(tables.get(table).flatMap(_.get(id(key.values.entries))))
-    case Operation.Delete(table, key, _) =>
-      tables.get(table).foreach(_.remove(id(key.values.entries)))
-      OperationResult.Written(1)
+    case Operation.Delete(table, key, condition) =>
+      val existing = tables.get(table).flatMap(_.get(id(key.values.entries)))
+      if (condition.exists(c => !matchesCondition(existing.getOrElse(AttributeMap.empty), c))) rejected
+      else {
+        tables.get(table).foreach(_.remove(id(key.values.entries)))
+        OperationResult.Written(1)
+      }
     case Operation.Update(table, key, updates, condition) =>
       val existing = tables.get(table).flatMap(_.get(id(key.values.entries)))
       val current  = existing.getOrElse(key.values)

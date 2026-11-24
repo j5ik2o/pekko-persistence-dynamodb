@@ -155,6 +155,58 @@ The state plugin has not the secondary index.
 
 ## Write-sharding
 
+(persistence-id-separator)=
+
+### Persistence id separator
+
+The default resolvers of the journal and the snapshot store split the `persistenceId` with a separator.
+`persistence-id-separator` sets it for each plugin. The default value is `-`, which differs from the `|` that Pekko
+Typed puts between the entity type hint and the entity id.
+
+```
+j5ik2o.dynamo-db-journal.persistence-id-separator = "-"
+j5ik2o.dynamo-db-snapshot.persistence-id-separator = "-"
+```
+
+The separator is read as a regular expression, and only the first two parts of the split are used: `prefix` for
+`pkey` and `body` for `skey`. Do not change the separator on a table that already has rows.
+
+```{admonition} Compatibility note: persistence ids that share a key (issue #1009)
+:class: warning
+
+Two `persistenceId`s get the same `pkey` and `skey` when their `prefix`, their `body`, and their shard number are the
+same. This happens when a `persistenceId` contains the separator two or more times, such as `shopping-cart-1` and
+`shopping-cart-2`, or when the separator is a regular expression metacharacter: with `|`, `prefix` and `body` are the
+first two characters of the `persistenceId`. A `persistenceId` that ends with its only separator, such as `order-`, and
+every `persistenceId` with the separator `.` fail with `ArrayIndexOutOfBoundsException`.
+
+Up to 1.2.0, the later write replaced the row of the other `persistenceId` when the JournalHead was disabled, and the
+replaced events were lost. Snapshots were replaced whether the JournalHead was enabled or not. From this release, a
+write never replaces a row of another `persistenceId`:
+
+- A journal write fails with `JournalRowStoreException.KeyConflict`, which names both `persistenceId`s. Pekko calls
+  `onPersistFailure`, and the actor stops. The events of the other `persistenceId` stay as they are.
+- A snapshot save fails with `SnapshotStoreException.KeyConflict`, and the actor receives `SaveSnapshotFailure`.
+- An in-place update is refused with `JournalHeadRowUpdateRejectedException`, and a delete leaves the row of the other
+  `persistenceId`.
+- With the JournalHead enabled, the journal write keeps failing with `DuplicateJournalEventsException`, as before.
+
+A `persistenceId` that fails this way cannot write the sequence numbers whose keys the other `persistenceId` holds.
+Retrying does not help. To avoid the conflict, give each `persistenceId` the separator at most once, as
+`<type name><separator><entity id>` with no separator in the type name or the entity id, and do not set a regular
+expression metacharacter such as `|` or `.` as the separator. A later release will change the key format so that such
+`persistenceId`s can be written, and will provide a migration for the rows that already exist.
+
+Events and snapshots that earlier releases already replaced cannot be restored. A `persistenceId` lost events when its
+replay misses sequence numbers that it did not delete. To find the `persistenceId`s that can share a key, group them by
+`prefix`, `body`, and shard number; a group with two or more `persistenceId`s shares keys.
+
+To make the writes conditional, the journal and the snapshot store write and delete each row with its own conditional
+`PutItem` or `DeleteItem`, up to `dynamo-db-client.batch-write-item-limit` (25 by default) at a time, instead of
+`BatchWriteItem`. The consumed write capacity does not change. The number of write requests becomes one per event
+instead of one per 25 events.
+```
+
 ### Journal
 
 ```
@@ -174,10 +226,10 @@ j5ik2o.dynamo-db-journal {
 `partition-key-resolver-class-name` specifies the implementation class that generates `pkey` from `PersistenceId` and `Sequence Number`.
 The following two implementations are available for built-in use. 
 
-- `com.github.j5ik2o.pekko.persistence.dynamodb.journal.PartitionKeyResolver.SequenceNumberBased` (Default)
+- `com.github.j5ik2o.pekko.persistence.dynamodb.journal.PartitionKeyResolver$SequenceNumberBased`
   - `pkey = ${persistenceId}-${sequenceNumber % shardCount}`
   - The same `PersistenceId` will be assigned to a different shard if the `Sequence Number` is different. This is a write-specific sharding.
-- `com.github.j5ik2o.pekko.persistence.dynamodb.journal.PartitionKeyResolver.PersistenceIdBased`
+- `com.github.j5ik2o.pekko.persistence.dynamodb.journal.PartitionKeyResolver$PersistenceIdBased` (Default)
   - `pkey = ${persistenceId.prefix}-${md5(persistenceId.reverse) % shardCount}`
   - e.g. `counter-875e6ce0425e4d2b8203f3b44b9b531a`, `persistenceId.prefix` is `counter`.
   - If you choose this option, the same shard will be assigned if the `PersistenceId` is the same, so be sure to select this option if you are using DynamoDB Streams or KDS for DynamoDB.
@@ -189,13 +241,13 @@ The following two implementations are available for built-in use.
 
 - `com.github.j5ik2o.pekko.persistence.dynamodb.journal.SortKeyResolver$SeqNr`
   - `skey = $sequenceNumber`
-  - An implementation in which `pkey` is the `Sequence Number`.
-- `com.github.j5ik2o.pekko.persistence.dynamodb.journal.SortKeyResolver$PersistenceIdWithSeqNr`
+  - An implementation in which `skey` is the `Sequence Number`.
+- `com.github.j5ik2o.pekko.persistence.dynamodb.journal.SortKeyResolver$PersistenceIdWithSeqNr` (Default)
   - `skey = ${persistenceId.body}-${sequenceNumber}`
   - e.g. `875e6ce0425e4d2b8203f3b44b9b531a`, `persistenceId.body` is `875e6ce0425e4d2b8203f3b44b9b531a`.
   - Use `persistenceId.body` as the prefix since `shard-count` may cause multiple `persistenceId`s events to be stored in the same shard.
   - If the `persistenceId` does not contain the separator, the full `persistenceId` is used as the prefix: `${persistenceId}-${sequenceNumber}`.
-
+  - `persistenceId.body` is only the text between the first and the second separator, so two `persistenceId`s can get the same key. See [Persistence id separator](#persistence-id-separator).
 
 #### Configure your own implementation
 
@@ -227,10 +279,10 @@ j5ik2o.dynamo-db-snapshot {
 `partition-key-resolver-class-name` specifies the implementation class that generates `pkey` from `PersistenceId` and `Sequence Number`.
 The following two implementations are available for built-in use. 
 
-- `com.github.j5ik2o.pekko.persistence.dynamodb.journal.PartitionKeyResolver.SequenceNumberBased` (Default)
-  - `pkey =${persistenceId}-${sequenceNumber % shardCount}`
+- `com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.PartitionKeyResolver$SequenceNumberBased`
+  - `pkey = ${persistenceId}-${sequenceNumber % shardCount}`
   - The same `PersistenceId` will be assigned to a different shard if the `Sequence Number` is different. This is a write-specific sharding.
-- `com.github.j5ik2o.pekko.persistence.dynamodb.journal.PartitionKeyResolver.PersistenceIdBased`
+- `com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.PartitionKeyResolver$PersistenceIdBased` (Default)
   - `pkey = ${persistenceId.prefix}-${md5(persistenceId.reverse) % shardCount}`
   - e.g. `counter-875e6ce0425e4d2b8203f3b44b9b531a`, `persistenceId.prefix` is `counter`.
   - If you choose this option, the same shard will be assigned if the `PersistenceId` is the same, so be sure to select this option if you are using DynamoDB Streams or KDS for DynamoDB.
@@ -240,14 +292,15 @@ The following two implementations are available for built-in use.
 `sort-key-resolver-class-name` specifies the implementation class that generates `skey` from `PersistenceId` and `Sequence Number`.
 The following two implementations are available for built-in use.
 
-- `com.github.j5ik2o.pekko.persistence.dynamodb.journal.SortKeyResolver$SeqNr`
+- `com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.SortKeyResolver$SeqNr`
   - `skey = $sequenceNumber`
-  - An implementation in which `pkey` is the `Sequence Number`.
-- `com.github.j5ik2o.pekko.persistence.dynamodb.journal.SortKeyResolver$PersistenceIdWithSeqNr`
+  - An implementation in which `skey` is the `Sequence Number`.
+- `com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.SortKeyResolver$PersistenceIdWithSeqNr` (Default)
   - `skey = ${persistenceId.body}-${sequenceNumber}`
   - e.g. `875e6ce0425e4d2b8203f3b44b9b531a`, `persistenceId.body` is `875e6ce0425e4d2b8203f3b44b9b531a`.
   - Use `persistenceId.body` as the prefix since `shard-count` may cause multiple `persistenceId`s events to be stored in the same shard.
   - If the `persistenceId` does not contain the separator, the full `persistenceId` is used as the prefix: `${persistenceId}-${sequenceNumber}`.
+  - `persistenceId.body` is only the text between the first and the second separator, so two `persistenceId`s can get the same key. See [Persistence id separator](#persistence-id-separator).
 
 ```{admonition} Compatibility note
 Older versions stored `PersistenceIdWithSeqNr` sort keys as only `${sequenceNumber}` when the `persistenceId` did not contain the separator. New writes use `${persistenceId}-${sequenceNumber}` to avoid overwriting records that share the same `(pkey, sequenceNumber)`. Existing rows that were written with the old sort-key format can still be read through the `persistence-id` / `sequence-nr` secondary index, but delete and update operations calculate the table primary key from the current resolver. If you already have rows with the old format, migrate those rows to the new sort-key format before relying on delete or update for separator-less persistence ids.

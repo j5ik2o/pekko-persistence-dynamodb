@@ -13,6 +13,35 @@ Replace `v1.2.0` and `<SHA>` with the approved version and commit. If the lookup
 
 ## Unreleased
 
+### A write no longer replaces the journal row or the snapshot of another persistence id
+
+The default key resolvers of the journal and the snapshot store give two `persistenceId`s the same key when they
+differ only after the second separator, or when the separator is a regular expression metacharacter such as `|`
+(#1009). Up to 1.2.0, with the JournalHead disabled, the later write silently replaced the journal row of the other
+`persistenceId`, and its events were lost; snapshots were replaced in every mode.
+
+The keys are unchanged. Every journal write, delete, and in-place update, and every snapshot save and delete, now
+carries a condition that the key holds no row or a row of the same `persistenceId`. A write that would replace the
+row of another `persistenceId` fails with `JournalRowStoreException.KeyConflict` or `SnapshotStoreException.KeyConflict`,
+which name both `persistenceId`s; the actor gets `onPersistFailure` or `SaveSnapshotFailure`. A delete leaves the
+other row, and an in-place update is refused with `JournalHeadRowUpdateRejectedException`. Rewrites of rows of the
+same `persistenceId`, such as a soft delete or a snapshot saved again at the same sequence number, work as before. With
+the JournalHead enabled, a conflicting journal write keeps failing with `DuplicateJournalEventsException`.
+
+A `persistenceId` that conflicts cannot write the sequence numbers whose keys another `persistenceId` holds. The
+compatibility note in {ref}`Persistence id separator <persistence-id-separator>` describes the affected
+`persistenceId`s and the workaround. Events and snapshots that earlier releases already replaced cannot be restored.
+
+Because `BatchWriteItem` cannot carry a condition, the journal and the snapshot store now write and delete each row
+with its own `PutItem` or `DeleteItem`, up to `batch-write-item-limit` (25) requests at a time. The consumed write
+capacity is unchanged. A write of N events sends N requests instead of ⌈N/25⌉. On DynamoDB Local the throughput of
+the plugin did not change beyond the variation between runs; the latency and the throttling of DynamoDB itself were
+not measured. A throttled `PutItem` is retried by the AWS SDK, where a `BatchWriteItem` left unprocessed items for the
+plugin to send again.
+
+`JournalRowStoreException.BatchWriteRetriesExhausted` and `SnapshotStoreException.BatchWriteRetriesExhausted` are no
+longer raised by the stores. They remain in the API.
+
 ### JournalHead migration dry-run reports source details
 
 The dry-run now defines a raised item as a journal or snapshot sequence ahead of the head. This can indicate writes
