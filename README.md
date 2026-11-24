@@ -36,3 +36,5 @@ Apache License Version 2.0
 This product was made by duplicating or referring to the code of the following products, so Dennis Vriend's license is included in the product code and test code.
 
 - [dnvriend/akka-persistence-jdbc](https://github.com/dnvriend/akka-persistence-jdbc)
+
+<!-- PR CI verification draft for #1010; do not merge. -->
