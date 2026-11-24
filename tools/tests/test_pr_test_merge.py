@@ -66,13 +66,17 @@ class PrTestMergeTests(unittest.TestCase):
                       '[ -f "$GH_HOOKS/hook-$n" ] && sh "$GH_HOOKS/hook-$n"\n'
                       'cat "$PR_STATE"\n')
         gh.chmod(0o755)
+        # git fetch can start auto maintenance in the background, which still writes
+        # into .git while the temporary directory is removed ("Directory not empty").
         self.env = dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
                         GH_CALLS=str(self.gh_calls), PR_STATE=str(self.pr_state),
-                        GH_HOOKS=str(self.root))
+                        GH_HOOKS=str(self.root), GIT_CONFIG_COUNT="2",
+                        GIT_CONFIG_KEY_0="maintenance.auto", GIT_CONFIG_VALUE_0="false",
+                        GIT_CONFIG_KEY_1="gc.auto", GIT_CONFIG_VALUE_1="0")
 
     def git(self, *args, cwd=None):
         return subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.com",
-                               "-c", "init.defaultBranch=main", *args],
+                               "-c", "init.defaultBranch=main", "-c", "maintenance.auto=false", "-c", "gc.auto=0", *args],
                               cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
 
     def commit(self, name, text, message):
