@@ -348,6 +348,19 @@ final class PersistenceIdKeyConflictSpec extends AnyWordSpec with Matchers with 
       recover(headDisabled, a).events shouldBe Vector(1L -> "a1")
     }
 
+    "leave no event of a persistAll longer than batch-write-item-limit whose later event conflicts" in {
+      val (a, b) = collidingPair(s"${uniquePrefix("Long")}-X-", id => journalKey(headDisabled, id, 1))
+      persistOk(headDisabled, a, (1 to 26).map(n => s"a$n"): _*)
+      commandOk(hardDelete, a, DeleteTo(25)) // a keeps only sequence number 26, which b reaches in its second group
+      expectKeyConflict(persist(headDisabled, b, (1 to 30).map(n => s"b$n"): _*), b, a)
+
+      storedRows(journalTableName, b) shouldBe empty
+      val recoveredB = recover(headDisabled, b)
+      recoveredB.events shouldBe empty
+      recoveredB.lastSequenceNr shouldBe 0L
+      recover(headDisabled, a).events shouldBe Vector(26L -> "a26")
+    }
+
     "fail to persist with the separator '|', which shares a key with a single separator" in {
       val (a, b) = collidingPair(s"${uniquePrefix("Account")}|", id => journalKey(pipe, id, 1))
       persistOk(pipe, a, "a1")

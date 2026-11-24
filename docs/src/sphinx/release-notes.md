@@ -34,9 +34,9 @@ compatibility note in {ref}`Persistence id separator <persistence-id-separator>`
 
 Because `BatchWriteItem` cannot carry a condition, the journal and the snapshot store now write and delete each row
 with its own `PutItem` or `DeleteItem`, up to `batch-write-item-limit` (25) requests at a time. The consumed write
-capacity is unchanged. A write of N events sends N requests instead of ⌈N/25⌉. On DynamoDB Local the throughput of
-the plugin did not change beyond the variation between runs; the latency and the throttling of DynamoDB itself were
-not measured. A throttled `PutItem` is retried by the AWS SDK, where a `BatchWriteItem` left unprocessed items for the
+capacity is unchanged. A write of N events sends N requests instead of ⌈N/25⌉. The throughput of the plugin did not
+change beyond the variation between runs. This was measured on DynamoDB Local only; the latency and the throttling of
+DynamoDB itself were not measured. A throttled `PutItem` is retried by the AWS SDK, where a `BatchWriteItem` left unprocessed items for the
 plugin to send again.
 
 The IAM policy of the plugin must allow `dynamodb:PutItem` and `dynamodb:DeleteItem` on the journal and snapshot
