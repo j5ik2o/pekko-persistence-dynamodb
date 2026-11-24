@@ -38,7 +38,7 @@ Run `npm ci` once, then `npm run check:aislop` to compare an aislop scan against
 python3 -m unittest discover -s tools/tests -v
 ```
 
-Eight tests in `tools/tests/test_landing_effects.py` need PyYAML. Without it they are skipped with a reason that names this file, and the other tests still run. Install PyYAML to run them: `python3 -m venv target/docs-venv && target/docs-venv/bin/pip install -r docs/requirements.txt` pins `PyYAML==6.0.2`, and `tools/landing-effects.md` uses the same environment for `landing-effects.py`. Run the suite with `target/docs-venv/bin/python` to exercise those tests.
+Eight tests in `tools/tests/test_landing_effects.py` and every test in `tools/tests/test_pr_test_merge.py` and `tools/tests/test_pr_ci_required.py` need PyYAML, because they read the workflow files. Without it they are skipped with a reason that names this file, and the other tests still run. Install PyYAML to run them: `python3 -m venv target/docs-venv && target/docs-venv/bin/pip install -r docs/requirements.txt` pins `PyYAML==6.0.2`, and `tools/landing-effects.md` uses the same environment for `landing-effects.py`. Run the suite with `target/docs-venv/bin/python` to exercise those tests.
 
 ## Collect and assess PR evidence
 

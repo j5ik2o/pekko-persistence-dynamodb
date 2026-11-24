@@ -6,7 +6,17 @@ import subprocess
 import tempfile
 import unittest
 
-import yaml
+try:
+    import yaml
+    HAVE_PYYAML = True
+except ImportError:
+    HAVE_PYYAML = False
+
+PYYAML_REASON = (
+    "requires PyYAML; see tools/README.md — install with "
+    "`python3 -m venv target/docs-venv && target/docs-venv/bin/pip install -r docs/requirements.txt` "
+    "(docs/requirements.txt pins PyYAML==6.0.2)"
+)
 
 CI = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "ci.yml"
 MATRIX = [f"test ({jdk}, {scala})" for jdk in (11, 17, 19) for scala in ("2.12.20", "2.13.16", "3.6.4")]
@@ -22,6 +32,7 @@ def passed_jobs():
         [job(name, "sbt test") for name in MATRIX]
 
 
+@unittest.skipUnless(HAVE_PYYAML, PYYAML_REASON)
 class PrCiRequiredTests(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
