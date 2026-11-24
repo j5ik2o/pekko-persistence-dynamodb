@@ -33,6 +33,7 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.journal.dao.PersistenceIdWit
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.head.DuplicateJournalEventsException
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.store.JournalRowStoreException
 import com.github.j5ik2o.pekko.persistence.dynamodb.model.{ PersistenceId, SequenceNumber }
+import com.github.j5ik2o.pekko.persistence.dynamodb.snapshot
 import com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.SnapshotPluginContext
 import com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.config.SnapshotPluginConfig
 import com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.store.SnapshotStoreException
@@ -114,7 +115,8 @@ object PersistenceIdKeySpec extends DockerAssignedPort {
       softDelete: Boolean = true,
       separator: Option[String] = None,
       beforeFix: Boolean = false,
-      legacyKeys: Boolean = true
+      legacyKeys: Boolean = true,
+      legacySnapshotResolvers: Boolean = false
   )
 }
 
@@ -168,6 +170,13 @@ final class PersistenceIdKeySpec extends AnyWordSpec with Matchers with DynamoDB
              |j5ik2o.dynamo-db-journal.legacy-keys-enabled = false
              |j5ik2o.dynamo-db-snapshot.legacy-keys-enabled = false
              |""".stripMargin
+    val legacySnapshotResolvers =
+      if (!mode.legacySnapshotResolvers) ""
+      else
+        Seq(
+          "partition-key-resolver-class-name" -> classOf[snapshot.PartitionKeyResolver.LegacyPersistenceIdBased],
+          "sort-key-resolver-class-name"      -> classOf[snapshot.SortKeyResolver.LegacyPersistenceIdWithSeqNr]
+        ).map { case (key, cls) => s"""\nj5ik2o.dynamo-db-snapshot.$key = "${cls.getName}"""" }.mkString
     val counter = s"""
          |j5ik2o.dynamo-db-journal.dynamo-db-client.v2.execution-interceptor-class-names = ["${classOf[
                       RequestCounter
@@ -177,7 +186,7 @@ final class PersistenceIdKeySpec extends AnyWordSpec with Matchers with DynamoDB
                     ].getName}"]
          |""".stripMargin
     ConfigFactory
-      .parseString(separator + resolvers + legacyKeys + counter)
+      .parseString(separator + resolvers + legacyKeys + legacySnapshotResolvers + counter)
       .withFallback(
         ConfigHelper.config(
           Some("journal-reference"),
@@ -202,7 +211,8 @@ final class PersistenceIdKeySpec extends AnyWordSpec with Matchers with DynamoDB
           if (mode.softDelete) "soft" else "hard",
           mode.separator.fold("dash")(s => s"sep${s.map(_.toInt).mkString("x")}"),
           if (mode.beforeFix) "before" else "after",
-          if (mode.legacyKeys) "legacy" else "nolegacy"
+          if (mode.legacyKeys) "legacy" else "nolegacy",
+          if (mode.legacySnapshotResolvers) "legacysnap" else "snap"
         ).mkString("-")
         val created = ActorSystem(name, config(mode))
         systems += mode -> created
@@ -603,8 +613,9 @@ final class PersistenceIdKeySpec extends AnyWordSpec with Matchers with DynamoDB
         3L -> Some(false),
         4L -> Some(false)
       )
+      // the events under their 1.3.0 keys are marked deleted there
       rows.filter(_.deleted.contains(true)).map(r => (r.pkey, r.skey)) shouldBe Seq(1L, 2L).map(
-        journalKey(fixed, id, _)
+        journalKey(before, id, _)
       )
     }
 
@@ -699,6 +710,39 @@ final class PersistenceIdKeySpec extends AnyWordSpec with Matchers with DynamoDB
       )
     }
 
+    "be soft deleted under the 1.3.0 key when the new key holds another id's 1.3.0 row (review of #1022)" in {
+      // With `|`, the new key of `C|D` is the 1.3.0 key of `CD|<n>`.
+      val x = "C|D"
+      val y = idWithOldKey(journalKey(pipe, x, 1), n => s"CD|$n", journalKey(pipeBefore, _, 1))
+      persistOk(pipeBefore, x, "x1", "x2")
+      persistOk(pipeBefore, y, "y1")
+      command(pipe, x, DeleteTo(2))
+      val recovered = recover(pipe, x)
+      events(recovered) shouldBe empty
+      recovered.lastSequenceNr shouldBe 2L
+      storedRows(journalTableName, x).map(r => r.sequenceNr -> r.deleted) shouldBe Vector(
+        1L -> Some(true),
+        2L -> Some(true)
+      )
+      events(recover(pipe, y)) shouldBe Vector(1L -> "y1")
+    }
+
+    "keep working when the new partition key of the id would exceed 2,048 bytes (review of #1022)" in {
+      val pipeHard = pipe.copy(softDelete = false)
+      val id       = ("A" * 2008) + "|B" // 1.3.0 gave it a 42-byte partition key
+      journalKey(pipeBefore, id, 1)._1.length shouldBe 42
+      persistOk(pipeBefore, id, "e1", "e2")
+      persistOk(pipe, id, "e3", "e4")
+      updateEvent(pipe, id, 1, "e1-updated")
+      events(recover(pipe, id)) shouldBe Vector(1L -> "e1-updated", 2L -> "e2", 3L -> "e3", 4L -> "e4")
+      command(pipeHard, id, DeleteTo(1))
+      command(pipe, id, DeleteTo(3))
+      val recovered = recover(pipe, id)
+      events(recovered) shouldBe Vector(4L -> "e4")
+      recovered.lastSequenceNr shouldBe 4L
+      journalKey(pipe, id, 1)._1 should startWith("#h1#")
+    }
+
     "be left alone by deletes and updates when legacy-keys-enabled is false" in {
       val id = changedId("NoLegacy")
       persistOk(before, id, "e1", "e2")
@@ -770,6 +814,18 @@ final class PersistenceIdKeySpec extends AnyWordSpec with Matchers with DynamoDB
     }
   }
 
+  "the legacy snapshot resolvers" should {
+
+    "not fail the recovery of an id that they cannot build a key for, when it has no snapshot (review of #1022)" in {
+      val mode = fixed.copy(legacySnapshotResolvers = true)
+      val id   = s"${uniquePrefix("Order")}-" // the legacy sort key resolver throws for it, as 1.3.0 did
+      persistOk(mode, id, "e1")
+      val recovered = recover(mode, id)
+      recovered.snapshot shouldBe None
+      events(recovered) shouldBe Vector(1L -> "e1")
+    }
+  }
+
   "rows written after the change" should {
 
     "be replayed by 1.3.0, whose deletes do not reach them until the upgrade" in {
@@ -785,11 +841,13 @@ final class PersistenceIdKeySpec extends AnyWordSpec with Matchers with DynamoDB
       command(before, id, DeleteTo(2))
       events(recover(before, id)).map(_._1) shouldBe Vector(1L, 2L, 3L, 4L)
 
-      // After the upgrade, the same delete removes both copies.
+      // After the upgrade, the same delete marks the copies under the new keys deleted too.
       command(fixed, id, DeleteTo(2))
       events(recover(fixed, id)).map(_._1) shouldBe Vector(3L, 4L)
       storedRows(journalTableName, id).map(r => r.sequenceNr -> r.deleted) shouldBe Vector(
         1L -> Some(true),
+        1L -> Some(true),
+        2L -> Some(true),
         2L -> Some(true),
         3L -> Some(false),
         4L -> Some(false)
@@ -850,9 +908,9 @@ final class PersistenceIdKeySpec extends AnyWordSpec with Matchers with DynamoDB
       val sortKeys = Seq(3L, 4L).map(journalKey(fixed, id, _)._2)
       sortKeys.foreach { key =>
         key should startWith("#h1#")
-        key.length shouldBe 4 + 64 + 1 + 19
+        key.length shouldBe 4 + 64 + 1 + 19 + 1
       }
-      sortKeys.map(_.dropRight(20)).distinct should have size 1
+      sortKeys.map(_.dropRight(21)).distinct should have size 1
       val recovered = recover(fixed, id)
       recovered.snapshot shouldBe Some(4L -> "s4")
       recovered.lastSequenceNr shouldBe 4L
@@ -860,6 +918,23 @@ final class PersistenceIdKeySpec extends AnyWordSpec with Matchers with DynamoDB
       persistOk(fixed, id, "e5")
       events(recover(fixed, id)) shouldBe Vector(5L -> "e5")
       storedRows(journalTableName, id).map(_.sequenceNr) shouldBe Vector(4L, 5L)
+    }
+  }
+
+  "an id whose text is the hashed form of another id's sort key" should {
+
+    "not share the snapshot key of that id (review of #1022)" in {
+      // The snapshot store has 64 shards, and both ids are in shard 36 there.
+      val long    = s"Order-${"x" * 1005}60"
+      val literal = "Order-#h1#7358fdb239e60f150ab56a7449063d4f5ab8e568fd330a81c290784ee7d70946"
+      snapshotKey(fixed, long, 1)._1 shouldBe snapshotKey(fixed, literal, 1)._1
+      snapshotKey(fixed, long, 1) should not be snapshotKey(fixed, literal, 1)
+      Seq(long, literal).foreach { id =>
+        persistOk(fixed, id, "e1")
+        command(fixed, id, Snap(s"snapshot-of-${id.length}"))
+      }
+      recover(fixed, long).snapshot shouldBe Some(1L -> s"snapshot-of-${long.length}")
+      recover(fixed, literal).snapshot shouldBe Some(1L -> s"snapshot-of-${literal.length}")
     }
   }
 
@@ -927,16 +1002,17 @@ final class PersistenceIdKeySpec extends AnyWordSpec with Matchers with DynamoDB
       newRows.extraOver(base) shouldBe Map(
         "persist"        -> Map.empty,
         "update"         -> Map.empty,
-        "softDelete"     -> Map("DeleteItem" -> 1L),
+        "softDelete"     -> Map("UpdateItem" -> 1L),
         "hardDelete"     -> Map("DeleteItem" -> 1L),
         "snapshotSave"   -> Map("DeleteItem" -> 1L),
         "snapshotLoad"   -> Map.empty,
         "snapshotDelete" -> Map.empty
       )
       oldRows.extraOver(base) shouldBe Map(
-        "persist"        -> Map.empty,
-        "update"         -> Map("UpdateItem" -> 1L, "GetItem" -> 2L),
-        "softDelete"     -> Map("DeleteItem" -> 1L),
+        "persist" -> Map.empty,
+        "update"  -> Map("UpdateItem" -> 1L, "GetItem" -> 2L),
+        // marked deleted in place under the 1.3.0 key: one UpdateItem instead of the PutItem of 1.3.0
+        "softDelete"     -> Map("UpdateItem" -> 1L, "PutItem" -> -1L),
         "hardDelete"     -> Map("DeleteItem" -> 1L),
         "snapshotSave"   -> Map("DeleteItem" -> 1L),
         "snapshotLoad"   -> Map.empty,

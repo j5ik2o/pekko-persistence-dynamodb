@@ -85,9 +85,37 @@ final class PersistenceIdKeyPartsSpec extends AnyFreeSpec with Matchers {
       PersistenceIdKeyParts.sortKey("x" * 1004, SequenceNumber(1)).length shouldBe 1024
       val hashed = PersistenceIdKeyParts.sortKey("x" * 1005, SequenceNumber(1))
       // sha256 of 1,005 "x" characters, computed outside the JVM
-      hashed shouldBe "#h1#14be44821ac0d0c31b8cb74d3481e379fb7ece89bb90180d538091e38e2d73b9-0000000000000000001"
-      PersistenceIdKeyParts.sortKey("x" * 1005, SequenceNumber(2)).dropRight(20) shouldBe hashed.dropRight(20)
+      hashed shouldBe "#h1#14be44821ac0d0c31b8cb74d3481e379fb7ece89bb90180d538091e38e2d73b9-0000000000000000001#"
+      PersistenceIdKeyParts.sortKey("x" * 1005, SequenceNumber(2)).dropRight(21) shouldBe hashed.dropRight(21)
       PersistenceIdKeyParts.sortKey("y" * 1005, SequenceNumber(1)) should not be hashed
+    }
+  }
+
+  "the hashed form" - {
+
+    "never meets a key without a hash, even when the text is the marker and the digits of a hash (review of #1022)" in {
+      val long    = "x" * 1005
+      val hashed  = PersistenceIdKeyParts.sortKey(long, SequenceNumber(1))
+      val literal = hashed.stripSuffix("#").dropRight(20) // "#h1#" and the 64 hex digits, as the text of an id
+      PersistenceIdKeyParts.sortKey(literal, SequenceNumber(1)) should not be hashed
+      PersistenceIdKeyParts.sortKey(literal, SequenceNumber(1)) should endWith("-0000000000000000001")
+      hashed should endWith("-0000000000000000001#")
+
+      val longPrefix    = "A" * 2008
+      val shard         = "0" * 39 + "7"
+      val hashedPrefix  = PersistenceIdKeyParts.partitionKey(Some(longPrefix), shard)
+      val literalPrefix = hashedPrefix.stripSuffix("#").dropRight(41)
+      PersistenceIdKeyParts.partitionKey(Some(literalPrefix), shard) should not be hashedPrefix
+    }
+
+    "bounds the partition key to 2,048 bytes and keeps a shorter one as it was" in {
+      val shard = "0" * 39 + "7"
+      PersistenceIdKeyParts.partitionKey(None, shard) shouldBe shard
+      PersistenceIdKeyParts.partitionKey(Some("A" * 2007), shard) shouldBe ("A" * 2007) + "-" + shard // 2,048 bytes
+      val hashed = PersistenceIdKeyParts.partitionKey(Some("A" * 2008), shard)
+      hashed should fullyMatch regex s"#h1#[0-9a-f]{64}-$shard#"
+      hashed.length should be < 2048
+      PersistenceIdKeyParts.partitionKey(Some("é" * 1004), shard) should startWith("#h1#") // 2,008 bytes
     }
   }
 

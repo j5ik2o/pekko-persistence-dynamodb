@@ -514,8 +514,9 @@ final class PersistenceIdKeySpec extends AnyWordSpec with Matchers with DynamoDB
         3L -> Some(false),
         4L -> Some(false)
       )
+      // the events under their 1.3.0 keys are marked deleted there
       rows.filter(_.deleted.contains(true)).map(r => (r.pkey, r.skey)) shouldBe Seq(1L, 2L).map(
-        journalKey(fixed, id, _)
+        journalKey(before, id, _)
       )
     }
 
@@ -595,6 +596,39 @@ final class PersistenceIdKeySpec extends AnyWordSpec with Matchers with DynamoDB
       )
     }
 
+    "be soft deleted under the 1.3.0 key when the new key holds another id's 1.3.0 row (review of #1022)" in {
+      // With `|`, the new key of `C|D` is the 1.3.0 key of `CD|<n>`.
+      val x = "C|D"
+      val y = idWithOldKey(journalKey(pipe, x, 1), n => s"CD|$n", journalKey(pipeBefore, _, 1))
+      persistOk(pipeBefore, x, "x1", "x2")
+      persistOk(pipeBefore, y, "y1")
+      command(pipe, x, DeleteTo(2))
+      val recovered = recover(pipe, x)
+      events(recovered) shouldBe empty
+      recovered.lastSequenceNr shouldBe 2L
+      storedRows(journalTableName, x).map(r => r.sequenceNr -> r.deleted) shouldBe Vector(
+        1L -> Some(true),
+        2L -> Some(true)
+      )
+      events(recover(pipe, y)) shouldBe Vector(1L -> "y1")
+    }
+
+    "keep working when the new partition key of the id would exceed 2,048 bytes (review of #1022)" in {
+      val pipeHard = pipe.copy(softDelete = false)
+      val id       = ("A" * 2008) + "|B" // 1.3.0 gave it a 42-byte partition key
+      journalKey(pipeBefore, id, 1)._1.length shouldBe 42
+      persistOk(pipeBefore, id, "e1", "e2")
+      persistOk(pipe, id, "e3", "e4")
+      updateEvent(pipe, id, 1, "e1-updated")
+      events(recover(pipe, id)) shouldBe Vector(1L -> "e1-updated", 2L -> "e2", 3L -> "e3", 4L -> "e4")
+      command(pipeHard, id, DeleteTo(1))
+      command(pipe, id, DeleteTo(3))
+      val recovered = recover(pipe, id)
+      events(recovered) shouldBe Vector(4L -> "e4")
+      recovered.lastSequenceNr shouldBe 4L
+      journalKey(pipe, id, 1)._1 should startWith("#h1#")
+    }
+
     "be left alone by deletes and updates when legacy-keys-enabled is false" in {
       val id = changedId("NoLegacy")
       persistOk(before, id, "e1", "e2")
@@ -620,11 +654,13 @@ final class PersistenceIdKeySpec extends AnyWordSpec with Matchers with DynamoDB
       command(before, id, DeleteTo(2))
       events(recover(before, id)).map(_._1) shouldBe Vector(1L, 2L, 3L, 4L)
 
-      // After the upgrade, the same delete removes both copies.
+      // After the upgrade, the same delete marks the copies under the new keys deleted too.
       command(fixed, id, DeleteTo(2))
       events(recover(fixed, id)).map(_._1) shouldBe Vector(3L, 4L)
       storedRows(journalTableName, id).map(r => r.sequenceNr -> r.deleted) shouldBe Vector(
         1L -> Some(true),
+        1L -> Some(true),
+        2L -> Some(true),
         2L -> Some(true),
         3L -> Some(false),
         4L -> Some(false)
@@ -644,9 +680,9 @@ final class PersistenceIdKeySpec extends AnyWordSpec with Matchers with DynamoDB
       val sortKeys = Seq(3L, 4L).map(journalKey(fixed, id, _)._2)
       sortKeys.foreach { key =>
         key should startWith("#h1#")
-        key.length shouldBe 4 + 64 + 1 + 19
+        key.length shouldBe 4 + 64 + 1 + 19 + 1
       }
-      sortKeys.map(_.dropRight(20)).distinct should have size 1
+      sortKeys.map(_.dropRight(21)).distinct should have size 1
       val recovered = recover(fixed, id)
       events(recovered).map(_._1) shouldBe Vector(1L, 2L, 3L, 4L)
       recovered.lastSequenceNr shouldBe 4L

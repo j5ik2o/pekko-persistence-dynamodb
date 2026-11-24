@@ -38,7 +38,7 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.journal.head.{
   JournalRowUpdateRejection
 }
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.schema.{ JournalKeyCodec, JournalRowCodec, JournalSchema }
-import com.github.j5ik2o.pekko.persistence.dynamodb.journal.write.{ JournalWritePlan, WriteRejection }
+import com.github.j5ik2o.pekko.persistence.dynamodb.journal.write.WriteRejection
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.{
   JournalPluginContext,
   JournalRow,
@@ -153,13 +153,49 @@ final class JournalRowStore(
     * condition.
     *
     * A row with `deleted = true` is the rewrite of an existing event by a soft delete. Releases up to 1.3.0 may have
-    * stored that event under another key (see `legacyKeyOf`), and that copy still has `deleted = false`, so it is
-    * deleted after the write. Otherwise a replay would read the copy and return the deleted event.
+    * stored that event under another key (see `legacyKeyOf`). Such an event is marked deleted where it is stored, under
+    * the condition that the row there is the event and is not deleted yet, and nothing is written under the current
+    * key, which can hold a row of another persistence id. Only an event that is not stored under that key is written
+    * under the current key.
     */
   def write(rows: Seq[JournalRow]): Source[Long, NotUsed] = {
-    val softDeleted = rows.filter(_.deleted).map(row => PersistenceIdWithSeqNr(row.persistenceId, row.sequenceNumber))
-    writeRows(rows).flatMapConcat(count => deleteLegacyRows(softDeleted).map(_ => count))
+    val (underLegacyKey, others) =
+      rows.partition(row => row.deleted && legacyKeyOf(row.persistenceId, row.sequenceNumber).isDefined)
+    if (underLegacyKey.isEmpty) {
+      writeRows(rows)
+    } else {
+      Source(underLegacyKey.toVector)
+        .flatMapMerge(batchWriteLimit, row => softDeleteUnderLegacyKey(row).map(row -> _))
+        .fold(Vector.empty[(JournalRow, Boolean)])(_ :+ _)
+        .flatMapConcat { results =>
+          val notThere = results.collect { case (row, false) => row }
+          writeRows(others ++ notThere).map(_ + results.count(_._2))
+        }
+    }
   }
+
+  /** Marks the event of `row` deleted under its key of a release up to 1.3.0. The result is false when that key holds
+    * no such event that is not deleted yet: no row, a row of another persistence id or sequence number, or a row that
+    * is already deleted.
+    */
+  private def softDeleteUnderLegacyKey(row: JournalRow): Source[Boolean, NotUsed] =
+    legacyKeyOf(row.persistenceId, row.sequenceNumber) match {
+      case None => Source.single(false)
+      case Some(legacyKey) =>
+        run(
+          Operation.Update(
+            schema.table,
+            legacyKey,
+            Vector(AttributeUpdate.Set(schema.deleted, DdbValue.Bool(true))),
+            Some(updatableRowCondition(row, legacyKey))
+          ),
+          writeBackoffConfig
+        ).map {
+          case OperationResult.Written(_)           => true
+          case OperationResult.ConditionRejected(_) => false
+          case other => throw new IllegalStateException(s"unexpected result for a soft delete: $other")
+        }
+    }
 
   private def writeRows(rows: Seq[JournalRow]): Source[Long, NotUsed] = {
     if (rows.isEmpty) {
@@ -424,16 +460,44 @@ final class JournalRowStore(
     * `JournalHeadConcurrentUpdateException`, which the caller can retry. The journal row keeps its `deleted` flag and
     * is not updated when it is missing or deleted, so an update cannot bring a soft deleted event back.
     */
-  private def updateRowAndHead(head: HeadTable, row: JournalRow): Source[Unit, NotUsed] =
-    JournalWritePlan.findJournalRowTooLarge(
-      Seq(row),
-      journalColumns,
-      partitionKeyResolver,
-      sortKeyResolver
-    ) match {
-      case Some(tooLarge) => Source.failed(tooLarge.toJournalHeadException)
-      case None           => updateAttempt(head, row, keyOf(row.persistenceId, row.sequenceNumber), 1, None)
+  private def updateRowAndHead(head: HeadTable, row: JournalRow): Source[Unit, NotUsed] = {
+    val key = keyOf(row.persistenceId, row.sequenceNumber)
+    legacyKeyOf(row.persistenceId, row.sequenceNumber) match {
+      // The size of the row depends on its key. When the current key and the key of a release up to 1.3.0 disagree
+      // about the limit, the row is located first, and the size is checked with the key it is stored under.
+      case Some(legacyKey) if rowTooLarge(row, key).isDefined != rowTooLarge(row, legacyKey).isDefined =>
+        rowStateAt(row, key).flatMapConcat { case (storedKey, _) => checkedUpdate(head, row, storedKey) }
+      case _ => checkedUpdate(head, row, key)
     }
+  }
+
+  private def checkedUpdate(head: HeadTable, row: JournalRow, key: RowKey): Source[Unit, NotUsed] =
+    rowTooLarge(row, key) match {
+      case Some(tooLarge) => Source.failed(tooLarge.toJournalHeadException)
+      case None           => updateAttempt(head, row, key, 1, None)
+    }
+
+  /** The rejection when the journal row of `row` under `key` exceeds the DynamoDB item limit. */
+  private def rowTooLarge(row: JournalRow, key: RowKey): Option[WriteRejection.JournalRowTooLarge] = {
+    def keyPart(name: AttributeName): String =
+      key.values.get(name).collect { case DdbValue.Str(value) => value }.getOrElse("")
+    val size = DynamoDBItemSizeCalculator.journalItemSize(
+      row,
+      journalColumns,
+      keyPart(schema.partitionKey),
+      keyPart(schema.sortKey)
+    )
+    if (size > JournalHeadLimits.MaxItemSizeBytes)
+      Some(
+        WriteRejection.JournalRowTooLarge(
+          row.persistenceId.asString,
+          row.sequenceNumber.value,
+          size,
+          JournalHeadLimits.MaxItemSizeBytes
+        )
+      )
+    else None
+  }
 
   private def updateAttempt(
       head: HeadTable,

@@ -38,7 +38,7 @@ final class SortKeyResolverSpec extends AnyFreeSpec with Matchers {
     val pid = PersistenceId(id)
     Try(
       (
-        PartitionKeyResolver.persistenceIdBased(pid, new PersistenceIdOps(pid, separator).prefix, 64).asString,
+        PartitionKeyResolver.legacyPersistenceIdBased(pid, new PersistenceIdOps(pid, separator).prefix, 64).asString,
         SortKeyResolver.legacyPersistenceIdWithSeqNrSKey(pid, SequenceNumber(1), separator)
       )
     ).toOption
@@ -79,7 +79,7 @@ final class SortKeyResolverSpec extends AnyFreeSpec with Matchers {
       sortKeyOf(s"Order-$fits").getBytes("UTF-8").length shouldBe 1024
 
       val hashed = sortKeyOf(s"Order-${fits}x")
-      hashed should fullyMatch regex "#h1#[0-9a-f]{64}-0000000000000000001"
+      hashed should fullyMatch regex "#h1#[0-9a-f]{64}-0000000000000000001#"
       sortKeyOf(s"Order-${"é" * 503}") should startWith("#h1#") // 1,006 bytes in UTF-8, 503 characters
       sortKeyOf(s"Order-${"é" * 502}") should startWith("éé")   // 1,004 bytes
       sortKeyOf("x" * 1005) should startWith("#h1#")            // an id without a separator
@@ -88,14 +88,47 @@ final class SortKeyResolverSpec extends AnyFreeSpec with Matchers {
     "gives every event of a long id a hashed key of the same form, and different long ids different keys" in {
       val id   = s"Order-item-${"x" * 1000}"
       val keys = Seq(1L, 2L, Long.MaxValue).map(n => sortKeyOf(id, sequenceNr = n))
-      keys.map(_.dropRight(20)).distinct should have size 1
-      keys.foreach(_.length shouldBe 4 + 64 + 20)
-      keys.last should endWith("-9223372036854775807")
+      keys.map(_.dropRight(21)).distinct should have size 1
+      keys.foreach(_.length shouldBe 4 + 64 + 21)
+      keys.last should endWith("-9223372036854775807#")
       sortKeyOf(s"Order-item-${"x" * 999}y") should not be keys.head
       sortKeyOf(
         s"Other-item-${"x" * 1000}"
       ) shouldBe keys.head // the same text after the separator: the pkey tells them apart
       keyPair(s"Other-item-${"x" * 1000}", "-") should not be keyPair(id, "-")
+    }
+
+    "gives the ids of the review of #1022 different keys: a literal hash text and the long id it hashes" in {
+      // With 64 shards both ids are in shard 36, so only the sort key can tell them apart.
+      val long    = s"Order-${"x" * 1005}60"
+      val literal = "Order-#h1#7358fdb239e60f150ab56a7449063d4f5ab8e568fd330a81c290784ee7d70946"
+      keyPair(long, "-")._1 shouldBe keyPair(literal, "-")._1
+      keyPair(long, "-")._2.stripSuffix("#") shouldBe keyPair(literal, "-")._2
+      keyPair(long, "-") should not be keyPair(literal, "-")
+    }
+
+    "keeps the key of every id that 1.3.0 could write within the DynamoDB limits" in {
+      val separators = Seq("-", "|", "::")
+      val ids = for {
+        separator <- separators
+        head <- Seq(1, 1004, 1005, 2007, 2008, 2040)
+        tail <- Seq(0, 1, 1004, 1005)
+        id = ("A" * head) + separator + ("B" * tail) + (if (tail % 2 == 0) separator + "C" else "")
+        if id.length <= 2048
+      } yield id -> separator
+      ids.size should be > 30
+      ids.foreach { case (id, separator) =>
+        withClue(s"id of ${id.length} characters with [$separator]: ") {
+          legacyKeyPair(id, separator).filter { case (p, s) => PersistenceIdKeyParts.fitsDynamoDB(p, s) }.foreach { _ =>
+            val (partitionKey, sortKey) = keyPair(id, separator)
+            PersistenceIdKeyParts.fitsDynamoDB(partitionKey, sortKey) shouldBe true
+          }
+        }
+      }
+      // the example of the review of #1022: 1.3.0 gave it a 42-byte partition key with the separator `|`
+      val pipe = ("A" * 2008) + "|B"
+      legacyKeyPair(pipe, "|").map(_._1.length) shouldBe Some(42)
+      keyPair(pipe, "|")._1 should startWith("#h1#")
     }
 
     "gives the sort key of 1.3.0 with the legacy function, which throws where 1.3.0 threw" in {

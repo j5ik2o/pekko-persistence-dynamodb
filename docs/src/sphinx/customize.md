@@ -177,9 +177,12 @@ are the whole `persistenceId`, and the shard and the sequence number have a fixe
 get the same key.
 
 When `${body}-${sequenceNumber}` would exceed 1,024 bytes in UTF-8, the largest sort key that DynamoDB accepts, `skey`
-is `#h1#${sha256(body)}-${sequenceNumber}` instead: the marker `#h1#`, the SHA-256 of `body` in 64 hexadecimal digits,
-and the sequence number. Whether a `persistenceId` gets this form depends on its `body` alone, so every event of the
-`persistenceId` gets the same form. A `persistenceId` cannot be read back from such a key.
+is `#h1#${sha256(body)}-${sequenceNumber}#` instead: the marker `#h1#`, the SHA-256 of `body` in 64 hexadecimal digits,
+the sequence number, and a closing `#`. In the same way, when `${prefix}-${shard}` would exceed 2,048 bytes, the
+largest partition key that DynamoDB accepts, `pkey` is `#h1#${sha256(prefix)}-${shard}#`. Whether a `persistenceId` gets
+these forms depends on its `prefix` and `body` alone, so every event of the `persistenceId` gets the same form. A key
+without a hash always ends with a digit, so a `persistenceId` whose text looks like a hashed key never gets the key of
+another `persistenceId`. A `persistenceId` cannot be read back from a hashed key.
 
 (key-format-change)=
 
@@ -196,14 +199,16 @@ now give the keys below. The keys of every other `persistenceId` stay the same, 
 | `\|` | Contains the separator, except `<one character>\|\|` | `pkey` and `skey` |
 | `.`, `$`, `^`, `?`, `*`, `+`, `(`, `[`, `{`, `\` | Contains the separator | 1.3.0 failed with an exception, so no rows exist |
 | Any | `body` longer than 1,004 bytes | `skey` takes the hashed form. Ids with one separator or none could not be written by 1.3.0 |
+| Any | `prefix` longer than 2,007 bytes | `pkey` takes the hashed form. With a separator that is not a regular expression metacharacter, 1.3.0 could not write such ids. With `\|`, 1.3.0 used only the first character as `prefix`, so these ids are among the ids above whose key changes |
 
 The rows that 1.3.0 and earlier releases wrote keep their old keys until they are migrated. The default resolvers
 still handle them: a replay, the highest sequence number, and a snapshot load read every row of the `persistenceId`
 through the `persistence-id` index, and a hard delete, a soft delete, an in-place update, a snapshot delete, and a
-snapshot save also reach the row under the old key. An operation on the old key changes the row only while it is the
-event or the snapshot of the same `persistenceId` and sequence number, so the row of another `persistenceId` that shares
-the old key is never changed. When a snapshot of the same sequence number exists under both keys, a load returns the one
-under the current key.
+snapshot save also reach the row under the old key. A soft delete marks an event deleted where it is stored, so it works
+even when the new key holds a row of another `persistenceId`. An operation on the old key changes the row only while it
+is the event or the snapshot of the same `persistenceId` and sequence number, so the row of another `persistenceId` that
+shares the old key is never changed. When a snapshot of the same sequence number exists under both keys, a load returns
+the one under the current key, whichever was saved later.
 
 A migration tool that moves the old rows to the current keys comes in a later change. Until then, the new key of a
 `persistenceId` can be the old key of another `persistenceId`, for example `Order-` and `Order--23`, or with the
@@ -215,7 +220,9 @@ The extra requests for the old keys, measured on DynamoDB Local with the AWS SDK
 | Operation | `persistenceId` whose key changes | `persistenceId` whose key does not change |
 | :-- | :-- | :-- |
 | Persist | none | none |
-| Hard delete, soft delete | one conditional `DeleteItem` per event | none |
+| Hard delete | one conditional `DeleteItem` per event | none |
+| Soft delete, the row is under the current key | one refused `UpdateItem` per event | none |
+| Soft delete, the row is under the old key | none; one conditional `UpdateItem` per event instead of the `PutItem` of 1.3.0 | none |
 | In-place update, the row is under the current key | none | none |
 | In-place update, the row is under the old key | one refused `UpdateItem` and two `GetItem`; with the JournalHead, one refused `TransactWriteItems` and three `GetItem` | none |
 | Snapshot save | one conditional `DeleteItem` | none |
@@ -246,7 +253,10 @@ j5ik2o.dynamo-db-snapshot {
 ```
 
 A rolled back release up to 1.3.0 replays the rows written under the new keys, but its deletes and in-place updates do
-not reach them.
+not reach them. A snapshot that it saves at a sequence number that already has a snapshot under the new key is stored
+under the old key, and after the upgrade again, a load returns the snapshot under the new key, which is the older one.
+While you run 1.3.0 after a rollback, do not save a snapshot again at a sequence number that already has one, or delete
+that snapshot after the upgrade again.
 
 If you read `pkey` or `skey` outside the plugin, for example from DynamoDB Streams or Kinesis Data Streams, note that the
 keys change for the `persistenceId`s in the table above. With the separator `|`, the events of one `persistenceId` are in

@@ -31,8 +31,13 @@ private[dynamodb] object PersistenceIdKeyParts {
   /** The largest partition key DynamoDB accepts, in UTF-8 bytes. */
   val MaxPartitionKeyBytes: Int = 2048
 
-  /** Marks a sort key body that is the SHA-256 of the text after the first separator. */
+  /** Starts a key part that is replaced with its SHA-256. */
   val HashMarker: String = "#h1#"
+
+  /** Ends a key that holds a SHA-256. A key without a hash always ends with a digit, so the two forms never meet, even
+    * when the text of an id is the marker and the digits of a hash.
+    */
+  val HashTerminator: String = "#"
 
   /** The text before the first separator and the text after it, or none when the id does not contain the separator.
     *
@@ -45,15 +50,30 @@ private[dynamodb] object PersistenceIdKeyParts {
     if (index < 0) None else Some((id.substring(0, index), id.substring(index + separator.length)))
   }
 
-  /** `${body}-${sequenceNumber}` with the sequence number in 19 digits. When that exceeds `MaxSortKeyBytes`, the body
-    * is replaced with `HashMarker` and the SHA-256 of the body in 64 hex digits. The choice depends on the body alone,
-    * so every sequence number of an id gets a sort key of the same form.
+  /** `${body}-${sequenceNumber}` with the sequence number in 19 digits. When that exceeds `MaxSortKeyBytes`, the key is
+    * `${HashMarker}${sha256(body)}-${sequenceNumber}${HashTerminator}`, with the SHA-256 in 64 hex digits. The choice
+    * depends on the body alone, so every sequence number of an id gets a sort key of the same form.
     */
   def sortKey(body: String, sequenceNumber: SequenceNumber): String = {
     val bodyBytes = body.getBytes(StandardCharsets.UTF_8)
-    val key       = if (bodyBytes.length + 20 > MaxSortKeyBytes) HashMarker + sha256Hex(bodyBytes) else body
-    "%s-%019d".format(key, sequenceNumber.value)
+    if (bodyBytes.length + 20 > MaxSortKeyBytes)
+      "%s%s-%019d%s".format(HashMarker, sha256Hex(bodyBytes), sequenceNumber.value, HashTerminator)
+    else "%s-%019d".format(body, sequenceNumber.value)
   }
+
+  /** `${prefix}-${shard}`, or `${shard}` without a prefix, where `shard` is the 40-digit shard number. When that
+    * exceeds `MaxPartitionKeyBytes`, the key is `${HashMarker}${sha256(prefix)}-${shard}${HashTerminator}`. The choice
+    * depends on the prefix alone.
+    */
+  def partitionKey(prefix: Option[String], shard: String): String =
+    prefix match {
+      case None => shard
+      case Some(text) =>
+        val prefixBytes = text.getBytes(StandardCharsets.UTF_8)
+        if (prefixBytes.length + 1 + shard.length > MaxPartitionKeyBytes)
+          s"$HashMarker${sha256Hex(prefixBytes)}-$shard$HashTerminator"
+        else s"$text-$shard"
+    }
 
   /** The first part that releases up to 1.3.0 used for the partition key.
     *

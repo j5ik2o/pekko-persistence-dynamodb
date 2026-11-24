@@ -68,23 +68,44 @@ object PartitionKeyResolver {
 
   }
 
-  /** `${prefix}-${md5(persistenceId.reverse) % shardCount + 1}` with the shard in 40 digits, or the shard alone when
-    * there is no prefix.
+  /** The shard of the id, `md5(persistenceId.reverse) % shardCount + 1`, in 40 digits. */
+  private[journal] def shardOf(persistenceId: PersistenceId, shardCount: Int): String = {
+    val md5   = MessageDigest.getInstance("MD5")
+    val df    = new DecimalFormat("0000000000000000000000000000000000000000")
+    val bytes = persistenceId.asString.reverse.getBytes(StandardCharsets.UTF_8)
+    val hash  = BigInt(md5.digest(bytes))
+    df.format((hash.abs % shardCount) + 1)
+  }
+
+  /** The partition key of `PersistenceIdBased`: `${prefix}-${shard}`, or the shard alone without a prefix. A prefix
+    * that would make the key exceed 2,048 bytes is replaced with its marked SHA-256 (see
+    * `PersistenceIdKeyParts.partitionKey`).
     */
   private[journal] def persistenceIdBased(
       persistenceId: PersistenceId,
       prefix: Option[String],
       shardCount: Int
+  ): PartitionKey =
+    PartitionKey(PersistenceIdKeyParts.partitionKey(prefix, shardOf(persistenceId, shardCount)))
+
+  /** The partition key of `LegacyPersistenceIdBased`, the format of releases up to 1.3.0, which has no bound. */
+  private[journal] def legacyPersistenceIdBased(
+      persistenceId: PersistenceId,
+      prefix: Option[String],
+      shardCount: Int
   ): PartitionKey = {
-    val md5   = MessageDigest.getInstance("MD5")
-    val df    = new DecimalFormat("0000000000000000000000000000000000000000")
-    val bytes = persistenceId.asString.reverse.getBytes(StandardCharsets.UTF_8)
-    val hash  = BigInt(md5.digest(bytes))
-    val mod   = (hash.abs % shardCount) + 1
+    val shard = shardOf(persistenceId, shardCount)
     prefix match {
-      case Some(modelName) => PartitionKey("%s-%s".format(modelName, df.format(mod)))
-      case None            => PartitionKey(df.format(mod)) // fallback
+      case Some(modelName) => PartitionKey("%s-%s".format(modelName, shard))
+      case None            => PartitionKey(shard) // fallback
     }
+  }
+
+  /** A partition key resolver, other than `PersistenceIdBased`, that can also give the key that releases up to 1.3.0
+    * gave an id. Tests use it; the default resolver is recognized by its class.
+    */
+  private[journal] trait LegacyKeys {
+    def resolveLegacy(persistenceId: PersistenceId): Option[PartitionKey]
   }
 
   /** The default resolver. The prefix is the text before the first `persistence-id-separator`, which is matched as
@@ -117,7 +138,7 @@ object PartitionKeyResolver {
       else
         PersistenceIdKeyParts
           .legacyPrefix(persistenceId, separator)
-          .map(persistenceIdBased(persistenceId, _, pluginConfig.shardCount))
+          .map(legacyPersistenceIdBased(persistenceId, _, pluginConfig.shardCount))
 
   }
 
@@ -135,7 +156,7 @@ object PartitionKeyResolver {
 
     // ${persistenceId.prefix}-${md5(persistenceId.reverse) % shardCount}
     override def resolve(persistenceId: PersistenceId, sequenceNumber: SequenceNumber): PartitionKey =
-      persistenceIdBased(persistenceId, persistenceId.prefix, pluginConfig.shardCount)
+      legacyPersistenceIdBased(persistenceId, persistenceId.prefix, pluginConfig.shardCount)
 
   }
 

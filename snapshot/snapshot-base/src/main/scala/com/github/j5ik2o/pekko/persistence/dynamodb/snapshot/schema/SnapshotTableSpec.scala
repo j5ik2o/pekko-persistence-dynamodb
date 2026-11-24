@@ -20,6 +20,8 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.model.{ PersistenceId, Persi
 import com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.config.SnapshotPluginConfig
 import com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.{ PartitionKeyResolver, SortKeyResolver }
 
+import scala.util.Try
+
 sealed trait SnapshotKeyDerivation
 
 object SnapshotKeyDerivation {
@@ -62,28 +64,37 @@ final case class SnapshotTableSpec(
     */
   private[snapshot] def legacyKeyOf(persistenceId: PersistenceId, sequenceNumber: SequenceNumber): Option[RowKey] =
     keyDerivation match {
-      case SnapshotKeyDerivation.Identity => None
-      case SnapshotKeyDerivation.Sharded(partitionKeyResolver, sortKeyResolver) =>
-        val partitionKey = partitionKeyResolver.resolve(persistenceId, sequenceNumber)
-        val sortKey      = sortKeyResolver.resolve(persistenceId, sequenceNumber)
-        val legacyPartitionKey = partitionKeyResolver match {
-          case resolver: PartitionKeyResolver.PersistenceIdBased => resolver.resolveLegacy(persistenceId)
-          case _                                                 => Some(partitionKey)
-        }
-        val legacySortKey = sortKeyResolver match {
-          case resolver: SortKeyResolver.PersistenceIdWithSeqNr =>
-            resolver.resolveLegacy(persistenceId, sequenceNumber)
-          case _ => Some(sortKey)
-        }
-        for {
-          oldPartitionKey <- legacyPartitionKey
-          oldSortKey <- legacySortKey
-          if oldPartitionKey != partitionKey || oldSortKey != sortKey
-          if PersistenceIdKeyParts.fitsDynamoDB(oldPartitionKey.asString, oldSortKey.asString)
-        } yield RowKey(
-          table.table,
-          keyFrom(DdbValue.Str(oldPartitionKey.asString), DdbValue.Str(oldSortKey.asString))
-        )
+      case SnapshotKeyDerivation.Sharded(partitionKeyResolver, sortKeyResolver)
+          if partitionKeyResolver.isInstanceOf[PartitionKeyResolver.PersistenceIdBased] ||
+          partitionKeyResolver.isInstanceOf[PartitionKeyResolver.LegacyKeys] ||
+          sortKeyResolver.isInstanceOf[SortKeyResolver.PersistenceIdWithSeqNr] ||
+          sortKeyResolver.isInstanceOf[SortKeyResolver.LegacyKeys] =>
+        // A resolver that cannot build a key for the id, such as a legacy one, gives no legacy key.
+        Try {
+          val partitionKey = partitionKeyResolver.resolve(persistenceId, sequenceNumber)
+          val sortKey      = sortKeyResolver.resolve(persistenceId, sequenceNumber)
+          val legacyPartitionKey = partitionKeyResolver match {
+            case resolver: PartitionKeyResolver.PersistenceIdBased => resolver.resolveLegacy(persistenceId)
+            case resolver: PartitionKeyResolver.LegacyKeys         => resolver.resolveLegacy(persistenceId)
+            case _                                                 => Some(partitionKey)
+          }
+          val legacySortKey = sortKeyResolver match {
+            case resolver: SortKeyResolver.PersistenceIdWithSeqNr =>
+              resolver.resolveLegacy(persistenceId, sequenceNumber)
+            case resolver: SortKeyResolver.LegacyKeys => resolver.resolveLegacy(persistenceId, sequenceNumber)
+            case _                                    => Some(sortKey)
+          }
+          for {
+            oldPartitionKey <- legacyPartitionKey
+            oldSortKey <- legacySortKey
+            if oldPartitionKey != partitionKey || oldSortKey != sortKey
+            if PersistenceIdKeyParts.fitsDynamoDB(oldPartitionKey.asString, oldSortKey.asString)
+          } yield RowKey(
+            table.table,
+            keyFrom(DdbValue.Str(oldPartitionKey.asString), DdbValue.Str(oldSortKey.asString))
+          )
+        }.toOption.flatten
+      case _ => None
     }
 
   private def keyFrom(partitionKey: DdbValue, sortKey: DdbValue): AttributeMap = {

@@ -29,6 +29,8 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.schema.{
   SnapshotTableSpec
 }
 
+import scala.util.Try
+
 final class SnapshotStore(
     adapter: DdbClientAdapter,
     private val codec: SnapshotRowCodec,
@@ -170,10 +172,10 @@ final class SnapshotStore(
       .fold(Vector.empty[AttributeMap])(_ :+ _)
       .flatMapConcat { values =>
         val chosen = values.headOption.map { head =>
-          values
-            .filter(_.get(schema.sequenceNumber) == head.get(schema.sequenceNumber))
-            .find(isUnderCurrentKey)
-            .getOrElse(head)
+          val sameSequenceNr = values.filter(_.get(schema.sequenceNumber) == head.get(schema.sequenceNumber))
+          // The key is compared only when two rows have the same sequence number, so a resolver that cannot build a
+          // key for the id does not fail a load that returns one row.
+          if (sameSequenceNr.size < 2) head else sameSequenceNr.find(isUnderCurrentKey).getOrElse(head)
         }
         chosen.map(codec.decode) match {
           case None             => Source.single(None)
@@ -184,7 +186,10 @@ final class SnapshotStore(
       }
 
   private def isUnderCurrentKey(values: AttributeMap): Boolean =
-    codec.decode(values).exists(row => tableSpec.table.keyOf(values).toOption.contains(codec.key(row)))
+    codec
+      .decode(values).exists(row =>
+        Try(codec.key(row)).toOption.exists(tableSpec.table.keyOf(values).toOption.contains)
+      )
 
   private def hasLegacyKey(persistenceId: PersistenceId): Boolean =
     tableSpec.legacyKeyOf(persistenceId, SequenceNumber(1)).isDefined

@@ -87,6 +87,13 @@ object SortKeyResolver {
     }
   }
 
+  /** A sort key resolver, other than `PersistenceIdWithSeqNr`, that can also give the key that releases up to 1.3.0
+    * gave an event. Tests use it; the default resolver is recognized by its class.
+    */
+  private[snapshot] trait LegacyKeys {
+    def resolveLegacy(persistenceId: PersistenceId, sequenceNumber: SequenceNumber): Option[SortKey]
+  }
+
   final class SeqNr extends SortKeyResolver {
 
     // ${sequenceNumber}

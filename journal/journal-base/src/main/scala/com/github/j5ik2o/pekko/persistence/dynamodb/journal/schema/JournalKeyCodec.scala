@@ -19,6 +19,8 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.ddb.{ AttributeMap, DdbValue
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.{ PartitionKeyResolver, SortKeyResolver }
 import com.github.j5ik2o.pekko.persistence.dynamodb.model.{ PersistenceId, PersistenceIdKeyParts, SequenceNumber }
 
+import scala.util.Try
+
 final class JournalKeyCodec(schema: JournalSchema) {
 
   def keyOf(
@@ -45,25 +47,35 @@ final class JournalKeyCodec(schema: JournalSchema) {
       sequenceNumber: SequenceNumber,
       partitionKeyResolver: PartitionKeyResolver,
       sortKeyResolver: SortKeyResolver
-  ): Option[RowKey] = {
-    val partitionKey = partitionKeyResolver.resolve(persistenceId, sequenceNumber)
-    val sortKey      = sortKeyResolver.resolve(persistenceId, sequenceNumber)
-    val legacyPartitionKey = partitionKeyResolver match {
-      case resolver: PartitionKeyResolver.PersistenceIdBased => resolver.resolveLegacy(persistenceId)
-      case _                                                 => Some(partitionKey)
+  ): Option[RowKey] =
+    (partitionKeyResolver, sortKeyResolver) match {
+      case (_: PartitionKeyResolver.PersistenceIdBased | _: PartitionKeyResolver.LegacyKeys, _) |
+          (_, _: SortKeyResolver.PersistenceIdWithSeqNr | _: SortKeyResolver.LegacyKeys) =>
+        // A resolver that cannot build a key for the id, such as a legacy one, gives no legacy key.
+        Try {
+          val partitionKey = partitionKeyResolver.resolve(persistenceId, sequenceNumber)
+          val sortKey      = sortKeyResolver.resolve(persistenceId, sequenceNumber)
+          val legacyPartitionKey = partitionKeyResolver match {
+            case resolver: PartitionKeyResolver.PersistenceIdBased => resolver.resolveLegacy(persistenceId)
+            case resolver: PartitionKeyResolver.LegacyKeys         => resolver.resolveLegacy(persistenceId)
+            case _                                                 => Some(partitionKey)
+          }
+          val legacySortKey = sortKeyResolver match {
+            case resolver: SortKeyResolver.PersistenceIdWithSeqNr =>
+              resolver.resolveLegacy(persistenceId, sequenceNumber)
+            case resolver: SortKeyResolver.LegacyKeys => resolver.resolveLegacy(persistenceId, sequenceNumber)
+            case _                                    => Some(sortKey)
+          }
+          for {
+            oldPartitionKey <- legacyPartitionKey
+            oldSortKey <- legacySortKey
+            if oldPartitionKey != partitionKey || oldSortKey != sortKey
+            if PersistenceIdKeyParts.fitsDynamoDB(oldPartitionKey.asString, oldSortKey.asString)
+            key <- rowKey(oldPartitionKey.asString, oldSortKey.asString).toOption
+          } yield key
+        }.toOption.flatten
+      case _ => None
     }
-    val legacySortKey = sortKeyResolver match {
-      case resolver: SortKeyResolver.PersistenceIdWithSeqNr => resolver.resolveLegacy(persistenceId, sequenceNumber)
-      case _                                                => Some(sortKey)
-    }
-    for {
-      oldPartitionKey <- legacyPartitionKey
-      oldSortKey <- legacySortKey
-      if oldPartitionKey != partitionKey || oldSortKey != sortKey
-      if PersistenceIdKeyParts.fitsDynamoDB(oldPartitionKey.asString, oldSortKey.asString)
-      key <- rowKey(oldPartitionKey.asString, oldSortKey.asString).toOption
-    } yield key
-  }
 
   private def rowKey(partitionKey: String, sortKey: String): Either[KeyError, RowKey] =
     schema.tableSpec.keyOf(
