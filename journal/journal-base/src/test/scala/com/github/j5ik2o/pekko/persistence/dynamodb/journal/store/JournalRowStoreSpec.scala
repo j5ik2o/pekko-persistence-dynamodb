@@ -1074,4 +1074,296 @@ final class JournalRowStoreSpec extends AnyFreeSpec with Matchers with BeforeAnd
     updateFailure(store) shouldBe an[IllegalStateException]
     adapter.transactions.size shouldBe 1
   }
+
+  // --- keys of releases up to 1.3.0 (issue #1014) -------------------------------------------------------------------
+
+  /** A partition key resolver whose ids that start with `account` had another key in 1.3.0: the id without its last
+    * character. So `account-1` and `account-2` shared their 1.3.0 key `k-account-`, and the 1.3.0 key of `account-1z`
+    * is the current key of `account-1`. `currentPad` and `legacyPad` lengthen the two keys.
+    */
+  private final class LegacyAwarePartitionKeyResolver(currentPad: String = "", legacyPad: String = "")
+      extends PartitionKeyResolver
+      with PartitionKeyResolver.LegacyKeys {
+    override def resolve(persistenceId: PersistenceId, sequenceNumber: SequenceNumber): PartitionKey =
+      PartitionKey(s"k-${persistenceId.asString}$currentPad")
+    override def resolveLegacy(persistenceId: PersistenceId): Option[PartitionKey] =
+      if (persistenceId.asString.startsWith("account"))
+        Some(PartitionKey(s"k-${persistenceId.asString.dropRight(1)}$legacyPad"))
+      else None
+  }
+
+  /** Writes rows under the 1.3.0 keys of `LegacyAwarePartitionKeyResolver`, as 1.3.0 did. */
+  private final class AsIn130PartitionKeyResolver(legacyPad: String = "") extends PartitionKeyResolver {
+    private val aware = new LegacyAwarePartitionKeyResolver(legacyPad = legacyPad)
+    override def resolve(persistenceId: PersistenceId, sequenceNumber: SequenceNumber): PartitionKey =
+      aware.resolveLegacy(persistenceId).getOrElse(aware.resolve(persistenceId, sequenceNumber))
+  }
+
+  private def legacyStores(
+      adapter: DdbClientAdapter,
+      currentPad: String = "",
+      legacyPad: String = "",
+      headConfig: Option[JournalHeadConfig] = None,
+      writeBackoff: BackoffConfig = disabledBackoff
+  ): (JournalRowStore, JournalRowStore) = {
+    def store(resolver: PartitionKeyResolver) = new JournalRowStore(
+      schema = schema,
+      partitionKeyResolver = resolver,
+      sortKeyResolver = sortKeyResolver,
+      adapter = adapter,
+      queryBatchSize = 2,
+      consistentRead = false,
+      batchWriteLimit = 25,
+      readBackoffConfig = disabledBackoff,
+      writeBackoffConfig = writeBackoff,
+      headConfig = headConfig
+    )
+    (
+      store(new AsIn130PartitionKeyResolver(legacyPad)),
+      store(new LegacyAwarePartitionKeyResolver(currentPad, legacyPad))
+    )
+  }
+
+  private def storedAt(adapter: InMemoryDdbAdapter, partitionKey: String, sequenceNr: Long): Option[AttributeMap] =
+    run(
+      adapter.run(
+        Operation.Get(
+          schema.table,
+          com.github.j5ik2o.pekko.persistence.dynamodb.ddb.RowKey(
+            schema.table,
+            AttributeMap.of(
+              schema.partitionKey -> DdbValue.Str(partitionKey),
+              schema.sortKey      -> DdbValue.Str("%019d".format(sequenceNr))
+            )
+          ),
+          consistentRead = true
+        )
+      )
+    ).head match {
+      case OperationResult.Item(item) => item
+      case other                      => fail(s"unexpected result: $other")
+    }
+
+  private val accountX = PersistenceId("account-1")
+  private val accountY = PersistenceId("account-1z") // its 1.3.0 key is the current key of account-1
+  private val accountZ = PersistenceId("account-2")  // shares the 1.3.0 key of account-1
+
+  "a soft delete marks an event under its 1.3.0 key deleted there, even when the current key holds another id's event" in {
+    val adapter        = new InMemoryDdbAdapter(Map(schema.table -> Vector(schema.partitionKey, schema.sortKey)))
+    val (in130, store) = legacyStores(adapter)
+    run(in130.write(Seq(JournalTestSupport.row(accountX, 1L, "x1"))))
+    run(in130.write(Seq(JournalTestSupport.row(accountY, 1L, "y1"))))
+
+    run(store.write(Seq(JournalTestSupport.row(accountX, 1L, "x1", deleted = true)))) shouldBe Vector(1L)
+
+    storedAt(adapter, "k-account-", 1L).flatMap(_.get(schema.deleted)) shouldBe Some(DdbValue.Bool(true))
+    val other = storedAt(adapter, "k-account-1", 1L).get
+    other.get(schema.persistenceId) shouldBe Some(DdbValue.Str(accountY.asString))
+    other.get(schema.deleted) shouldBe Some(DdbValue.Bool(false))
+    run(store.read(accountX, None, SequenceNumber(10), None, Some(false))) shouldBe empty
+    run(store.read(accountY, None, SequenceNumber(10), None, Some(false))).map(_.sequenceNumber.value) shouldBe Vector(
+      1L
+    )
+  }
+
+  "a soft delete of an event under its current key writes it there" in {
+    val adapter    = new InMemoryDdbAdapter(Map(schema.table -> Vector(schema.partitionKey, schema.sortKey)))
+    val (_, store) = legacyStores(adapter)
+    run(store.write(Seq(JournalTestSupport.row(accountX, 2L, "x2"))))
+    run(store.write(Seq(JournalTestSupport.row(accountX, 2L, "x2", deleted = true)))) shouldBe Vector(1L)
+    storedAt(adapter, "k-account-1", 2L).flatMap(_.get(schema.deleted)) shouldBe Some(DdbValue.Bool(true))
+    storedAt(adapter, "k-account-", 2L) shouldBe None
+  }
+
+  "a hard delete removes the event under its 1.3.0 key only while that key holds the same id and sequence number" in {
+    val adapter        = new InMemoryDdbAdapter(Map(schema.table -> Vector(schema.partitionKey, schema.sortKey)))
+    val (in130, store) = legacyStores(adapter)
+    run(in130.write(Seq(JournalTestSupport.row(accountZ, 1L, "z1")))) // the shared 1.3.0 key holds account-2
+    run(in130.write(Seq(JournalTestSupport.row(accountX, 2L, "x2"))))
+
+    run(
+      store.delete(
+        Seq(PersistenceIdWithSeqNr(accountX, SequenceNumber(1)), PersistenceIdWithSeqNr(accountX, SequenceNumber(2)))
+      )
+    )
+
+    storedAt(adapter, "k-account-", 1L).flatMap(_.get(schema.persistenceId)) shouldBe Some(
+      DdbValue.Str(accountZ.asString)
+    )
+    storedAt(adapter, "k-account-", 2L) shouldBe None
+  }
+
+  "an update falls back to the 1.3.0 key, and refuses a 1.3.0 key that holds another id's event" in {
+    val adapter        = new InMemoryDdbAdapter(Map(schema.table -> Vector(schema.partitionKey, schema.sortKey)))
+    val (in130, store) = legacyStores(adapter)
+    run(in130.write(Seq(JournalTestSupport.row(accountZ, 1L, "z1"))))
+    run(in130.write(Seq(JournalTestSupport.row(accountX, 3L, "x3"))))
+
+    run(store.update(JournalTestSupport.row(accountX, 3L, "x3-new", ordering = 3L)))
+    storedAt(adapter, "k-account-", 3L).flatMap(_.get(schema.message)) shouldBe Some(
+      DdbValue.Bin("x3-new".getBytes("UTF-8").toVector)
+    )
+    storedAt(adapter, "k-account-1", 3L) shouldBe None
+
+    val refused = Await.result(
+      store.update(JournalTestSupport.row(accountX, 1L, "must-not-be-written")).runWith(Sink.head).failed,
+      30.seconds
+    )
+    refused shouldBe a[JournalHeadRowUpdateRejectedException]
+    storedAt(adapter, "k-account-", 1L).flatMap(_.get(schema.message)) shouldBe Some(
+      DdbValue.Bin("z1".getBytes("UTF-8").toVector)
+    )
+  }
+
+  "an update with head mode checks the size of the row with the key that the row is stored under" in {
+    val columns = com.github.j5ik2o.pekko.persistence.dynamodb.journal.config.JournalColumnsDefConfig(
+      sourceConfig = com.typesafe.config.ConfigFactory.empty(),
+      partitionKeyColumnName = "pkey",
+      sortKeyColumnName = "skey",
+      persistenceIdColumnName = "persistence-id",
+      sequenceNrColumnName = "sequence-nr",
+      deletedColumnName = "deleted",
+      messageColumnName = "message",
+      orderingColumnName = "ordering",
+      tagsColumnName = "tags"
+    )
+    val pad = "p" * 1000
+    def sizeOf(message: String, partitionKey: String) =
+      com.github.j5ik2o.pekko.persistence.dynamodb.journal.head.DynamoDBItemSizeCalculator.journalItemSize(
+        JournalTestSupport.row(accountX, 2L, message, ordering = 2L),
+        columns,
+        partitionKey,
+        "%019d".format(2L)
+      )
+    val limit = com.github.j5ik2o.pekko.persistence.dynamodb.journal.head.JournalHeadLimits.MaxItemSizeBytes
+    // fits under the shorter key and not under the key that is 1,000 bytes longer
+    val message = "x" * (limit - 100 - sizeOf("", "k-account-"))
+    sizeOf(message, "k-account-") should be <= limit
+    sizeOf(message, s"k-account-1$pad") should be > limit
+
+    def scenario(currentPad: String, legacyPad: String): (ScriptedTransactionAdapter, Either[Throwable, Unit]) = {
+      val inMemory = new InMemoryDdbAdapter(
+        Map(
+          schema.table  -> Vector(schema.partitionKey, schema.sortKey),
+          headTableName -> Vector(AttributeName("persistence-id"))
+        )
+      )
+      inMemory.seed(headTableName, headItem())
+      val (in130, _) = legacyStores(inMemory, currentPad, legacyPad)
+      run(in130.write(Seq(JournalTestSupport.row(accountX, 2L, "old2"))))
+      val adapter    = new ScriptedTransactionAdapter(inMemory, Seq(committed), _ => ())
+      val (_, store) = legacyStores(adapter, currentPad, legacyPad, Some(headModeConfig))
+      val result = Await
+        .ready(
+          store.update(JournalTestSupport.row(accountX, 2L, message, ordering = 2L)).runWith(Sink.head),
+          30.seconds
+        ).value.get.toEither.map(_ => ())
+      (adapter, result)
+    }
+
+    // The row is under the short 1.3.0 key: the update fits and goes to that key.
+    val (fits, fitsResult) = scenario(currentPad = pad, legacyPad = "")
+    fitsResult shouldBe Right(())
+    fits.transactions.flatMap(_.items).collect { case TransactItem.Update(_, key, _, _) =>
+      key.values.get(schema.partitionKey)
+    } shouldBe Vector(Some(DdbValue.Str("k-account-")))
+
+    // The row is under the long 1.3.0 key: the update is refused before any transaction.
+    val (tooLarge, tooLargeResult) = scenario(currentPad = "", legacyPad = pad)
+    tooLargeResult.left.toOption.get shouldBe a[JournalHeadJournalRowTooLargeException]
+    tooLarge.transactions shouldBe empty
+  }
+
+  /** Applies the first `times` operations that `lose` selects and then fails them, as when DynamoDB applied a request
+    * but its response was lost, so the store sends the request again.
+    */
+  private final class LostResponseAdapter(delegate: InMemoryDdbAdapter, lose: Operation => Boolean, times: Int)
+      extends DdbClientAdapter {
+    private val lost = new AtomicInteger(0)
+
+    def lostResponses: Int = lost.get()
+
+    override val capabilities: CapabilityProfile = delegate.capabilities
+
+    override def run(operation: Operation): Source[OperationResult, NotUsed] =
+      if (lose(operation) && lost.get() < times) {
+        JournalRowStoreSpec.this.run(delegate.run(operation)) // applied
+        lost.incrementAndGet()
+        Source.failed(new RuntimeException("the response was lost"))
+      } else delegate.run(operation)
+
+    override def queryAll(query: Operation.Query): Source[AttributeMap, NotUsed] = delegate.queryAll(query)
+
+    override def close(): Unit = delegate.close()
+  }
+
+  private val retryingBackoff = fastBackoff.copy(enabled = true, maxRestarts = 3)
+
+  private def underKey(partitionKey: String)(operation: Operation): Boolean = operation match {
+    case Operation.Update(_, key, _, _) => key.values.get(schema.partitionKey).contains(DdbValue.Str(partitionKey))
+    case Operation.Delete(_, key, _)    => key.values.get(schema.partitionKey).contains(DdbValue.Str(partitionKey))
+    case _                              => false
+  }
+
+  "an operation on a 1.3.0 key is applied once when its response is lost and it is sent again" - {
+
+    "a soft delete, also when the current key holds another id's event" in {
+      val inMemory   = new InMemoryDdbAdapter(Map(schema.table -> Vector(schema.partitionKey, schema.sortKey)))
+      val (in130, _) = legacyStores(inMemory)
+      run(in130.write(Seq(JournalTestSupport.row(accountX, 1L, "x1"))))
+      run(in130.write(Seq(JournalTestSupport.row(accountY, 1L, "y1"))))
+      val adapter    = new LostResponseAdapter(inMemory, underKey("k-account-"), times = 1)
+      val (_, store) = legacyStores(adapter, writeBackoff = retryingBackoff)
+
+      run(store.write(Seq(JournalTestSupport.row(accountX, 1L, "x1", deleted = true)))) shouldBe Vector(1L)
+
+      adapter.lostResponses shouldBe 1
+      storedAt(inMemory, "k-account-", 1L).flatMap(_.get(schema.deleted)) shouldBe Some(DdbValue.Bool(true))
+      val other = storedAt(inMemory, "k-account-1", 1L).get
+      other.get(schema.persistenceId) shouldBe Some(DdbValue.Str(accountY.asString))
+      other.get(schema.deleted) shouldBe Some(DdbValue.Bool(false))
+    }
+
+    "a soft delete of an event under the current key, which writes no copy of it" in {
+      val inMemory   = new InMemoryDdbAdapter(Map(schema.table -> Vector(schema.partitionKey, schema.sortKey)))
+      val adapter    = new LostResponseAdapter(inMemory, underKey("k-account-1"), times = 1)
+      val (_, store) = legacyStores(adapter, writeBackoff = retryingBackoff)
+      run(store.write(Seq(JournalTestSupport.row(accountX, 2L, "x2"))))
+
+      run(store.write(Seq(JournalTestSupport.row(accountX, 2L, "x2", deleted = true)))) shouldBe Vector(1L)
+
+      adapter.lostResponses shouldBe 1
+      storedAt(inMemory, "k-account-1", 2L).flatMap(_.get(schema.deleted)) shouldBe Some(DdbValue.Bool(true))
+      storedAt(inMemory, "k-account-", 2L) shouldBe None
+    }
+
+    "a hard delete" in {
+      val inMemory   = new InMemoryDdbAdapter(Map(schema.table -> Vector(schema.partitionKey, schema.sortKey)))
+      val (in130, _) = legacyStores(inMemory)
+      run(in130.write(Seq(JournalTestSupport.row(accountX, 1L, "x1"))))
+      val adapter    = new LostResponseAdapter(inMemory, underKey("k-account-"), times = 1)
+      val (_, store) = legacyStores(adapter, writeBackoff = retryingBackoff)
+
+      run(store.delete(Seq(PersistenceIdWithSeqNr(accountX, SequenceNumber(1)))))
+
+      adapter.lostResponses shouldBe 1
+      storedAt(inMemory, "k-account-", 1L) shouldBe None
+    }
+
+    "an in-place update" in {
+      val inMemory   = new InMemoryDdbAdapter(Map(schema.table -> Vector(schema.partitionKey, schema.sortKey)))
+      val (in130, _) = legacyStores(inMemory)
+      run(in130.write(Seq(JournalTestSupport.row(accountX, 3L, "x3"))))
+      val adapter    = new LostResponseAdapter(inMemory, underKey("k-account-"), times = 1)
+      val (_, store) = legacyStores(adapter, writeBackoff = retryingBackoff)
+
+      run(store.update(JournalTestSupport.row(accountX, 3L, "x3-new", ordering = 3L)))
+
+      adapter.lostResponses shouldBe 1
+      storedAt(inMemory, "k-account-", 3L).flatMap(_.get(schema.message)) shouldBe Some(
+        DdbValue.Bin("x3-new".getBytes("UTF-8").toVector)
+      )
+      storedAt(inMemory, "k-account-1", 3L) shouldBe None
+    }
+  }
 }

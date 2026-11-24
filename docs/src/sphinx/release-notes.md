@@ -11,6 +11,37 @@ gh release create v1.2.0 --target <SHA> --generate-notes
 
 Replace `v1.2.0` and `<SHA>` with the approved version and commit. If the lookup returns no rows, continue. For a lightweight tag, compare the SHA on its row with `<SHA>`; for an annotated tag, compare the SHA on the `^{}` row. Continue only on a match; otherwise stop. `--target` selects the commit only when `gh release create` creates a missing tag. Confirm that the `publish` workflow succeeds. Tag pushes publish the artifacts to Maven Central automatically. After the new version is on Maven Central, set `mimaPreviousVersion` in `build.sbt` to that version in a pull request, and remove the `mimaBinaryIssueFilters` entries for changes that the new version contains. MiMa in CI compares each published module with that version, so do not set it before the artifacts resolve.
 
+## Unreleased
+
+### Experimental: resolvers that give every persistence id a key of its own
+
+The key resolvers that you have configured do not change: a `persistenceId` gets the same journal and snapshot keys as
+in 1.3.0, byte for byte, and no extra request is sent. This holds for the defaults and for a configuration that names
+`PartitionKeyResolver$PersistenceIdBased` and `SortKeyResolver$PersistenceIdWithSeqNr` explicitly, as the examples of
+1.3.0 did.
+
+The new `PartitionKeyResolver$PlainTextPersistenceIdBased` and `SortKeyResolver$PlainTextPersistenceIdWithSeqNr`
+(journal and snapshot) split a `persistenceId` at the first `persistence-id-separator`, matched as plain text (#1009,
+#1014). You select them by these class names. Two `persistenceId`s no
+longer get the same key, so the `persistenceId`s that fail with `KeyConflict` in 1.3.0 because they share a key can be
+written, and so can `persistenceId`s that 1.3.0 could not write at all, such as `order-` or any `persistenceId` with the
+separator `.`. When `skey` would exceed 1,024 bytes or `pkey` 2,048 bytes, its text is replaced with a marked SHA-256.
+
+These resolvers are experimental. {ref}`The new key format <key-format-change>` describes them; before you select them:
+
+- No migration tool for the rows of 1.3.0 exists yet; it comes in a later change. The resolvers still replay, delete,
+  and update the old rows and load and delete their snapshots, next to the rows written under the new keys. For a
+  `persistenceId` whose key changes, that costs extra conditional requests, which `legacy-keys-enabled = false` stops
+  after the migration.
+- They change the keys of `persistenceId`s that the 1.3.0 split, which read the separator as a regular expression,
+  divided differently from the split at the first separator: with `-`, those that contain it two or more times; with
+  `|`, nearly every one that contains it.
+- Until the old rows are moved, a new key can be the old key of another `persistenceId`, for example `Order-` and
+  `Order--23`, or `A|B` and `AB|98` with the separator `|`. Such a write fails with `KeyConflict` (with the JournalHead,
+  `DuplicateJournalEventsException`), and the row of the other `persistenceId` stays as it is.
+- They were measured on DynamoDB Local only, not on DynamoDB or with DAX.
+- A later release, together with the migration tool, is planned to make them the default.
+
 ## 1.3.0
 
 ```{admonition} Binary incompatibility in pekko-persistence-dynamodb-test

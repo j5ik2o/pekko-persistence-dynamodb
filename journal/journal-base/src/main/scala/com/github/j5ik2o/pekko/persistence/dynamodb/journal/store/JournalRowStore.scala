@@ -38,7 +38,7 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.journal.head.{
   JournalRowUpdateRejection
 }
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.schema.{ JournalKeyCodec, JournalRowCodec, JournalSchema }
-import com.github.j5ik2o.pekko.persistence.dynamodb.journal.write.{ JournalWritePlan, WriteRejection }
+import com.github.j5ik2o.pekko.persistence.dynamodb.journal.write.WriteRejection
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.{
   JournalPluginContext,
   JournalRow,
@@ -151,8 +151,59 @@ final class JournalRowStore(
     * other new events of the same write are deleted again (see `undoWrites`). A rewrite of an event of the same
     * persistence id, such as a soft delete, is accepted. BatchWriteItem is not used, because it cannot carry a
     * condition.
+    *
+    * A row with `deleted = true` is the rewrite of an existing event by a soft delete. Releases up to 1.3.0 may have
+    * stored that event under another key (see `legacyKeyOf`), and the current key can hold a row of another persistence
+    * id. Such an event is marked deleted in place under both keys instead (see `softDeleteInPlace`). Only an event that
+    * neither key holds is written under the current key.
     */
   def write(rows: Seq[JournalRow]): Source[Long, NotUsed] = {
+    val (underLegacyKey, others) =
+      rows.partition(row => row.deleted && legacyKeyOf(row.persistenceId, row.sequenceNumber).isDefined)
+    if (underLegacyKey.isEmpty) {
+      writeRows(rows)
+    } else {
+      Source(underLegacyKey.toVector)
+        .flatMapMerge(batchWriteLimit, row => softDeleteInPlace(row).map(row -> _))
+        .fold(Vector.empty[(JournalRow, Boolean)])(_ :+ _)
+        .flatMapConcat { results =>
+          val notStored = results.collect { case (row, false) => row }
+          writeRows(others ++ notStored).map(_ + results.count(_._2))
+        }
+    }
+  }
+
+  /** Marks the event of `row` deleted in place under the current key and under the key of a release up to 1.3.0. Each
+    * update is conditional only on the row being the event (the persistence id and the sequence number), not on its
+    * `deleted` flag, so a retry after a lost response succeeds again instead of looking like a missing event. Both keys
+    * are updated, because a release up to 1.3.0 run after a rollback can leave the event under both keys. The result is
+    * true when either key held the event.
+    */
+  private def softDeleteInPlace(row: JournalRow): Source[Boolean, NotUsed] = {
+    val keys =
+      keyOf(row.persistenceId, row.sequenceNumber) +: legacyKeyOf(row.persistenceId, row.sequenceNumber).toVector
+    val storedEvent =
+      Condition.And(Condition.AttributeExists(schema.partitionKey), sameEvent(row.persistenceId, row.sequenceNumber))
+    Source(keys)
+      .flatMapConcat { key =>
+        run(
+          Operation.Update(
+            schema.table,
+            key,
+            Vector(AttributeUpdate.Set(schema.deleted, DdbValue.Bool(true))),
+            Some(storedEvent)
+          ),
+          writeBackoffConfig
+        ).map {
+          case OperationResult.Written(_)           => true
+          case OperationResult.ConditionRejected(_) => false
+          case other => throw new IllegalStateException(s"unexpected result for a soft delete: $other")
+        }
+      }
+      .fold(false)(_ || _)
+  }
+
+  private def writeRows(rows: Seq[JournalRow]): Source[Long, NotUsed] = {
     if (rows.isEmpty) {
       Source.single(0L)
     } else {
@@ -231,9 +282,13 @@ final class JournalRowStore(
     )
 
   /** Deletes the rows, each with its own conditional DeleteItem, at most `batchWriteLimit` at a time. A key that holds
-    * the row of another persistence id is left as it is, because that row is not the event to delete.
+    * the row of another persistence id is left as it is, because that row is not the event to delete. The copies that
+    * releases up to 1.3.0 stored under another key are deleted too (see `deleteLegacyRows`).
     */
-  def delete(keys: Seq[PersistenceIdWithSeqNr]): Source[Long, NotUsed] = {
+  def delete(keys: Seq[PersistenceIdWithSeqNr]): Source[Long, NotUsed] =
+    deleteRows(keys).flatMapConcat(count => deleteLegacyRows(keys).map(_ => count))
+
+  private def deleteRows(keys: Seq[PersistenceIdWithSeqNr]): Source[Long, NotUsed] = {
     if (keys.isEmpty) {
       Source.single(0L)
     } else {
@@ -256,6 +311,37 @@ final class JournalRowStore(
         .fold(0L)(_ + _)
     }
   }
+
+  /** Deletes the rows that releases up to 1.3.0 stored under a key that differs from the current one (issue #1009).
+    * Such a key can hold the row of another persistence id that shared it, so a row is deleted only while it is the
+    * event of the same persistence id and sequence number. A key that holds no such row is left as it is. An id whose
+    * key did not change sends no request here.
+    */
+  private def deleteLegacyRows(keys: Seq[PersistenceIdWithSeqNr]): Source[Unit, NotUsed] = {
+    val legacyKeys = keys.flatMap(key => legacyKeyOf(key.persistenceId, key.sequenceNumber).map(key -> _)).toVector
+    if (legacyKeys.isEmpty) {
+      Source.single(())
+    } else {
+      Source(legacyKeys)
+        .flatMapMerge(
+          batchWriteLimit,
+          { case (key, legacyKey) =>
+            run(
+              Operation.Delete(schema.table, legacyKey, Some(sameEvent(key.persistenceId, key.sequenceNumber))),
+              writeBackoffConfig
+            ).map {
+              case OperationResult.Written(_) | OperationResult.ConditionRejected(_) => ()
+              case other => throw new IllegalStateException(s"unexpected result for a delete: $other")
+            }
+          }
+        )
+        .fold(())((_, _) => ())
+    }
+  }
+
+  /** The row is the event `sequenceNumber` of `persistenceId`. */
+  private def sameEvent(persistenceId: PersistenceId, sequenceNumber: SequenceNumber): Condition =
+    Condition.And(samePersistenceId(persistenceId), sameSequenceNr(sequenceNumber))
 
   /** The key holds no row, or a row of `persistenceId`. */
   private def sameRowOrNone(persistenceId: PersistenceId): Condition =
@@ -292,26 +378,33 @@ final class JournalRowStore(
     * `JournalHeadRowUpdateRejectedException`, the same failure that `head.enabled` gives. When the condition failed but
     * the row is there and not deleted, a concurrent writer changed it while it was checked, and the update is sent
     * again. After `UpdateAttempts` attempts the failure is `JournalHeadConcurrentUpdateException`.
+    *
+    * The update goes to the current key first. When that key holds no row of the event, and releases up to 1.3.0 stored
+    * the event under another key (see `legacyKeyOf`), the update goes to that key, so an id whose rows are under the
+    * current key sends no extra request.
     */
-  private def updateRow(row: JournalRow): Source[Unit, NotUsed] = updateRowAttempt(row, 1)
+  private def updateRow(row: JournalRow): Source[Unit, NotUsed] =
+    updateRowAttempt(row, keyOf(row.persistenceId, row.sequenceNumber), 1)
 
-  private def updateRowAttempt(row: JournalRow, attempt: Int): Source[Unit, NotUsed] = {
+  private def updateRowAttempt(row: JournalRow, key: RowKey, attempt: Int): Source[Unit, NotUsed] = {
     val persistenceId = row.persistenceId.asString
     val sequenceNr    = row.sequenceNumber.value
     run(
       Operation.Update(
         schema.table,
-        keyOf(row.persistenceId, row.sequenceNumber),
+        key,
         rowContentUpdates(row) :+ AttributeUpdate.Set(schema.deleted, DdbValue.Bool(row.deleted)),
-        Some(updatableRowCondition(row.persistenceId))
+        Some(updatableRowCondition(row, key))
       ),
       writeBackoffConfig
     ).flatMapConcat {
       case OperationResult.Written(_) =>
         Source.single(())
       case OperationResult.ConditionRejected(_) =>
-        readRowState(row).flatMapConcat {
-          case None =>
+        rowStateAt(row, key).flatMapConcat {
+          case (storedKey, Some(false)) if storedKey != key =>
+            updateRowAttempt(row, storedKey, attempt)
+          case (_, None) =>
             Source.failed(
               new JournalHeadRowUpdateRejectedException(
                 persistenceId,
@@ -319,13 +412,13 @@ final class JournalRowStore(
                 JournalRowUpdateRejection.RowDoesNotExist
               )
             )
-          case Some(true) =>
+          case (_, Some(true)) =>
             Source.failed(
               new JournalHeadRowUpdateRejectedException(persistenceId, sequenceNr, JournalRowUpdateRejection.RowDeleted)
             )
-          case Some(false) if attempt < UpdateAttempts =>
-            updateRowAttempt(row, attempt + 1)
-          case Some(false) =>
+          case (_, Some(false)) if attempt < UpdateAttempts =>
+            updateRowAttempt(row, key, attempt + 1)
+          case (_, Some(false)) =>
             Source.failed(
               new JournalHeadConcurrentUpdateException(
                 persistenceId,
@@ -342,16 +435,20 @@ final class JournalRowStore(
     }
   }
 
-  /** The journal row exists, is a row of `persistenceId`, and is not soft deleted. Another persistence id can resolve
-    * to the same key (issue #1009), and its row must not be changed.
+  /** The journal row under `key` exists, is a row of the persistence id of `row`, and is not soft deleted. Another
+    * persistence id can resolve to the same key (issue #1009), and its row must not be changed. Under a key of a
+    * release up to 1.3.0 the row must also be the event of `row`.
     */
-  private def updatableRowCondition(persistenceId: PersistenceId): Condition =
-    Condition.And(
-      Condition.And(Condition.AttributeExists(schema.partitionKey), samePersistenceId(persistenceId)),
+  private def updatableRowCondition(row: JournalRow, key: RowKey): Condition = {
+    val updatable = Condition.And(
+      Condition.And(Condition.AttributeExists(schema.partitionKey), samePersistenceId(row.persistenceId)),
       Condition.Not(
         Condition.Compare(Operand.Column(schema.deleted), CompareOp.Eq, Operand.Literal(DdbValue.Bool(true)))
       )
     )
+    if (key == keyOf(row.persistenceId, row.sequenceNumber)) updatable
+    else Condition.And(updatable, sameSequenceNr(row.sequenceNumber))
+  }
 
   private def rowContentUpdates(row: JournalRow): Vector[AttributeUpdate] =
     Vector(
@@ -369,20 +466,49 @@ final class JournalRowStore(
     * `JournalHeadConcurrentUpdateException`, which the caller can retry. The journal row keeps its `deleted` flag and
     * is not updated when it is missing or deleted, so an update cannot bring a soft deleted event back.
     */
-  private def updateRowAndHead(head: HeadTable, row: JournalRow): Source[Unit, NotUsed] =
-    JournalWritePlan.findJournalRowTooLarge(
-      Seq(row),
-      journalColumns,
-      partitionKeyResolver,
-      sortKeyResolver
-    ) match {
-      case Some(tooLarge) => Source.failed(tooLarge.toJournalHeadException)
-      case None           => updateAttempt(head, row, 1, None)
+  private def updateRowAndHead(head: HeadTable, row: JournalRow): Source[Unit, NotUsed] = {
+    val key = keyOf(row.persistenceId, row.sequenceNumber)
+    legacyKeyOf(row.persistenceId, row.sequenceNumber) match {
+      // The size of the row depends on its key. When the current key and the key of a release up to 1.3.0 disagree
+      // about the limit, the row is located first, and the size is checked with the key it is stored under.
+      case Some(legacyKey) if rowTooLarge(row, key).isDefined != rowTooLarge(row, legacyKey).isDefined =>
+        rowStateAt(row, key).flatMapConcat { case (storedKey, _) => checkedUpdate(head, row, storedKey) }
+      case _ => checkedUpdate(head, row, key)
     }
+  }
+
+  private def checkedUpdate(head: HeadTable, row: JournalRow, key: RowKey): Source[Unit, NotUsed] =
+    rowTooLarge(row, key) match {
+      case Some(tooLarge) => Source.failed(tooLarge.toJournalHeadException)
+      case None           => updateAttempt(head, row, key, 1, None)
+    }
+
+  /** The rejection when the journal row of `row` under `key` exceeds the DynamoDB item limit. */
+  private def rowTooLarge(row: JournalRow, key: RowKey): Option[WriteRejection.JournalRowTooLarge] = {
+    def keyPart(name: AttributeName): String =
+      key.values.get(name).collect { case DdbValue.Str(value) => value }.getOrElse("")
+    val size = DynamoDBItemSizeCalculator.journalItemSize(
+      row,
+      journalColumns,
+      keyPart(schema.partitionKey),
+      keyPart(schema.sortKey)
+    )
+    if (size > JournalHeadLimits.MaxItemSizeBytes)
+      Some(
+        WriteRejection.JournalRowTooLarge(
+          row.persistenceId.asString,
+          row.sequenceNumber.value,
+          size,
+          JournalHeadLimits.MaxItemSizeBytes
+        )
+      )
+    else None
+  }
 
   private def updateAttempt(
       head: HeadTable,
       row: JournalRow,
+      key: RowKey,
       attempt: Int,
       previous: Option[ObservedHead]
   ): Source[Unit, NotUsed] = {
@@ -412,7 +538,7 @@ final class JournalRowStore(
               case Right((headCondition, newHeadItem)) =>
                 def again(reason: String, delayed: Boolean): Source[Unit, NotUsed] =
                   if (attempt < UpdateAttempts) {
-                    val next = updateAttempt(head, row, attempt + 1, Some(observed))
+                    val next = updateAttempt(head, row, key, attempt + 1, Some(observed))
                     if (delayed && writeBackoffConfig.enabled)
                       Source.single(()).initialDelay(backoffDelay(attempt)).flatMapConcat(_ => next)
                     else next
@@ -421,7 +547,7 @@ final class JournalRowStore(
                       new JournalHeadConcurrentUpdateException(persistenceId, sequenceNr, UpdateAttempts, reason)
                     )
                   }
-                run(updateTransaction(head, row, newHeadItem, headCondition), writeBackoffConfig).flatMapConcat {
+                run(updateTransaction(head, row, key, newHeadItem, headCondition), writeBackoffConfig).flatMapConcat {
                   case OperationResult.TransactionCommitted(_) =>
                     Source.single(())
                   case OperationResult.TransactionRejected(reasons) =>
@@ -431,8 +557,10 @@ final class JournalRowStore(
                       case UpdateCancellation.Contended(code) =>
                         again(s"DynamoDB reported $code", delayed = true)
                       case UpdateCancellation.RowConditionFailed =>
-                        readRowState(row).flatMapConcat {
-                          case None =>
+                        rowStateAt(row, key).flatMapConcat {
+                          case (storedKey, Some(false)) if storedKey != key =>
+                            updateAttempt(head, row, storedKey, attempt, Some(observed))
+                          case (_, None) =>
                             Source.failed(
                               new JournalHeadRowUpdateRejectedException(
                                 persistenceId,
@@ -440,7 +568,7 @@ final class JournalRowStore(
                                 JournalRowUpdateRejection.RowDoesNotExist
                               )
                             )
-                          case Some(true) =>
+                          case (_, Some(true)) =>
                             Source.failed(
                               new JournalHeadRowUpdateRejectedException(
                                 persistenceId,
@@ -448,7 +576,7 @@ final class JournalRowStore(
                                 JournalRowUpdateRejection.RowDeleted
                               )
                             )
-                          case Some(false) =>
+                          case (_, Some(false)) =>
                             again("the journal row changed while it was checked", delayed = false)
                         }
                       case UpdateCancellation.Unknown(unknown) =>
@@ -467,6 +595,7 @@ final class JournalRowStore(
   private def updateTransaction(
       head: HeadTable,
       row: JournalRow,
+      key: RowKey,
       newHeadItem: AttributeMap,
       headCondition: Condition
   ): Operation.TransactWrite =
@@ -474,24 +603,40 @@ final class JournalRowStore(
       Vector(
         TransactItem.Update(
           schema.table,
-          keyOf(row.persistenceId, row.sequenceNumber),
+          key,
           rowContentUpdates(row),
-          Some(updatableRowCondition(row.persistenceId))
+          Some(updatableRowCondition(row, key))
         ),
         TransactItem.Put(head.spec.table, newHeadItem, Some(headCondition))
       )
     )
 
-  /** The `deleted` flag of the journal row, or none when the row does not exist or is a row of another persistence id.
+  /** The key that holds the event of `row` and the `deleted` flag of that row, after an update under `key` was refused.
+    * When `key` holds no row of the event, the key of a release up to 1.3.0 is read (see `legacyKeyOf`). The flag is
+    * none when neither key holds the event.
     */
-  private def readRowState(row: JournalRow): Source[Option[Boolean], NotUsed] =
-    run(
-      Operation.Get(schema.table, keyOf(row.persistenceId, row.sequenceNumber), consistentRead = true),
-      readBackoffConfig
-    ).map {
+  private def rowStateAt(row: JournalRow, key: RowKey): Source[(RowKey, Option[Boolean]), NotUsed] =
+    readRowState(key, row).flatMapConcat {
+      case None if key == keyOf(row.persistenceId, row.sequenceNumber) =>
+        legacyKeyOf(row.persistenceId, row.sequenceNumber) match {
+          case None => Source.single(key -> None)
+          case Some(legacyKey) =>
+            readRowState(legacyKey, row).map(state => if (state.isDefined) legacyKey -> state else key -> None)
+        }
+      case state => Source.single(key -> state)
+    }
+
+  /** The `deleted` flag of the row under `key`, or none when `key` holds no row of the event of `row`: no row, or a row
+    * of another persistence id or sequence number.
+    */
+  private def readRowState(key: RowKey, row: JournalRow): Source[Option[Boolean], NotUsed] =
+    run(Operation.Get(schema.table, key, consistentRead = true), readBackoffConfig).map {
       case OperationResult.Item(item) =>
         item
-          .filter(_.get(schema.persistenceId).contains(DdbValue.Str(row.persistenceId.asString)))
+          .filter(values =>
+            values.get(schema.persistenceId).contains(DdbValue.Str(row.persistenceId.asString)) &&
+            values.get(schema.sequenceNr).contains(DdbValue.Num(BigDecimal(row.sequenceNumber.value)))
+          )
           .map(_.get(schema.deleted).contains(DdbValue.Bool(true)))
       case other => throw new IllegalStateException(s"unexpected result for a journal row read: $other")
     }
@@ -634,6 +779,9 @@ final class JournalRowStore(
       case Right(key)  => key
       case Left(error) => throw new IllegalArgumentException(s"cannot build the journal row key: $error")
     }
+
+  private def legacyKeyOf(persistenceId: PersistenceId, sequenceNumber: SequenceNumber): Option[RowKey] =
+    keyCodec.legacyKeyOf(persistenceId, sequenceNumber, partitionKeyResolver, sortKeyResolver)
 
   private def decodeOrThrow(values: AttributeMap): JournalRow =
     rowCodec.decode(values) match {

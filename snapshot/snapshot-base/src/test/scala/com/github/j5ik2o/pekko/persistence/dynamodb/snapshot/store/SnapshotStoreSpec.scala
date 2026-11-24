@@ -43,6 +43,7 @@ import org.scalatest.matchers.should.Matchers
 import org.scalatest.time.{ Millis, Seconds, Span }
 
 import scala.concurrent.duration.DurationInt
+import scala.collection.mutable
 
 final class SnapshotStoreSpec extends AnyFreeSpec with Matchers with ScalaFutures with BeforeAndAfterAll {
 
@@ -496,6 +497,117 @@ final class SnapshotStoreSpec extends AnyFreeSpec with Matchers with ScalaFuture
 
       adapter.operations should have size 1
       adapter.operations.head shouldBe a[Operation.Query]
+    }
+  }
+
+  // --- keys of releases up to 1.3.0 (issue #1014) -------------------------------------------------------------------
+
+  /** Ids that start with `account` had the key `k-<id without its last character>` in 1.3.0. */
+  private val legacyAwarePartitionKeyResolver = new PartitionKeyResolver with PartitionKeyResolver.LegacyKeys {
+    override def resolve(persistenceId: PersistenceId, sequenceNumber: SequenceNumber): PartitionKey =
+      PartitionKey(s"k-${persistenceId.asString}")
+    override def resolveLegacy(persistenceId: PersistenceId): Option[PartitionKey] =
+      if (persistenceId.asString.startsWith("account")) Some(PartitionKey(s"k-${persistenceId.asString.dropRight(1)}"))
+      else None
+  }
+
+  private val sequenceNrSortKeyResolver = new SortKeyResolver {
+    override def resolve(persistenceId: PersistenceId, sequenceNumber: SequenceNumber): SortKey =
+      SortKey(sequenceNumber.value.toString)
+  }
+
+  private val legacyAware = SnapshotTableSpec.sharded(
+    schema,
+    TableName("Snapshot"),
+    IndexName("GetSnapshotRowsIndex"),
+    legacyAwarePartitionKeyResolver,
+    sequenceNrSortKeyResolver
+  )
+
+  private val account = row.copy(persistenceId = PersistenceId("account-1"))
+
+  private def snapshotItem(partitionKey: String, payload: Byte): AttributeMap = AttributeMap.of(
+    schema.partitionKey   -> DdbValue.Str(partitionKey),
+    schema.sortKey        -> DdbValue.Str("5"),
+    schema.persistenceId  -> DdbValue.Str("account-1"),
+    schema.sequenceNumber -> DdbValue.Num(BigDecimal(5)),
+    schema.snapshot       -> DdbValue.Bin(Vector[Byte](payload)),
+    schema.created        -> DdbValue.Num(BigDecimal(1000))
+  )
+
+  /** Answers a Put with `Written`, and each Delete with the next of `deletes`. */
+  private final class LegacyDeleteAdapter(deletes: (() => Source[OperationResult, NotUsed])*) extends DdbClientAdapter {
+    private val pending                            = scala.collection.mutable.Queue(deletes: _*)
+    val operations: mutable.ArrayBuffer[Operation] = scala.collection.mutable.ArrayBuffer.empty[Operation]
+
+    override def capabilities: CapabilityProfile = CapabilityProfile.V2
+
+    override def run(operation: Operation): Source[OperationResult, NotUsed] = synchronized {
+      operations += operation
+      operation match {
+        case _: Operation.Put    => Source.single(OperationResult.Written(1))
+        case _: Operation.Delete => pending.dequeue()()
+        case other               => Source.failed(new IllegalArgumentException(s"unexpected operation: $other"))
+      }
+    }
+
+    override def queryAll(query: Operation.Query): Source[AttributeMap, NotUsed] = Source.empty
+
+    override def close(): Unit = ()
+  }
+
+  "SnapshotStore with keys of 1.3.0" - {
+
+    "saves a snapshot even when its copy under the 1.3.0 key cannot be deleted" in {
+      val adapter = new LegacyDeleteAdapter(() => Source.failed(new RuntimeException("throttled")))
+      val store =
+        new SnapshotStore(adapter, new SnapshotRowCodec(schema, legacyAware), consistentRead = false, 25, writeBackoff)
+
+      store.save(account).runWith(Sink.ignore).futureValue
+
+      adapter.operations.collect { case put: Operation.Put => put } should have size 1
+      adapter.operations.collect { case delete: Operation.Delete =>
+        delete.key.values.get(schema.partitionKey)
+      } shouldBe Vector(Some(DdbValue.Str("k-account-")))
+    }
+
+    "deletes the copy under the 1.3.0 key once when the response of the delete is lost and it is sent again" in {
+      val adapter = new LegacyDeleteAdapter(
+        () => Source.failed(new RuntimeException("the response was lost")),
+        () => Source.single(OperationResult.ConditionRejected(Vector(ConditionFailure(0, "ConditionalCheckFailed"))))
+      )
+      val store = new SnapshotStore(
+        adapter,
+        new SnapshotRowCodec(schema, legacyAware),
+        consistentRead = false,
+        25,
+        writeBackoff.copy(enabled = true)
+      )
+
+      store.save(account).runWith(Sink.ignore).futureValue
+
+      adapter.operations.collect { case delete: Operation.Delete => delete } should have size 2
+    }
+
+    "loads the snapshot under the current key among every row of the top sequence number" in {
+      val rows = Vector(
+        snapshotItem("k-account-", 1),   // the 1.3.0 key
+        snapshotItem("k-account-1x", 2), // another key of the same snapshot
+        snapshotItem("k-account-1", 3)   // the current key
+      )
+      val store = new SnapshotStore(
+        adapterReturning(rows),
+        new SnapshotRowCodec(schema, legacyAware),
+        consistentRead = false,
+        25,
+        writeBackoff
+      )
+
+      store
+        .forMaxSequenceNr(PersistenceId("account-1"), SequenceNumber(10))
+        .runWith(Sink.head)
+        .futureValue
+        .map(_.snapshot.toSeq) shouldBe Some(Seq[Byte](3))
     }
   }
 }

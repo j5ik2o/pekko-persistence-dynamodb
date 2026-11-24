@@ -161,28 +161,144 @@ The state plugin has not the secondary index.
 
 The default resolvers of the journal and the snapshot store split the `persistenceId` with a separator.
 `persistence-id-separator` sets it for each plugin. The default value is `-`, which differs from the `|` that Pekko
-Typed puts between the entity type hint and the entity id.
+Typed puts between the entity type hint and the entity id. Do not change the separator on a table that already has
+rows: the keys of those rows would change.
 
 ```
 j5ik2o.dynamo-db-journal.persistence-id-separator = "-"
 j5ik2o.dynamo-db-snapshot.persistence-id-separator = "-"
 ```
 
-The separator is read as a regular expression, and only the first two parts of the split are used: `prefix` for
-`pkey` and `body` for `skey`. Do not change the separator on a table that already has rows.
+The default resolvers, `PartitionKeyResolver$PersistenceIdBased` and `SortKeyResolver$PersistenceIdWithSeqNr`,
+give the keys of 1.3.0: they read the separator as a regular expression and keep only the first two parts of the split,
+so two `persistenceId`s can share a key (see the note on writes below), and an id such as `order-`, or any id with the
+separator `.`, cannot be written. These are the class names that the configuration examples of 1.3.0 named, so a
+configuration that names them explicitly keeps the keys of 1.3.0 too. A later release is planned to switch the default
+to the new key format, once a migration tool for the existing rows is available.
 
-```{admonition} Compatibility note: persistence ids that share a key (issue #1009)
+(key-format-change)=
+
+#### Experimental: the new key format of `PlainTextPersistenceIdBased` and `PlainTextPersistenceIdWithSeqNr` (issue #1009)
+
+`PartitionKeyResolver$PlainTextPersistenceIdBased` and `SortKeyResolver$PlainTextPersistenceIdWithSeqNr` give every `persistenceId` a key
+of its own. They are experimental. Select them only after you read these cautions:
+
+- There is no migration tool for the rows of 1.3.0 yet. It comes in a later change.
+- Selecting them changes the keys of the `persistenceId`s in the table below. The other keys stay the same, byte for byte.
+- Until the old rows are migrated, the new key of a `persistenceId` can be the old key of another `persistenceId`, and a
+  write to it fails with `KeyConflict` (see the note on writes below).
+- They were measured only on DynamoDB Local, not on DynamoDB or with DAX.
+- A later release is planned to make them the default.
+
+```
+j5ik2o.dynamo-db-journal {
+  partition-key-resolver-class-name = "com.github.j5ik2o.pekko.persistence.dynamodb.journal.PartitionKeyResolver$PlainTextPersistenceIdBased"
+  sort-key-resolver-class-name = "com.github.j5ik2o.pekko.persistence.dynamodb.journal.SortKeyResolver$PlainTextPersistenceIdWithSeqNr"
+}
+j5ik2o.dynamo-db-snapshot {
+  partition-key-resolver-class-name = "com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.PartitionKeyResolver$PlainTextPersistenceIdBased"
+  sort-key-resolver-class-name = "com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.SortKeyResolver$PlainTextPersistenceIdWithSeqNr"
+}
+```
+
+These resolvers match the separator as plain text, so any separator works, `|` included. They split the
+`persistenceId` at the first separator. `prefix` is the text before it and goes into
+`pkey`. `body` is the text after it, which can contain more separators, and goes into `skey`. A `persistenceId` without
+the separator has no `prefix`, and its whole text is the `body`. Because `prefix`, the separator, and `body` together
+are the whole `persistenceId`, and the shard and the sequence number have a fixed length, two `persistenceId`s never
+get the same key.
+
+When `${body}-${sequenceNumber}` would exceed 1,024 bytes in UTF-8, the largest sort key that DynamoDB accepts, `skey`
+is `#h1#${sha256(body)}-${sequenceNumber}#` instead: the marker `#h1#`, the SHA-256 of `body` in 64 hexadecimal digits,
+the sequence number, and a closing `#`. In the same way, when `${prefix}-${shard}` would exceed 2,048 bytes, the
+largest partition key that DynamoDB accepts, `pkey` is `#h1#${sha256(prefix)}-${shard}#`. Whether a `persistenceId` gets
+these forms depends on its `prefix` and `body` alone, so every event of the `persistenceId` gets the same form. A key
+without a hash always ends with a digit, so a `persistenceId` whose text looks like a hashed key never gets the key of
+another `persistenceId`. A `persistenceId` cannot be read back from a hashed key. The sequence number and the shard are
+written with the digits of the default format locale, as in 1.3.0, and the limits are checked with the UTF-8 bytes that
+they take.
+
+Compared with the default resolvers, which keep the keys of 1.3.0, these resolvers give other keys to the
+`persistenceId`s below. The keys of every other `persistenceId` stay the same, byte for byte.
+
+| `persistence-id-separator` | `persistenceId`s whose key changes | What changes |
+| :-- | :-- | :-- |
+| Matches only itself as a regular expression (the default `-`, `::`, `_`, and `]` or `}` alone) | The separator two or more times, such as `shopping-cart-1` | `skey` only |
+| The same | Ends with its only separator, such as `order-` | 1.3.0 failed with `ArrayIndexOutOfBoundsException`, so no rows exist |
+| `\|` | Contains the separator, except `<one character>\|\|` | `pkey` and `skey` |
+| `.`, `$`, `^`, `?`, `*`, `+`, `(`, `)`, `[`, `{`, `\` | Contains the separator | 1.3.0 failed with an exception, so no rows exist |
+| Several characters that include a regular expression metacharacter, such as `-+` or `a.` | Contains the separator, and the split as a regular expression differs from the split at the first separator. With `-+` (one or more `-`), every such id: 1.3.0 kept the `+` in the body of `Order-+23`. With `a.`, which also matches `ab`, even an id with one separator, such as `Xa.1ab2` | `pkey`, `skey`, or both, or 1.3.0 failed with an exception |
+| Any | `body` longer than 1,004 bytes | `skey` takes the hashed form. Ids with one separator or none could not be written by 1.3.0 |
+| Any | `prefix` longer than 2,007 bytes | `pkey` takes the hashed form. With a separator that is not a regular expression metacharacter, 1.3.0 could not write such ids. With `\|`, 1.3.0 used only the first character as `prefix`, so these ids are among the ids above whose key changes |
+
+The rows that 1.3.0 and earlier releases wrote keep their old keys until they are migrated. These resolvers still handle
+them: a replay, the highest sequence number, and a snapshot load read every row of the `persistenceId`
+through the `persistence-id` index, and a hard delete, a soft delete, an in-place update, a snapshot delete, and a
+snapshot save also reach the row under the old key. A soft delete marks the event deleted in place under both keys, so it
+works even when the new key holds a row of another `persistenceId`. Every operation on the old key is conditional only
+on the `persistenceId` and the sequence number of the row, so a request that `write-backoff` sends again after a lost
+response gives the same result. A snapshot save succeeds once the snapshot is written under the current key; when the
+copy under the old key cannot be deleted, the failure is logged as a warning, and a load still returns the new snapshot. An operation on the old key changes the row only while it
+is the event or the snapshot of the same `persistenceId` and sequence number, so the row of another `persistenceId` that
+shares the old key is never changed. When a snapshot of the same sequence number exists under both keys, a load returns
+the one under the current key, whichever was saved later. With the separator matched as plain text, a `persistenceId`
+whose key changes always contains it, so it has no rows in the format of issue #831 (see the compatibility note below).
+
+A migration tool that moves the old rows to the current keys comes in a later change. Until then, the new key of a
+`persistenceId` can be the old key of another `persistenceId`, for example `Order-` and `Order--23`, or with the
+separator `|`, `A|B` and `AB|98`. Such a write fails as described in the next section, and the row of the other
+`persistenceId` stays as it is.
+
+The extra requests for the old keys, measured on DynamoDB Local with the AWS SDK v2 client:
+
+| Operation | `persistenceId` whose key changes | `persistenceId` whose key does not change |
+| :-- | :-- | :-- |
+| Persist | none | none |
+| Hard delete | one conditional `DeleteItem` per event | none |
+| Soft delete | two conditional `UpdateItem` per event, one under each key, instead of the `PutItem` of 1.3.0 | none |
+| In-place update, the row is under the current key | none | none |
+| In-place update, the row is under the old key | one refused `UpdateItem` and two `GetItem`; with the JournalHead, one refused `TransactWriteItems` and three `GetItem` | none |
+| Snapshot save | one conditional `DeleteItem` | none |
+| Snapshot load | none; the query for the latest snapshot reads up to two items instead of one | none |
+| Snapshot delete | none | none |
+
+The extra requests continue after the migration, because a key alone does not tell whether an old row exists. After
+every old row is migrated, set `legacy-keys-enabled = false` for both plugins to stop them. With `false`, rows under an
+old key are no longer deleted or updated.
+
+```
+j5ik2o.dynamo-db-journal.legacy-keys-enabled = false
+j5ik2o.dynamo-db-snapshot.legacy-keys-enabled = false
+```
+
+With the default resolvers, none of this runs: the legacy resolvers give the keys of 1.3.0, and no extra request is
+sent. To go back to the keys of 1.3.0 after you selected the new resolvers, remove the two settings, but the rows
+written under the new keys are then replayed and not deleted or updated, as with a rolled back release.
+
+A rolled back release up to 1.3.0 replays the rows written under the new keys, but its deletes and in-place updates do
+not reach them. A snapshot that it saves at a sequence number that already has a snapshot under the new key is stored
+under the old key, and after the upgrade again, a load returns the snapshot under the new key, which is the older one.
+While you run 1.3.0 after a rollback, do not save a snapshot again at a sequence number that already has one, or delete
+that snapshot after the upgrade again.
+
+If you read `pkey` or `skey` outside the plugin, for example from DynamoDB Streams or Kinesis Data Streams, note that the
+keys change for the `persistenceId`s in the table above. With the separator `|`, the events of one `persistenceId` are in
+two partitions until the old rows are migrated.
+
+```{admonition} DAX (not measured)
 :class: warning
 
-Two `persistenceId`s get the same `pkey` and `skey` when their `prefix`, their `body`, and their shard number are the
-same. This happens when a `persistenceId` contains the separator two or more times, such as `shopping-cart-1` and
-`shopping-cart-2`, or when the separator is a regular expression metacharacter: with `|`, `prefix` and `body` are the
-first two characters of the `persistenceId`. A `persistenceId` that ends with its only separator, such as `order-`, and
-every `persistenceId` with the separator `.` fail with `ArrayIndexOutOfBoundsException`.
+The DAX item cache was not measured with this change. A delete or an update under an old key goes through DAX like any
+other write, but a read through the cache can return a row that was changed by another client until the cache entry
+expires. When you migrate the old rows, wait for the DAX item cache TTL before you rely on the result.
+```
 
-Up to 1.2.0, the later write replaced the row of the other `persistenceId` when the JournalHead was disabled, and the
-replaced events were lost. Snapshots were replaced whether the JournalHead was enabled or not. From this release, a
-write never replaces a row of another `persistenceId`:
+```{admonition} Writes never replace a row of another persistence id (issue #1009)
+:class: warning
+
+Up to 1.2.0, a later write replaced the row of another `persistenceId` that had the same key when the JournalHead was
+disabled, and the replaced events were lost. Snapshots were replaced whether the JournalHead was enabled or not. From
+1.3.0, a write never replaces a row of another `persistenceId`:
 
 - A journal write fails with `JournalRowStoreException.KeyConflict`, which names both `persistenceId`s. Pekko calls
   `onPersistFailure`, and the actor stops. The events of the other `persistenceId` stay as they are. The other new
@@ -192,15 +308,15 @@ write never replaces a row of another `persistenceId`:
   `persistenceId`.
 - With the JournalHead enabled, the journal write keeps failing with `DuplicateJournalEventsException`, as before.
 
-A `persistenceId` that fails this way cannot write the sequence numbers whose keys the other `persistenceId` holds.
-Retrying does not help. To avoid the conflict, give each `persistenceId` the separator at most once, as
-`<type name><separator><entity id>` with no separator in the type name or the entity id, and do not set a regular
-expression metacharacter such as `|` or `.` as the separator. A later release will change the key format so that such
-`persistenceId`s can be written, and will provide a migration for the rows that already exist.
+With the default resolvers, which keep the keys of 1.3.0, a `persistenceId` that fails this way cannot write the
+sequence numbers whose keys the other `persistenceId` holds, and retrying does not help. With the experimental
+`PlainTextPersistenceIdBased` and `PlainTextPersistenceIdWithSeqNr`, this happens only when a new key holds an old row of another
+`persistenceId`, and the migration of the old rows will resolve it.
 
-Events and snapshots that earlier releases already replaced cannot be restored. A `persistenceId` lost events when its
-replay misses sequence numbers that it did not delete. To find the `persistenceId`s that can share a key, group them by
-`prefix`, `body`, and shard number; a group with two or more `persistenceId`s shares keys.
+Events and snapshots that releases up to 1.2.0 already replaced cannot be restored. A `persistenceId` lost events when
+its replay misses sequence numbers that it did not delete. To find the `persistenceId`s that shared a key in 1.3.0,
+group them by the old `prefix` (the first element of the split), the old `body` (the second element), and the shard
+number; a group with two or more `persistenceId`s shares keys.
 
 To make the writes conditional, the journal and the snapshot store write and delete each row with its own conditional
 `PutItem` or `DeleteItem`, up to `dynamo-db-client.batch-write-item-limit` (25 by default) at a time, instead of
@@ -217,7 +333,7 @@ snapshot tables; `dynamodb:BatchWriteItem` is no longer used.
 j5ik2o.dynamo-db-journal {
   shard-count = 64
   partition-key-resolver-class-name = "com.github.j5ik2o.pekko.persistence.dynamodb.journal.PartitionKeyResolver$PersistenceIdBased"
-  sort-key-resolver-class-name = "com.github.j5ik2o.pekko.persistence.dynamodb.journal.SortKeyResolver$PersistenceIdWithSeqNr" 
+  sort-key-resolver-class-name = "com.github.j5ik2o.pekko.persistence.dynamodb.journal.SortKeyResolver$PersistenceIdWithSeqNr"
 }
 ```
 
@@ -233,10 +349,12 @@ The following two implementations are available for built-in use.
 - `com.github.j5ik2o.pekko.persistence.dynamodb.journal.PartitionKeyResolver$SequenceNumberBased`
   - `pkey = ${persistenceId}-${sequenceNumber % shardCount}`
   - The same `PersistenceId` will be assigned to a different shard if the `Sequence Number` is different. This is a write-specific sharding.
-- `com.github.j5ik2o.pekko.persistence.dynamodb.journal.PartitionKeyResolver$PersistenceIdBased` (Default)
+- `com.github.j5ik2o.pekko.persistence.dynamodb.journal.PartitionKeyResolver$PlainTextPersistenceIdBased` (experimental, see [the new key format](#key-format-change))
   - `pkey = ${persistenceId.prefix}-${md5(persistenceId.reverse) % shardCount}`
-  - e.g. `counter-875e6ce0425e4d2b8203f3b44b9b531a`, `persistenceId.prefix` is `counter`.
+  - e.g. `counter-875e6ce0425e4d2b8203f3b44b9b531a`, `persistenceId.prefix` is `counter`, the text before the first separator.
   - If you choose this option, the same shard will be assigned if the `PersistenceId` is the same, so be sure to select this option if you are using DynamoDB Streams or KDS for DynamoDB.
+- `com.github.j5ik2o.pekko.persistence.dynamodb.journal.PartitionKeyResolver$PersistenceIdBased` (Default)
+  - `pkey = ${persistenceId.prefix}-${md5(persistenceId.reverse) % shardCount}`, the key of 1.3.0. `persistenceId.prefix` is the first element of a split that reads the separator as a regular expression, e.g. `counter` for `counter-875e6ce0425e4d2b8203f3b44b9b531a`. See [Persistence id separator](#persistence-id-separator).
 
 #### Sort Key Resolver Class Name
  
@@ -246,12 +364,14 @@ The following two implementations are available for built-in use.
 - `com.github.j5ik2o.pekko.persistence.dynamodb.journal.SortKeyResolver$SeqNr`
   - `skey = $sequenceNumber`
   - An implementation in which `skey` is the `Sequence Number`.
-- `com.github.j5ik2o.pekko.persistence.dynamodb.journal.SortKeyResolver$PersistenceIdWithSeqNr` (Default)
+- `com.github.j5ik2o.pekko.persistence.dynamodb.journal.SortKeyResolver$PlainTextPersistenceIdWithSeqNr` (experimental, see [the new key format](#key-format-change))
   - `skey = ${persistenceId.body}-${sequenceNumber}`
   - e.g. `875e6ce0425e4d2b8203f3b44b9b531a`, `persistenceId.body` is `875e6ce0425e4d2b8203f3b44b9b531a`.
   - Use `persistenceId.body` as the prefix since `shard-count` may cause multiple `persistenceId`s events to be stored in the same shard.
   - If the `persistenceId` does not contain the separator, the full `persistenceId` is used as the prefix: `${persistenceId}-${sequenceNumber}`.
-  - `persistenceId.body` is only the text between the first and the second separator, so two `persistenceId`s can get the same key. See [Persistence id separator](#persistence-id-separator).
+  - `persistenceId.body` is all the text after the first separator. When the key would exceed 1,024 bytes, `body` is replaced with its hash. See [Persistence id separator](#persistence-id-separator).
+- `com.github.j5ik2o.pekko.persistence.dynamodb.journal.SortKeyResolver$PersistenceIdWithSeqNr` (Default)
+  - `skey = ${persistenceId.body}-${sequenceNumber}`, the key of 1.3.0, or `${persistenceId}-${sequenceNumber}` when the `persistenceId` does not contain the separator. `persistenceId.body` is only the second element of a split that reads the separator as a regular expression, so two `persistenceId`s can get the same key. See [Persistence id separator](#persistence-id-separator).
 
 #### Configure your own implementation
 
@@ -270,7 +390,7 @@ j5ik2o.dynamo-db-journal {
 j5ik2o.dynamo-db-snapshot {
   shard-count = 64
   partition-key-resolver-class-name = "com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.PartitionKeyResolver$PersistenceIdBased"
-  sort-key-resolver-class-name = "com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.SortKeyResolver$PersistenceIdWithSeqNr" 
+  sort-key-resolver-class-name = "com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.SortKeyResolver$PersistenceIdWithSeqNr"
 }
 ```
 
@@ -286,10 +406,12 @@ The following two implementations are available for built-in use.
 - `com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.PartitionKeyResolver$SequenceNumberBased`
   - `pkey = ${persistenceId}-${sequenceNumber % shardCount}`
   - The same `PersistenceId` will be assigned to a different shard if the `Sequence Number` is different. This is a write-specific sharding.
-- `com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.PartitionKeyResolver$PersistenceIdBased` (Default)
+- `com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.PartitionKeyResolver$PlainTextPersistenceIdBased` (experimental, see [the new key format](#key-format-change))
   - `pkey = ${persistenceId.prefix}-${md5(persistenceId.reverse) % shardCount}`
-  - e.g. `counter-875e6ce0425e4d2b8203f3b44b9b531a`, `persistenceId.prefix` is `counter`.
+  - e.g. `counter-875e6ce0425e4d2b8203f3b44b9b531a`, `persistenceId.prefix` is `counter`, the text before the first separator.
   - If you choose this option, the same shard will be assigned if the `PersistenceId` is the same, so be sure to select this option if you are using DynamoDB Streams or KDS for DynamoDB.
+- `com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.PartitionKeyResolver$PersistenceIdBased` (Default)
+  - `pkey = ${persistenceId.prefix}-${md5(persistenceId.reverse) % shardCount}`, the key of 1.3.0. `persistenceId.prefix` is the first element of a split that reads the separator as a regular expression, e.g. `counter` for `counter-875e6ce0425e4d2b8203f3b44b9b531a`. See [Persistence id separator](#persistence-id-separator).
 
 #### Sort Key Resolver Class Name
 
@@ -299,12 +421,14 @@ The following two implementations are available for built-in use.
 - `com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.SortKeyResolver$SeqNr`
   - `skey = $sequenceNumber`
   - An implementation in which `skey` is the `Sequence Number`.
-- `com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.SortKeyResolver$PersistenceIdWithSeqNr` (Default)
+- `com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.SortKeyResolver$PlainTextPersistenceIdWithSeqNr` (experimental, see [the new key format](#key-format-change))
   - `skey = ${persistenceId.body}-${sequenceNumber}`
   - e.g. `875e6ce0425e4d2b8203f3b44b9b531a`, `persistenceId.body` is `875e6ce0425e4d2b8203f3b44b9b531a`.
   - Use `persistenceId.body` as the prefix since `shard-count` may cause multiple `persistenceId`s events to be stored in the same shard.
   - If the `persistenceId` does not contain the separator, the full `persistenceId` is used as the prefix: `${persistenceId}-${sequenceNumber}`.
-  - `persistenceId.body` is only the text between the first and the second separator, so two `persistenceId`s can get the same key. See [Persistence id separator](#persistence-id-separator).
+  - `persistenceId.body` is all the text after the first separator. When the key would exceed 1,024 bytes, `body` is replaced with its hash. See [Persistence id separator](#persistence-id-separator).
+- `com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.SortKeyResolver$PersistenceIdWithSeqNr` (Default)
+  - `skey = ${persistenceId.body}-${sequenceNumber}`, the key of 1.3.0, or `${persistenceId}-${sequenceNumber}` when the `persistenceId` does not contain the separator. `persistenceId.body` is only the second element of a split that reads the separator as a regular expression, so two `persistenceId`s can get the same key. See [Persistence id separator](#persistence-id-separator).
 
 ```{admonition} Compatibility note
 Older versions stored `PersistenceIdWithSeqNr` sort keys as only `${sequenceNumber}` when the `persistenceId` did not contain the separator. New writes use `${persistenceId}-${sequenceNumber}` to avoid overwriting records that share the same `(pkey, sequenceNumber)`. Existing rows that were written with the old sort-key format can still be read through the `persistence-id` / `sequence-nr` secondary index, but delete and update operations calculate the table primary key from the current resolver. If you already have rows with the old format, migrate those rows to the new sort-key format before relying on delete or update for separator-less persistence ids.
