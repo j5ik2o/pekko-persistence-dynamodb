@@ -36,6 +36,13 @@ def passed_jobs():
         [job(name, "sbt test") for name in MATRIX]
 
 
+def replaced(jobs, new):
+    """Replace the one job named like new, so that no other job is lost or duplicated."""
+    names = [j["name"] for j in jobs]
+    assert names.count(new["name"]) == 1, new["name"]
+    return [new if j["name"] == new["name"] else j for j in jobs]
+
+
 @unittest.skipUnless(HAVE_PYYAML, PYYAML_REASON)
 class PrCiRequiredTests(unittest.TestCase):
     def setUp(self):
@@ -104,9 +111,8 @@ class PrCiRequiredTests(unittest.TestCase):
         self.assertEqual(reads, 1)
 
     def test_reads_again_when_the_api_lags_a_job_that_just_finished(self):
-        lagging = passed_jobs()
-        lagging[-1] = job(MATRIX[-1], "sbt test", status="in_progress", conclusion=None,
-                          step_conclusion=None)
+        lagging = replaced(passed_jobs(), job(MATRIX[-1], "sbt test", status="in_progress",
+                                              conclusion=None, step_conclusion=None))
         self.answer(lagging, lagging, passed_jobs())
         result, reads = self.run_step()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -141,18 +147,15 @@ class PrCiRequiredTests(unittest.TestCase):
         self.assert_passes_on_read_3()
 
     def test_fails_when_a_job_stays_failed(self):
-        failed = passed_jobs()
-        failed[3] = job(MATRIX[1], "sbt test", conclusion="failure", step_conclusion="failure")
-        self.answer(failed)
+        self.answer(replaced(passed_jobs(), job(MATRIX[1], "sbt test", conclusion="failure",
+                                                step_conclusion="failure")))
         result, reads = self.run_step()
         self.assertEqual(result.returncode, 1)
         self.assertEqual(reads, 6)
         self.assertIn("::error::A required job or step did not succeed.", result.stdout)
 
     def test_fails_when_a_required_step_was_skipped(self):
-        skipped = passed_jobs()
-        skipped[1] = job("lint", "sbt lint", step_conclusion="skipped")
-        self.answer(skipped)
+        self.answer(replaced(passed_jobs(), job("lint", "sbt lint", step_conclusion="skipped")))
         result, reads = self.run_step()
         self.assertEqual(result.returncode, 1)
         self.assertEqual(reads, 6)
@@ -175,21 +178,16 @@ class PrCiRequiredTests(unittest.TestCase):
                 self.assertIn("::error::Required jobs did not complete as expected.", result.stdout)
 
     def test_fails_when_a_mima_job_failed(self):
-        failed = passed_jobs()
-        index = failed.index(job(MIMA[2], "sbt mimaReportBinaryIssues"))
-        failed[index] = job(MIMA[2], "sbt mimaReportBinaryIssues", conclusion="failure",
-                            step_conclusion="failure")
-        self.answer(failed)
+        self.answer(replaced(passed_jobs(), job(MIMA[2], "sbt mimaReportBinaryIssues",
+                                                conclusion="failure", step_conclusion="failure")))
         result, reads = self.run_step()
         self.assertEqual(result.returncode, 1)
         self.assertEqual(reads, 6)
         self.assertIn("::error::A required job or step did not succeed.", result.stdout)
 
     def test_fails_when_a_mima_step_was_skipped(self):
-        skipped = passed_jobs()
-        index = skipped.index(job(MIMA[0], "sbt mimaReportBinaryIssues"))
-        skipped[index] = job(MIMA[0], "sbt mimaReportBinaryIssues", step_conclusion="skipped")
-        self.answer(skipped)
+        self.answer(replaced(passed_jobs(), job(MIMA[0], "sbt mimaReportBinaryIssues",
+                                                step_conclusion="skipped")))
         result, reads = self.run_step()
         self.assertEqual(result.returncode, 1)
         self.assertEqual(reads, 6)
