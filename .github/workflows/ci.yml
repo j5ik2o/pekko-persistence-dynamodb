@@ -142,6 +142,52 @@ jobs:
       - uses: sbt/setup-sbt@v1
       - name: sbt lint
         run: sbt -v lint
+  # Compare each published module with the release in build.sbt's mimaPreviousVersion.
+  mima:
+    needs: changes
+    if: needs.changes.outputs.scala == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        scala: [ 2.12.20, 2.13.16, 3.6.4 ]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.changes.outputs.checkout_ref }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        if: needs.changes.outputs.bundle != ''
+        with:
+          name: ${{ needs.changes.outputs.bundle }}
+          path: ${{ runner.temp }}/pr-test-merge
+      # Every job checks the commit and parents that the changes job verified.
+      - name: Check out the verified test merge
+        if: github.event_name == 'pull_request'
+        env:
+          TEST_MERGE: ${{ needs.changes.outputs.test_merge }}
+          BUNDLE: ${{ needs.changes.outputs.bundle }}
+        run: |
+          if [[ -n "$BUNDLE" ]]; then
+            git fetch --quiet --no-tags "$RUNNER_TEMP/pr-test-merge/pr-test-merge.bundle" refs/pr-ci/merge
+            git checkout --quiet --detach FETCH_HEAD
+          fi
+          # A shallow checkout hides parents from %P; the commit object keeps them.
+          actual="$(git rev-parse HEAD)$(git cat-file commit HEAD | awk '!NF { exit } $1 == "parent" { printf " %s", $2 }')"
+          echo "Checked out test merge (SHA, base, head): $actual"
+          if [[ -z "$TEST_MERGE" || "$actual" != "$TEST_MERGE" ]]; then
+            echo "::error::Expected test merge ${TEST_MERGE:-missing}"
+            exit 1
+          fi
+      - uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: '11'
+          cache: 'sbt'
+      - uses: sbt/setup-sbt@v1
+      - name: sbt mimaReportBinaryIssues
+        run: sbt -v ++${{ matrix.scala }} mimaReportBinaryIssues
   test:
     # Main PRs need every legacy check even when lint fails or Scala is out of scope.
     if: >-
@@ -227,7 +273,7 @@ jobs:
       bundle: ${{ needs.changes.outputs.bundle }}
   required:
     name: ${{ github.base_ref == 'main' && 'PR CI Required' || 'CI Summary (other refs)' }}
-    needs: [changes, lint, test, tools]
+    needs: [changes, lint, mima, test, tools]
     if: always() && github.base_ref == 'main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -237,6 +283,7 @@ jobs:
       CHANGES_RESULT: ${{ needs.changes.result }}
       RUN_SCALA: ${{ needs.changes.outputs.scala }}
       LINT_RESULT: ${{ needs.lint.result }}
+      MIMA_RESULT: ${{ needs.mima.result }}
       MATRIX_RESULT: ${{ needs.test.result }}
       RUN_TOOLS: ${{ needs.changes.outputs.tools }}
       TOOLS_RESULT: ${{ needs.tools.result }}
@@ -246,9 +293,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          echo "changes=$CHANGES_RESULT scala=$RUN_SCALA lint=$LINT_RESULT matrix=$MATRIX_RESULT tools=$RUN_TOOLS/$TOOLS_RESULT"
-          case "$CHANGES_RESULT:$RUN_SCALA:$LINT_RESULT:$MATRIX_RESULT:$RUN_TOOLS:$TOOLS_RESULT" in
-            success:true:success:success:true:success|success:true:success:success:false:skipped|success:false:skipped:success:false:skipped) ;;
+          echo "changes=$CHANGES_RESULT scala=$RUN_SCALA lint=$LINT_RESULT mima=$MIMA_RESULT matrix=$MATRIX_RESULT tools=$RUN_TOOLS/$TOOLS_RESULT"
+          case "$CHANGES_RESULT:$RUN_SCALA:$LINT_RESULT:$MIMA_RESULT:$MATRIX_RESULT:$RUN_TOOLS:$TOOLS_RESULT" in
+            success:true:success:success:success:true:success|success:true:success:success:success:false:skipped|success:false:skipped:skipped:success:false:skipped) ;;
             *) echo '::error::Required jobs did not complete as expected.'; exit 1 ;;
           esac
 
@@ -267,6 +314,9 @@ jobs:
                 passed("test (\($jdk), \($version))";
                   if $scala == "true" then "sbt test" else "Validate CI selection" end))) and
             (if $scala == "true" then passed("lint"; "sbt lint") else true end) and
+            (if $scala == "true" then
+              all(["2.12.20", "2.13.16", "3.6.4"][]; passed("mima (\(.))"; "sbt mimaReportBinaryIssues"))
+            else true end) and
             (if $tools == "true" then passed("tools / tools-tests"; "Check the test counts") else true end)'
           # needs.* already reported every job as passed, but the jobs API can show
           # a job that has just finished as still running, so read it a few times.
