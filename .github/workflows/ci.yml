@@ -202,18 +202,31 @@ jobs:
 
           # A matrix has one needs.result. Verify each named job in this run,
           # including results retained from earlier attempts when rerunning failed jobs.
-          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?filter=all&per_page=100" |
-            jq -e --arg scala "$RUN_SCALA" --arg tools "$RUN_TOOLS" --argjson attempt "$GITHUB_RUN_ATTEMPT" '
-              [.[].jobs[] | select(.run_attempt >= 1 and .run_attempt <= $attempt)] as $jobs |
-              def passed($name; $step):
-                ([ $jobs[] | select(.name == $name) ] | group_by(.run_attempt) | last // []) as $matches |
-                ($matches | length) == 1 and
-                ($matches[0] | .status == "completed" and .conclusion == "success" and
-                  ([.steps[] | select(.name == $step and .conclusion == "success")] | length) == 1);
-              all(["11", "17", "19"][]; . as $jdk |
-                all(["2.12.20", "2.13.16", "3.6.4"][]; . as $version |
-                  passed("test (\($jdk), \($version))";
-                    if $scala == "true" then "sbt test" else "Validate CI selection" end))) and
-              (if $scala == "true" then passed("lint"; "sbt lint") else true end) and
-              (if $tools == "true" then passed("tools / tools-tests"; "Check the test counts") else true end)
-            ' || { echo '::error::A required job or step did not succeed.'; exit 1; }
+          # shellcheck disable=SC2016 # The jq program uses its own variables.
+          program='
+            [.[].jobs[] | select(.run_attempt >= 1 and .run_attempt <= $attempt)] as $jobs |
+            def passed($name; $step):
+              ([ $jobs[] | select(.name == $name) ] | group_by(.run_attempt) | last // []) as $matches |
+              ($matches | length) == 1 and
+              ($matches[0] | .status == "completed" and .conclusion == "success" and
+                ([.steps[] | select(.name == $step and .conclusion == "success")] | length) == 1);
+            all(["11", "17", "19"][]; . as $jdk |
+              all(["2.12.20", "2.13.16", "3.6.4"][]; . as $version |
+                passed("test (\($jdk), \($version))";
+                  if $scala == "true" then "sbt test" else "Validate CI selection" end))) and
+            (if $scala == "true" then passed("lint"; "sbt lint") else true end) and
+            (if $tools == "true" then passed("tools / tools-tests"; "Check the test counts") else true end)'
+          # needs.* already reported every job as passed, but the jobs API can show
+          # a job that has just finished as still running, so read it a few times.
+          for n in 1 2 3 4 5 6; do
+            if jobs=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?filter=all&per_page=100") &&
+               jq -e --arg scala "$RUN_SCALA" --arg tools "$RUN_TOOLS" --argjson attempt "$GITHUB_RUN_ATTEMPT" \
+                 "$program" <<< "$jobs" > /dev/null; then
+              echo "Every required job and step succeeded (read $n)."
+              exit 0
+            fi
+            echo "Read $n: a required job or step is not reported as succeeded yet."
+            if (( n < 6 )); then sleep 10; fi
+          done
+          echo '::error::A required job or step did not succeed.'
+          exit 1
