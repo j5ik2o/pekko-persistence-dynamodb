@@ -184,10 +184,52 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: '11'
-          cache: 'sbt'
+      # The shared setup-java sbt cache is saved by whichever job finishes first, so it
+      # holds the dependencies of one Scala version only. Each mima job keeps its own
+      # cache, so the baseline artifacts and the compiler of its Scala version come
+      # from the cache after the first run instead of from Maven Central.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/coursier
+            ~/.ivy2/cache
+            ~/.sbt
+            !~/.sbt/*.lock
+          key: mima-deps-${{ runner.os }}-${{ matrix.scala }}-${{ hashFiles('**/*.sbt', '**/project/build.properties', '**/project/**.scala', '**/project/**.sbt') }}
+          restore-keys: mima-deps-${{ runner.os }}-${{ matrix.scala }}-
       - uses: sbt/setup-sbt@v1
+      # Maven Central answers HTTP 429 when runners fetch too much at once. A run is
+      # tried again only when it failed on such a download error and reported no
+      # binary compatibility problem, so a retry never hides an incompatibility.
       - name: sbt mimaReportBinaryIssues
-        run: sbt -v ++${{ matrix.scala }} mimaReportBinaryIssues
+        shell: bash
+        env:
+          SCALA_VERSION: ${{ matrix.scala }}
+          MIMA_ATTEMPTS: '3'
+          MIMA_RETRY_DELAY: '30'
+        run: |
+          set -o pipefail
+          log="$RUNNER_TEMP/mima.log"
+          for (( attempt = 1; ; attempt++ )); do
+            if sbt -v "++$SCALA_VERSION" mimaReportBinaryIssues 2>&1 | tee "$log"; then
+              exit 0
+            fi
+            if grep -q 'Failed binary compatibility check' "$log"; then
+              echo "::error::MiMa found binary compatibility problems; not retrying."
+              exit 1
+            fi
+            if ! grep -Eq 'download error: .*(HTTP response code: (429|5[0-9][0-9])|timed out|Connection reset)' "$log"; then
+              echo "::error::sbt mimaReportBinaryIssues failed without a transient download error; not retrying."
+              exit 1
+            fi
+            if (( attempt >= MIMA_ATTEMPTS )); then
+              echo "::error::Downloads still failed after $attempt attempts."
+              exit 1
+            fi
+            delay=$(( attempt * MIMA_RETRY_DELAY ))
+            echo "::warning::Attempt $attempt failed on a transient download error; retrying in ${delay}s."
+            sleep "$delay"
+          done
   test:
     # Main PRs need every legacy check even when lint fails or Scala is out of scope.
     if: >-
