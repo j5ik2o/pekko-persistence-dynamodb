@@ -78,7 +78,7 @@ class PrTestMergeTests(unittest.TestCase):
         output.touch()
         env = dict(self.env, PR_NUMBER=str(PR), EVENT_HEAD_SHA=event_head or self.head,
                    GITHUB_REPOSITORY="owner/repo", GITHUB_OUTPUT=str(output),
-                   RUNNER_TEMP=str(runner), PR_TEST_MERGE_ATTEMPTS="2", PR_TEST_MERGE_DELAY="0")
+                   RUNNER_TEMP=str(runner), GITHUB_RUN_ATTEMPT="1", PR_TEST_MERGE_ATTEMPTS="2", PR_TEST_MERGE_DELAY="0")
         result = subprocess.run(["bash", str(SCRIPT)], cwd=clone, env=env,
                                 capture_output=True, text=True)
         outputs = dict(line.split("=", 1) for line in output.read_text().splitlines())
