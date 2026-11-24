@@ -4,9 +4,15 @@ permissions:
 on:
   workflow_call:
     inputs:
-      checkout_sha:
+      checkout_ref:
         type: string
         required: true
+      test_merge:
+        type: string
+        default: ''
+      bundle:
+        type: string
+        default: ''
   workflow_dispatch:
   push:
     branches:
@@ -20,7 +26,32 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ inputs.checkout_sha }}
+          ref: ${{ inputs.checkout_ref }}
+          # The bundle of a test merge built in the changes job needs the base history.
+          fetch-depth: ${{ inputs.bundle != '' && '0' || '1' }}
+      - uses: actions/download-artifact@v4
+        if: inputs.bundle != ''
+        with:
+          name: ${{ inputs.bundle }}
+          path: ${{ runner.temp }}/pr-test-merge
+      # Every job checks the commit and parents that the changes job verified.
+      - name: Check out the verified test merge
+        if: inputs.test_merge != ''
+        env:
+          TEST_MERGE: ${{ inputs.test_merge }}
+          BUNDLE: ${{ inputs.bundle }}
+        run: |
+          if [[ -n "$BUNDLE" ]]; then
+            git fetch --quiet --no-tags "$RUNNER_TEMP/pr-test-merge/pr-test-merge.bundle" refs/pr-ci/merge
+            git checkout --quiet --detach FETCH_HEAD
+          fi
+          # A shallow checkout hides parents from %P; the commit object keeps them.
+          actual="$(git rev-parse HEAD)$(git cat-file commit HEAD | awk '!NF { exit } $1 == "parent" { printf " %s", $2 }')"
+          echo "Checked out test merge (SHA, base, head): $actual"
+          if [[ -z "$TEST_MERGE" || "$actual" != "$TEST_MERGE" ]]; then
+            echo "::error::Expected test merge ${TEST_MERGE:-missing}"
+            exit 1
+          fi
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
@@ -34,7 +65,7 @@ jobs:
       - name: Check the test counts
         if: steps.run-tests.outcome == 'success'
         run: |
-          expected=180
+          expected=193
           summary=$(grep -E '^Ran [0-9]+ tests? in ' "$RUNNER_TEMP/tools-tests.log" | tail -n 1)
           if [ -z "$summary" ]; then
             echo "::error::Could not find the unittest summary line in the test output."

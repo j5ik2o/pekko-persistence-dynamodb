@@ -32,8 +32,13 @@ jobs:
   changes:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
-      checkout_sha: ${{ steps.select.outputs.checkout_sha }}
+      checkout_ref: ${{ steps.resolve.outputs.checkout_ref || github.sha }}
+      test_merge: ${{ steps.resolve.outputs.test_merge }}
+      bundle: ${{ steps.resolve.outputs.bundle_name }}
       scala: ${{ steps.select.outputs.scala }}
       tools: ${{ steps.select.outputs.tools }}
     steps:
@@ -53,38 +58,32 @@ jobs:
           ref: refs/pull/${{ github.event.pull_request.number }}/merge
           fetch-depth: 0
           persist-credentials: false
+      # Check the current base branch tip and PR head, not the event's base SHA.
+      - name: Resolve the PR's test merge
+        id: resolve
+        if: github.event_name == 'pull_request'
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/pr-test-merge.sh
+      - uses: actions/upload-artifact@v4
+        if: steps.resolve.outputs.bundle_name != ''
+        with:
+          name: ${{ steps.resolve.outputs.bundle_name }}
+          path: ${{ runner.temp }}/pr-test-merge.bundle
+          if-no-files-found: error
+          # After expiry, re-run all jobs so that this job builds the bundle again.
+          retention-days: 1
       - name: Select PR checks
         id: select
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ steps.resolve.outputs.base_sha }}
+          HEAD_SHA: ${{ steps.resolve.outputs.head_sha }}
         run: |
-          checkout_sha=$GITHUB_SHA
           scala=true
           tools=false
           if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
-            # The PR merge ref can still have the previous base when a PR is retargeted.
-            checkout_sha=$(git rev-parse HEAD)
-            echo "Expected merge parents: $BASE_SHA $HEAD_SHA"
-            for attempt in {1..5}; do
-              parents=$(git show -s --format=%P "$checkout_sha")
-              echo "Merge candidate $checkout_sha parents: $parents"
-              if [[ "$parents" == "$BASE_SHA $HEAD_SHA" ]]; then
-                break
-              fi
-              if [[ "$attempt" == 5 ]]; then
-                echo '::error::No test merge with the event base and head was available.'
-                exit 1
-              fi
-              sleep 3
-              if git fetch --no-tags origin "refs/pull/$PR_NUMBER/merge"; then
-                checkout_sha=$(git rev-parse FETCH_HEAD)
-              fi
-            done
-            git checkout --detach "$checkout_sha"
-            git log -1 --format='Verified checkout %H parents: %P'
-
             scala=false
             paths=$(mktemp)
             git diff --no-renames --name-only -z "$BASE_SHA...$HEAD_SHA" -- > "$paths"
@@ -95,11 +94,11 @@ jobs:
                   scala=true ;;
               esac
               case "$path" in
-                tools/*|.github/workflows/tools-tests.yml) tools=true ;;
+                tools/*|.github/workflows/tools-tests.yml|.github/scripts/*) tools=true ;;
               esac
             done < "$paths"
           fi
-          printf 'checkout_sha=%s\nscala=%s\ntools=%s\n' "$checkout_sha" "$scala" "$tools" | tee -a "$GITHUB_OUTPUT"
+          printf 'scala=%s\ntools=%s\n' "$scala" "$tools" | tee -a "$GITHUB_OUTPUT"
   lint:
     needs: changes
     if: needs.changes.outputs.scala == 'true'
@@ -108,8 +107,31 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ needs.changes.outputs.checkout_sha }}
+          ref: ${{ needs.changes.outputs.checkout_ref }}
           fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        if: needs.changes.outputs.bundle != ''
+        with:
+          name: ${{ needs.changes.outputs.bundle }}
+          path: ${{ runner.temp }}/pr-test-merge
+      # Every job checks the commit and parents that the changes job verified.
+      - name: Check out the verified test merge
+        if: github.event_name == 'pull_request'
+        env:
+          TEST_MERGE: ${{ needs.changes.outputs.test_merge }}
+          BUNDLE: ${{ needs.changes.outputs.bundle }}
+        run: |
+          if [[ -n "$BUNDLE" ]]; then
+            git fetch --quiet --no-tags "$RUNNER_TEMP/pr-test-merge/pr-test-merge.bundle" refs/pr-ci/merge
+            git checkout --quiet --detach FETCH_HEAD
+          fi
+          # A shallow checkout hides parents from %P; the commit object keeps them.
+          actual="$(git rev-parse HEAD)$(git cat-file commit HEAD | awk '!NF { exit } $1 == "parent" { printf " %s", $2 }')"
+          echo "Checked out test merge (SHA, base, head): $actual"
+          if [[ -z "$TEST_MERGE" || "$actual" != "$TEST_MERGE" ]]; then
+            echo "::error::Expected test merge ${TEST_MERGE:-missing}"
+            exit 1
+          fi
       - uses: actions/setup-java@v5
         with:
           distribution: 'temurin'
@@ -139,10 +161,13 @@ jobs:
         env:
           CHANGES_RESULT: ${{ needs.changes.result }}
           LINT_RESULT: ${{ needs.lint.result }}
-          CHECKOUT_SHA: ${{ needs.changes.outputs.checkout_sha }}
+          CHECKOUT_REF: ${{ needs.changes.outputs.checkout_ref }}
+          TEST_MERGE: ${{ needs.changes.outputs.test_merge }}
         run: |
-          if [[ ! "$CHECKOUT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-            echo '::error::Verified checkout SHA is missing or invalid.'
+          sha='[0-9a-f]{40}'
+          if [[ ! "$CHECKOUT_REF" =~ ^$sha$ ]] ||
+             [[ "$GITHUB_EVENT_NAME" == pull_request && ! "$TEST_MERGE" =~ ^$sha\ $sha\ $sha$ ]]; then
+            echo '::error::Verified test merge is missing or invalid.'
             exit 1
           fi
           case "$CHANGES_RESULT:$RUN_SCALA:$LINT_RESULT" in
@@ -154,8 +179,31 @@ jobs:
       - uses: actions/checkout@v5
         if: env.RUN_SCALA == 'true'
         with:
-          ref: ${{ needs.changes.outputs.checkout_sha }}
+          ref: ${{ needs.changes.outputs.checkout_ref }}
           fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        if: needs.changes.outputs.bundle != '' && env.RUN_SCALA == 'true'
+        with:
+          name: ${{ needs.changes.outputs.bundle }}
+          path: ${{ runner.temp }}/pr-test-merge
+      # Every job checks the commit and parents that the changes job verified.
+      - name: Check out the verified test merge
+        if: github.event_name == 'pull_request' && env.RUN_SCALA == 'true'
+        env:
+          TEST_MERGE: ${{ needs.changes.outputs.test_merge }}
+          BUNDLE: ${{ needs.changes.outputs.bundle }}
+        run: |
+          if [[ -n "$BUNDLE" ]]; then
+            git fetch --quiet --no-tags "$RUNNER_TEMP/pr-test-merge/pr-test-merge.bundle" refs/pr-ci/merge
+            git checkout --quiet --detach FETCH_HEAD
+          fi
+          # A shallow checkout hides parents from %P; the commit object keeps them.
+          actual="$(git rev-parse HEAD)$(git cat-file commit HEAD | awk '!NF { exit } $1 == "parent" { printf " %s", $2 }')"
+          echo "Checked out test merge (SHA, base, head): $actual"
+          if [[ -z "$TEST_MERGE" || "$actual" != "$TEST_MERGE" ]]; then
+            echo "::error::Expected test merge ${TEST_MERGE:-missing}"
+            exit 1
+          fi
       - uses: actions/setup-java@v5
         if: env.RUN_SCALA == 'true'
         with:
@@ -172,7 +220,9 @@ jobs:
     if: needs.changes.outputs.tools == 'true'
     uses: ./.github/workflows/tools-tests.yml
     with:
-      checkout_sha: ${{ needs.changes.outputs.checkout_sha }}
+      checkout_ref: ${{ needs.changes.outputs.checkout_ref }}
+      test_merge: ${{ needs.changes.outputs.test_merge }}
+      bundle: ${{ needs.changes.outputs.bundle }}
   required:
     name: ${{ github.base_ref == 'main' && 'PR CI Required' || 'CI Summary (other refs)' }}
     needs: [changes, lint, test, tools]
