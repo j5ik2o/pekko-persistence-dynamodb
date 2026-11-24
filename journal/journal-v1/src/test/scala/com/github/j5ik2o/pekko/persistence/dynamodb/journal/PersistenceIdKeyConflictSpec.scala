@@ -34,6 +34,7 @@ import org.scalatest.wordspec.AnyWordSpec
 import java.util.concurrent.atomic.AtomicInteger
 import scala.collection.immutable
 import scala.concurrent.Await
+import scala.util.Try
 import scala.concurrent.duration._
 import scala.jdk.CollectionConverters._
 
@@ -86,10 +87,10 @@ object PersistenceIdKeyConflictSpec extends DockerAssignedPort {
 }
 
 /** Issue #1009 with the AWS SDK v1 client, which cannot use the JournalHead. The snapshot store and the JournalHead are
-  * covered by the journal-v2 suite. The default key resolvers give two persistence ids the same key when they differ
-  * only after the second separator, or always with the separator `|`. A write must not replace the row of the other id:
-  * it fails, and the replay, the highest sequence number, and the snapshot of the id that wrote first stay as they
-  * were.
+  * covered by the journal-v2 suite. The legacy key resolvers, which keep the default keys of releases up to 1.3.0, give
+  * two persistence ids the same key when they differ only after the second separator, or always with the separator `|`.
+  * A write must not replace the row of the other id: it fails, and the replay and the highest sequence number of the id
+  * that wrote first stay as they were.
   */
 final class PersistenceIdKeyConflictSpec extends AnyWordSpec with Matchers with DynamoDBContainerHelper {
   import PersistenceIdKeyConflictSpec._
@@ -112,8 +113,16 @@ final class PersistenceIdKeyConflictSpec extends AnyWordSpec with Matchers with 
     val separator = mode.separator.fold("")(s => s"""
          |j5ik2o.dynamo-db-journal.persistence-id-separator = "$s"
          |""".stripMargin)
+    val legacyResolvers = Seq(
+      "j5ik2o.dynamo-db-journal.partition-key-resolver-class-name" -> classOf[
+        PartitionKeyResolver.LegacyPersistenceIdBased
+      ],
+      "j5ik2o.dynamo-db-journal.sort-key-resolver-class-name" -> classOf[SortKeyResolver.LegacyPersistenceIdWithSeqNr]
+    ).map { case (key, cls) => s"""\n$key = "${cls.getName}"""" }.mkString
     ConfigFactory
-      .parseString(separator + "\npekko.persistence.snapshot-store.plugin = \"pekko.persistence.no-snapshot-store\"")
+      .parseString(
+        separator + legacyResolvers + "\npekko.persistence.snapshot-store.plugin = \"pekko.persistence.no-snapshot-store\""
+      )
       .withFallback(
         ConfigHelper.config(
           Some("journal-reference"),
@@ -378,6 +387,31 @@ final class PersistenceIdKeyConflictSpec extends AnyWordSpec with Matchers with 
       val afterHard = recover(hardDelete, id)
       afterHard.events.map(_._1) shouldBe (21L to 30L).toVector
       afterHard.lastSequenceNr shouldBe 30L
+    }
+  }
+
+  "the legacy key resolvers" should {
+
+    "give the keys of 1.3.0, and fail where 1.3.0 failed" in {
+      val alphabet = Seq("a", "b", "-", "|", ".")
+      val ids = (1 to 3).flatMap(n =>
+        Seq
+          .fill(n)(alphabet).foldLeft(Seq(""))((acc, cs) =>
+            for {
+              a <- acc
+              c <- cs
+            } yield a + c
+          )
+      )
+      Seq(headDisabled -> "-", pipe -> "|", Mode(separator = Some(".")) -> ".").foreach { case (mode, separator) =>
+        ids.foreach { id =>
+          def expected(shardCount: Int) =
+            Try((BeforeKeyFix.partitionKey(id, separator, shardCount), BeforeKeyFix.sortKey(id, 7, separator))).toOption
+          withClue(s"journal id=[$id] separator=[$separator]: ") {
+            Try(journalKey(mode, id, 7)).toOption shouldBe expected(context(mode).pluginConfig.shardCount)
+          }
+        }
+      }
     }
   }
 }

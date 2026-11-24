@@ -27,6 +27,7 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.journal.dao.PersistenceIdWit
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.head.DuplicateJournalEventsException
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.store.JournalRowStoreException
 import com.github.j5ik2o.pekko.persistence.dynamodb.model.{ PersistenceId, SequenceNumber }
+import com.github.j5ik2o.pekko.persistence.dynamodb.snapshot
 import com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.SnapshotPluginContext
 import com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.config.SnapshotPluginConfig
 import com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.store.SnapshotStoreException
@@ -38,6 +39,7 @@ import org.scalatest.wordspec.AnyWordSpec
 import java.util.concurrent.atomic.AtomicInteger
 import scala.collection.immutable
 import scala.concurrent.Await
+import scala.util.Try
 import scala.concurrent.duration._
 import scala.jdk.CollectionConverters._
 
@@ -93,9 +95,10 @@ object PersistenceIdKeyConflictSpec extends DockerAssignedPort {
   final case class StoredRow(persistenceId: String, sequenceNr: Long, deleted: Option[Boolean])
 }
 
-/** Issue #1009: the default key resolvers give two persistence ids the same key when they differ only after the second
-  * separator, or always with the separator `|`. A write must not replace the row of the other id: it fails, and the
-  * replay, the highest sequence number, and the snapshot of the id that wrote first stay as they were.
+/** Issue #1009: the legacy key resolvers, which keep the default keys of releases up to 1.3.0, give two persistence ids
+  * the same key when they differ only after the second separator, or always with the separator `|`. A write must not
+  * replace the row of the other id: it fails, and the replay, the highest sequence number, and the snapshot of the id
+  * that wrote first stay as they were. The default resolvers give each id a key of its own (`PersistenceIdKeySpec`).
   */
 final class PersistenceIdKeyConflictSpec extends AnyWordSpec with Matchers with DynamoDBContainerHelper {
   import PersistenceIdKeyConflictSpec._
@@ -119,8 +122,20 @@ final class PersistenceIdKeyConflictSpec extends AnyWordSpec with Matchers with 
          |j5ik2o.dynamo-db-journal.persistence-id-separator = "$s"
          |j5ik2o.dynamo-db-snapshot.persistence-id-separator = "$s"
          |""".stripMargin)
+    val legacyResolvers = Seq(
+      "j5ik2o.dynamo-db-journal.partition-key-resolver-class-name" -> classOf[
+        PartitionKeyResolver.LegacyPersistenceIdBased
+      ],
+      "j5ik2o.dynamo-db-journal.sort-key-resolver-class-name" -> classOf[SortKeyResolver.LegacyPersistenceIdWithSeqNr],
+      "j5ik2o.dynamo-db-snapshot.partition-key-resolver-class-name" -> classOf[
+        snapshot.PartitionKeyResolver.LegacyPersistenceIdBased
+      ],
+      "j5ik2o.dynamo-db-snapshot.sort-key-resolver-class-name" -> classOf[
+        snapshot.SortKeyResolver.LegacyPersistenceIdWithSeqNr
+      ]
+    ).map { case (key, cls) => s"""\n$key = "${cls.getName}"""" }.mkString
     ConfigFactory
-      .parseString(separator)
+      .parseString(separator + legacyResolvers)
       .withFallback(
         ConfigHelper.config(
           Some("journal-reference"),
@@ -446,6 +461,34 @@ final class PersistenceIdKeyConflictSpec extends AnyWordSpec with Matchers with 
       val afterHard = recover(hardDelete, id)
       afterHard.events.map(_._1) shouldBe (21L to 30L).toVector
       afterHard.lastSequenceNr shouldBe 30L
+    }
+  }
+
+  "the legacy key resolvers" should {
+
+    "give the keys of 1.3.0, and fail where 1.3.0 failed" in {
+      val alphabet = Seq("a", "b", "-", "|", ".")
+      val ids = (1 to 3).flatMap(n =>
+        Seq
+          .fill(n)(alphabet).foldLeft(Seq(""))((acc, cs) =>
+            for {
+              a <- acc
+              c <- cs
+            } yield a + c
+          )
+      )
+      Seq(headDisabled -> "-", pipe -> "|", Mode(separator = Some(".")) -> ".").foreach { case (mode, separator) =>
+        ids.foreach { id =>
+          def expected(shardCount: Int) =
+            Try((BeforeKeyFix.partitionKey(id, separator, shardCount), BeforeKeyFix.sortKey(id, 7, separator))).toOption
+          withClue(s"journal id=[$id] separator=[$separator]: ") {
+            Try(journalKey(mode, id, 7)).toOption shouldBe expected(context(mode)._1.pluginConfig.shardCount)
+          }
+          withClue(s"snapshot id=[$id] separator=[$separator]: ") {
+            Try(snapshotKey(mode, id, 7)).toOption shouldBe expected(context(mode)._2.pluginConfig.shardCount)
+          }
+        }
+      }
     }
   }
 }

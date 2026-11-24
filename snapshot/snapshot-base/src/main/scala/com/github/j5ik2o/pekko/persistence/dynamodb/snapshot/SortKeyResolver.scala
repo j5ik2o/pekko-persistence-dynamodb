@@ -15,7 +15,7 @@
  */
 package com.github.j5ik2o.pekko.persistence.dynamodb.snapshot
 
-import com.github.j5ik2o.pekko.persistence.dynamodb.model.{ PersistenceId, SequenceNumber }
+import com.github.j5ik2o.pekko.persistence.dynamodb.model.{ PersistenceId, PersistenceIdKeyParts, SequenceNumber }
 import net.ceedubs.ficus.Ficus._
 
 final case class SortKey(value: String) {
@@ -54,7 +54,25 @@ object SortKeyResolverProvider {
 
 object SortKeyResolver {
 
+  /** `${the text after the first separator}-${sequenceNumber}`, or `${persistenceId}-${sequenceNumber}` when the id
+    * does not contain the separator. The separator is matched as plain text, so two different ids never share a key.
+    * When the key would exceed 1,024 UTF-8 bytes, the text is replaced with its marked SHA-256 (see
+    * `PersistenceIdKeyParts.sortKey`).
+    */
   private[snapshot] def persistenceIdWithSeqNrSKey(
+      persistenceId: PersistenceId,
+      sequenceNumber: SequenceNumber,
+      separator: String
+  ): String =
+    PersistenceIdKeyParts.sortKey(
+      PersistenceIdKeyParts.split(persistenceId, separator).fold(persistenceId.asString)(_._2),
+      sequenceNumber
+    )
+
+  /** The sort key of `LegacyPersistenceIdWithSeqNr`: the second element of a split that reads the separator as a
+    * regular expression. It throws where releases up to 1.3.0 threw.
+    */
+  private[snapshot] def legacyPersistenceIdWithSeqNrSKey(
       persistenceId: PersistenceId,
       sequenceNumber: SequenceNumber,
       separator: String
@@ -78,19 +96,51 @@ object SortKeyResolver {
 
   }
 
+  /** The default resolver. The body is the text after the first `persistence-id-separator`, which is matched as plain
+    * text (issue #1009).
+    */
   final class PersistenceIdWithSeqNr(pluginContext: SnapshotPluginContext)
       extends SortKeyResolver
       with ToPersistenceIdOps {
 
-    import pluginContext._
+    override def separator: String =
+      pluginContext.pluginConfig.sourceConfig
+        .getAs[String]("persistence-id-separator").getOrElse(PersistenceId.Separator)
+
+    private val legacyKeysEnabled: Boolean =
+      pluginContext.pluginConfig.sourceConfig.getAs[Boolean]("legacy-keys-enabled").getOrElse(true)
+
+    // ${the text after the first separator, or the whole persistenceId}-${sequenceNumber}
+    override def resolve(persistenceId: PersistenceId, sequenceNumber: SequenceNumber): SortKey =
+      SortKey(persistenceIdWithSeqNrSKey(persistenceId, sequenceNumber, separator))
+
+    /** The sort key that `LegacyPersistenceIdWithSeqNr` gives the event, which releases up to 1.3.0 used by default. It
+      * is none when that resolver cannot build a key for the id, and when `legacy-keys-enabled` is false.
+      */
+    private[snapshot] def resolveLegacy(persistenceId: PersistenceId, sequenceNumber: SequenceNumber): Option[SortKey] =
+      if (!legacyKeysEnabled) None
+      else
+        PersistenceIdKeyParts
+          .legacyBody(persistenceId, separator)
+          .map(body => SortKey("%s-%019d".format(body.getOrElse(persistenceId.asString), sequenceNumber.value)))
+
+  }
+
+  /** The default resolver of releases up to 1.3.0, kept as it was. It keeps only the second element of a split that
+    * reads `persistence-id-separator` as a regular expression, so ids can share a key with it (issue #1009). Select it
+    * only to keep the keys of an existing table exactly as they were.
+    */
+  final class LegacyPersistenceIdWithSeqNr(pluginContext: SnapshotPluginContext)
+      extends SortKeyResolver
+      with ToPersistenceIdOps {
 
     override def separator: String =
-      pluginConfig.sourceConfig.getAs[String]("persistence-id-separator").getOrElse(PersistenceId.Separator)
+      pluginContext.pluginConfig.sourceConfig
+        .getAs[String]("persistence-id-separator").getOrElse(PersistenceId.Separator)
 
     // ${persistenceId.bodyOrFullPersistenceId}-${sequenceNumber}
-    override def resolve(persistenceId: PersistenceId, sequenceNumber: SequenceNumber): SortKey = {
-      SortKey(persistenceIdWithSeqNrSKey(persistenceId, sequenceNumber, separator))
-    }
+    override def resolve(persistenceId: PersistenceId, sequenceNumber: SequenceNumber): SortKey =
+      SortKey(legacyPersistenceIdWithSeqNrSKey(persistenceId, sequenceNumber, separator))
 
   }
 

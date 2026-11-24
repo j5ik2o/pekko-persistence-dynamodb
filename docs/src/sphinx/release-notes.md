@@ -11,6 +11,39 @@ gh release create v1.2.0 --target <SHA> --generate-notes
 
 Replace `v1.2.0` and `<SHA>` with the approved version and commit. If the lookup returns no rows, continue. For a lightweight tag, compare the SHA on its row with `<SHA>`; for an annotated tag, compare the SHA on the `^{}` row. Continue only on a match; otherwise stop. `--target` selects the commit only when `gh release create` creates a missing tag. Confirm that the `publish` workflow succeeds. Tag pushes publish the artifacts to Maven Central automatically.
 
+## Unreleased
+
+### Persistence ids that shared a key get keys of their own
+
+The default key resolvers of the journal and the snapshot store, `PartitionKeyResolver$PersistenceIdBased` and
+`SortKeyResolver$PersistenceIdWithSeqNr`, now split a `persistenceId` at the first `persistence-id-separator`, matched
+as plain text, instead of reading the separator as a regular expression and keeping only the first two parts (#1009,
+#1014). Two `persistenceId`s no longer get the same key, so the `persistenceId`s that failed with `KeyConflict` in 1.3.0
+because they shared a key can be written. `persistenceId`s that 1.3.0 could not write at all, such as `order-` or any
+`persistenceId` with the separator `.`, can be written too. When `skey` would exceed 1,024 bytes, its text is replaced
+with a marked SHA-256, so every `persistenceId` that 1.3.0 could write can still be written.
+
+The key changes only for some `persistenceId`s: with the default separator `-`, those that contain it two or more times,
+and with `|`, those that contain it. The keys of every other `persistenceId` stay the same, byte for byte, and they send
+no extra request. {ref}`Key format changes after 1.3.0 <key-format-change>` lists the `persistenceId`s whose key changes.
+
+No migration is needed before the upgrade. The rows that 1.3.0 and earlier releases wrote keep their old keys, and the
+default resolvers still replay, delete, and update them and load and delete their snapshots, next to the rows written
+under the new keys. For a `persistenceId` whose key changes, a hard or soft delete sends one extra conditional
+`DeleteItem` per event, a snapshot save one extra conditional `DeleteItem`, and an in-place update of a row under the old
+key one refused update and two or three `GetItem`. These numbers were measured on DynamoDB Local.
+
+- A tool that moves the old rows to the new keys comes in a later change. Until the old rows are moved, a new key can
+  be the old key of another `persistenceId`, for example `Order-` and `Order--23`, or `A|B` and `AB|98` with the
+  separator `|`. Such a write fails with `KeyConflict` (with the JournalHead, `DuplicateJournalEventsException`), as in
+  1.3.0, and the row of the other `persistenceId` stays as it is.
+- After every old row is moved, `legacy-keys-enabled = false` stops the extra requests.
+- `PartitionKeyResolver$LegacyPersistenceIdBased` and `SortKeyResolver$LegacyPersistenceIdWithSeqNr` keep the keys of
+  1.3.0 exactly. Select them if a consumer of DynamoDB Streams or Kinesis Data Streams depends on the old keys.
+- A rollback to 1.3.0 replays the rows written under the new keys, but its deletes and in-place updates do not reach
+  them.
+- The DAX item cache was not measured with this change.
+
 ## 1.3.0
 
 ```{admonition} Binary incompatibility in pekko-persistence-dynamodb-test

@@ -16,7 +16,7 @@
 package com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.schema
 
 import com.github.j5ik2o.pekko.persistence.dynamodb.ddb._
-import com.github.j5ik2o.pekko.persistence.dynamodb.model.{ PersistenceId, SequenceNumber }
+import com.github.j5ik2o.pekko.persistence.dynamodb.model.{ PersistenceId, PersistenceIdKeyParts, SequenceNumber }
 import com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.config.SnapshotPluginConfig
 import com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.{ PartitionKeyResolver, SortKeyResolver }
 
@@ -48,6 +48,41 @@ final case class SnapshotTableSpec(
         RowKey(
           table.table,
           keyFrom(DdbValue.Str(persistenceId.asString), DdbValue.Num(BigDecimal(sequenceNumber.value)))
+        )
+    }
+
+  /** The key that releases up to 1.3.0 gave the snapshot, when it differs from `keyOf`.
+    *
+    * Those releases split the persistence id of the default resolvers differently (issue #1009), so a snapshot they
+    * wrote can be stored under another key than the one `keyOf` gives now. It is none when the key did not change, when
+    * neither resolver is a default one, when those releases could not write a row for the id, and when
+    * `legacy-keys-enabled` is false. Whether it is none depends on the persistence id alone. The key can hold the
+    * snapshot of another persistence id that shared it, so an operation on it must check the persistence id and the
+    * sequence number of the row.
+    */
+  private[snapshot] def legacyKeyOf(persistenceId: PersistenceId, sequenceNumber: SequenceNumber): Option[RowKey] =
+    keyDerivation match {
+      case SnapshotKeyDerivation.Identity => None
+      case SnapshotKeyDerivation.Sharded(partitionKeyResolver, sortKeyResolver) =>
+        val partitionKey = partitionKeyResolver.resolve(persistenceId, sequenceNumber)
+        val sortKey      = sortKeyResolver.resolve(persistenceId, sequenceNumber)
+        val legacyPartitionKey = partitionKeyResolver match {
+          case resolver: PartitionKeyResolver.PersistenceIdBased => resolver.resolveLegacy(persistenceId)
+          case _                                                 => Some(partitionKey)
+        }
+        val legacySortKey = sortKeyResolver match {
+          case resolver: SortKeyResolver.PersistenceIdWithSeqNr =>
+            resolver.resolveLegacy(persistenceId, sequenceNumber)
+          case _ => Some(sortKey)
+        }
+        for {
+          oldPartitionKey <- legacyPartitionKey
+          oldSortKey <- legacySortKey
+          if oldPartitionKey != partitionKey || oldSortKey != sortKey
+          if PersistenceIdKeyParts.fitsDynamoDB(oldPartitionKey.asString, oldSortKey.asString)
+        } yield RowKey(
+          table.table,
+          keyFrom(DdbValue.Str(oldPartitionKey.asString), DdbValue.Str(oldSortKey.asString))
         )
     }
 

@@ -43,11 +43,19 @@ final class SnapshotStore(
   /** Writes the snapshot when its key holds no row or a row of the same persistence id, so a snapshot saved again at
     * the same sequence number replaces the earlier one. Two persistence ids can resolve to the same key (issue #1009);
     * the snapshot of the other id is not replaced, and the save fails with `SnapshotStoreException.KeyConflict`.
+    *
+    * Releases up to 1.3.0 may have stored a snapshot of the same sequence number under another key (see
+    * `SnapshotTableSpec.legacyKeyOf`). That copy is deleted after the write. When the delete does not happen, a load
+    * still returns the snapshot under the current key (see `first`).
     */
   def save(row: SnapshotRow): Source[Unit, NotUsed] = {
     val key = codec.key(row)
     adapter.run(Operation.Put(key.table, codec.encode(row), Some(sameRowOrNone(row.persistenceId)))).flatMapConcat {
-      case OperationResult.Written(_) => Source.single(())
+      case OperationResult.Written(_) =>
+        tableSpec.legacyKeyOf(row.persistenceId, row.sequenceNumber) match {
+          case None            => Source.single(())
+          case Some(legacyKey) => deleteRow(legacyKey, sameSnapshot(row.persistenceId, row.sequenceNumber))
+        }
       case OperationResult.ConditionRejected(_) =>
         conflict(key).flatMapConcat(other =>
           Source.failed(
@@ -63,8 +71,13 @@ final class SnapshotStore(
     }
   }
 
-  def latest(persistenceId: PersistenceId): Source[Option[SnapshotRow], NotUsed] =
-    first(query(persistenceId, SequenceNumber.MinValue, SequenceNumber.MaxValue, None, Some(1), scanForward = false))
+  /** Reads one row more for an id whose key changed, because its latest snapshot can be stored under both keys. */
+  def latest(persistenceId: PersistenceId): Source[Option[SnapshotRow], NotUsed] = {
+    val limit = if (hasLegacyKey(persistenceId)) 2 else 1
+    first(
+      query(persistenceId, SequenceNumber.MinValue, SequenceNumber.MaxValue, None, Some(limit), scanForward = false)
+    )
+  }
 
   def forMaxSequenceNr(
       persistenceId: PersistenceId,
@@ -94,7 +107,7 @@ final class SnapshotStore(
   def delete(persistenceId: PersistenceId, sequenceNumber: SequenceNumber): Source[Unit, NotUsed] =
     tableSpec.keyDerivation match {
       case SnapshotKeyDerivation.Identity =>
-        deleteRow(persistenceId, tableSpec.keyOf(persistenceId, sequenceNumber))
+        deleteRow(tableSpec.keyOf(persistenceId, sequenceNumber), sameRowOrNone(persistenceId))
       case SnapshotKeyDerivation.Sharded(_, _) =>
         deleteRows(query(persistenceId, sequenceNumber, sequenceNumber, None))
     }
@@ -147,32 +160,59 @@ final class SnapshotStore(
     }
   }
 
+  /** The first of the rows, which come newest first. When the first two rows have the same sequence number, a save of a
+    * snapshot under the current key stopped before it deleted the copy under the key of a release up to 1.3.0, and the
+    * row under the current key is the newer one.
+    */
   private def first(rows: Source[AttributeMap, NotUsed]): Source[Option[SnapshotRow], NotUsed] =
     rows
-      .take(1)
-      .map(codec.decode)
-      .flatMapConcat {
-        case Right(row)  => Source.single(Some(row))
-        case Left(error) => Source.failed(new IllegalArgumentException(s"cannot decode the snapshot row: $error"))
+      .take(2)
+      .fold(Vector.empty[AttributeMap])(_ :+ _)
+      .flatMapConcat { values =>
+        val chosen = values.headOption.map { head =>
+          values
+            .filter(_.get(schema.sequenceNumber) == head.get(schema.sequenceNumber))
+            .find(isUnderCurrentKey)
+            .getOrElse(head)
+        }
+        chosen.map(codec.decode) match {
+          case None             => Source.single(None)
+          case Some(Right(row)) => Source.single(Some(row))
+          case Some(Left(error)) =>
+            Source.failed(new IllegalArgumentException(s"cannot decode the snapshot row: $error"))
+        }
       }
-      .fold(Option.empty[SnapshotRow]) { (_, row) => row }
 
-  /** Deletes the rows, each with its own conditional DeleteItem, at most `batchWriteLimit` at a time. */
+  private def isUnderCurrentKey(values: AttributeMap): Boolean =
+    codec.decode(values).exists(row => tableSpec.table.keyOf(values).toOption.contains(codec.key(row)))
+
+  private def hasLegacyKey(persistenceId: PersistenceId): Boolean =
+    tableSpec.legacyKeyOf(persistenceId, SequenceNumber(1)).isDefined
+
+  /** Deletes the rows, each with its own conditional DeleteItem, at most `batchWriteLimit` at a time.
+    *
+    * A row that a release up to 1.3.0 stored under another key than the current one (see
+    * `SnapshotTableSpec.legacyKeyOf`) is deleted under that key, while it is still the snapshot that was read. Any
+    * other row is deleted under its current key.
+    */
   private def deleteRows(rows: Source[AttributeMap, NotUsed]): Source[Unit, NotUsed] =
     rows
-      .map(codec.decode)
+      .map(values => codec.decode(values).map(row => row -> tableSpec.table.keyOf(values).toOption))
       .flatMapConcat {
-        case Right(row)  => Source.single(row.persistenceId -> codec.key(row))
-        case Left(error) => Source.failed(new IllegalArgumentException(s"cannot decode the snapshot row: $error"))
+        case Right((row, storedKey))
+            if storedKey.isDefined && tableSpec.legacyKeyOf(row.persistenceId, row.sequenceNumber) == storedKey =>
+          Source.single(storedKey.get -> sameSnapshot(row.persistenceId, row.sequenceNumber))
+        case Right((row, _)) => Source.single(codec.key(row) -> sameRowOrNone(row.persistenceId))
+        case Left(error)     => Source.failed(new IllegalArgumentException(s"cannot decode the snapshot row: $error"))
       }
-      .flatMapMerge(batchWriteLimit, { case (persistenceId, key) => deleteRow(persistenceId, key) })
+      .flatMapMerge(batchWriteLimit, { case (key, condition) => deleteRow(key, condition) })
 
-  /** Deletes the row under `key` when it is a row of `persistenceId`. A key that holds the snapshot of another
-    * persistence id (issue #1009) is left as it is, because that row is not the snapshot to delete.
+  /** Deletes the row under `key` when `condition` holds. A key that holds the snapshot of another persistence id (issue
+    * #1009) is left as it is, because that row is not the snapshot to delete.
     */
-  private def deleteRow(persistenceId: PersistenceId, key: RowKey): Source[Unit, NotUsed] = {
+  private def deleteRow(key: RowKey, condition: Condition): Source[Unit, NotUsed] = {
     def delete: Source[OperationResult, NotUsed] =
-      adapter.run(Operation.Delete(key.table, key, Some(sameRowOrNone(persistenceId))))
+      adapter.run(Operation.Delete(key.table, key, Some(condition)))
     // The delete is idempotent, so with write-backoff enabled it is sent again after a failure, as the batch was.
     val attempts =
       if (writeBackoffConfig.enabled)
@@ -183,6 +223,21 @@ final class SnapshotStore(
       case other => Source.failed(new IllegalStateException(s"unexpected write result: $other"))
     }
   }
+
+  /** The row is the snapshot `sequenceNumber` of `persistenceId`. */
+  private def sameSnapshot(persistenceId: PersistenceId, sequenceNumber: SequenceNumber): Condition =
+    Condition.And(
+      Condition.Compare(
+        Operand.Column(schema.persistenceId),
+        CompareOp.Eq,
+        Operand.Literal(DdbValue.Str(persistenceId.asString))
+      ),
+      Condition.Compare(
+        Operand.Column(schema.sequenceNumber),
+        CompareOp.Eq,
+        Operand.Literal(number(sequenceNumber.value))
+      )
+    )
 
   /** The key holds no row, or a row of `persistenceId`. */
   private def sameRowOrNone(persistenceId: PersistenceId): Condition =
