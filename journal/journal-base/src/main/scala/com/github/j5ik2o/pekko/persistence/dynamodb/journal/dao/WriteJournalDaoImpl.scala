@@ -83,12 +83,10 @@ final class WriteJournalDaoImpl(
                   .single(request)
                   .via(journalRowDriver.multiPutJournalRowsFlow)
           }
-      else if (rows.size > pluginConfig.clientConfig.batchWriteItemLimit)
-        Source(rows.toVector)
-          .grouped(pluginConfig.clientConfig.batchWriteItemLimit)
-          .via(journalRowDriver.multiPutJournalRowsFlow)
-          .fold(0L)(_ + _)
       else
+        // All rows of one write go to the driver at once, however many there are. The store writes them with one
+        // conditional request per row and, when one of them hits the key of another persistence id, deletes the
+        // others again; that cleanup must see the whole write, or a prefix of a failed persistAll would remain.
         Source
           .single(rows)
           .via(journalRowDriver.multiPutJournalRowsFlow)
