@@ -196,10 +196,11 @@ now give the keys below. The keys of every other `persistenceId` stay the same, 
 
 | `persistence-id-separator` | `persistenceId`s whose key changes | What changes |
 | :-- | :-- | :-- |
-| Not a regular expression metacharacter (the default `-`, `::`, `_`) | The separator two or more times, such as `shopping-cart-1` | `skey` only |
+| Matches only itself as a regular expression (the default `-`, `::`, `_`, and `]` or `}` alone) | The separator two or more times, such as `shopping-cart-1` | `skey` only |
 | The same | Ends with its only separator, such as `order-` | 1.3.0 failed with `ArrayIndexOutOfBoundsException`, so no rows exist |
 | `\|` | Contains the separator, except `<one character>\|\|` | `pkey` and `skey` |
-| `.`, `$`, `^`, `?`, `*`, `+`, `(`, `[`, `{`, `\` | Contains the separator | 1.3.0 failed with an exception, so no rows exist |
+| `.`, `$`, `^`, `?`, `*`, `+`, `(`, `)`, `[`, `{`, `\` | Contains the separator | 1.3.0 failed with an exception, so no rows exist |
+| Several characters that include a regular expression metacharacter, such as `-+` or `a.` | Contains the separator, and the split as a regular expression differs from the split at the first separator. With `-+` (one or more `-`), every such id: 1.3.0 kept the `+` in the body of `Order-+23`. With `a.`, which also matches `ab`, even an id with one separator, such as `Xa.1ab2` | `pkey`, `skey`, or both, or 1.3.0 failed with an exception |
 | Any | `body` longer than 1,004 bytes | `skey` takes the hashed form. Ids with one separator or none could not be written by 1.3.0 |
 | Any | `prefix` longer than 2,007 bytes | `pkey` takes the hashed form. With a separator that is not a regular expression metacharacter, 1.3.0 could not write such ids. With `\|`, 1.3.0 used only the first character as `prefix`, so these ids are among the ids above whose key changes |
 

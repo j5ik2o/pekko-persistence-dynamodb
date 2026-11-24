@@ -23,9 +23,12 @@ because they shared a key can be written. `persistenceId`s that 1.3.0 could not 
 `persistenceId` with the separator `.`, can be written too. When `skey` would exceed 1,024 bytes or `pkey` 2,048 bytes,
 its text is replaced with a marked SHA-256, so every `persistenceId` that 1.3.0 could write can still be written.
 
-The key changes only for some `persistenceId`s: with the default separator `-`, those that contain it two or more times,
-and with `|`, those that contain it. The keys of every other `persistenceId` stay the same, byte for byte, and they send
-no extra request. {ref}`Key format changes after 1.3.0 <key-format-change>` lists the `persistenceId`s whose key changes.
+The key changes only for `persistenceId`s that contain the separator and that the 1.3.0 split, which read the
+separator as a regular expression, divided differently from the split at the first separator. With the default
+separator `-`, those are the `persistenceId`s that contain it two or more times. With `|`, nearly every `persistenceId`
+that contains it. With a separator of several characters that include a metacharacter, such as `-+`, also
+`persistenceId`s that contain it once, such as `Order-+23`. The keys of every other `persistenceId` stay the same, byte
+for byte, and they send no extra request. {ref}`Key format changes after 1.3.0 <key-format-change>` lists the `persistenceId`s whose key changes.
 
 No migration is needed before the upgrade. The rows that 1.3.0 and earlier releases wrote keep their old keys, and the
 default resolvers still replay, delete, and update them and load and delete their snapshots, next to the rows written

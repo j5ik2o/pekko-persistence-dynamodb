@@ -144,11 +144,13 @@ final class SortKeyResolverSpec extends AnyFreeSpec with Matchers {
 
     "changes the key only of the ids whose key was ambiguous or could not be built" in {
       // Every id of up to four characters from a small alphabet and the characters of the separator, for each
-      // separator. A separator that is not a regular expression metacharacter keeps the key of an id with exactly one
-      // separator that is not at its end. `|` changes the key of every id that contains it except
-      // `<one character>||`, and the other metacharacters had no key for such ids.
-      val nonRegex   = Seq("-", "::", "_")
-      val separators = nonRegex ++ Seq("|", ".", "$", "^", "?", "*", "+", "(", "[", "{", "\\")
+      // separator. A separator that a regular expression matches only as itself (`]` and `}` alone too) keeps the key
+      // of an id with exactly one separator that is not at its end. `|` changes the key of every id that contains it
+      // except `<one character>||`. The other metacharacters, `)` among them, had no key for such ids, and `-+` (one
+      // or more `-` as a regular expression) leaves the `+` in the 1.3.0 body, so it changes the key of every id that
+      // contains it.
+      val nonRegex   = Seq("-", "::", "_", "]", "}")
+      val separators = nonRegex ++ Seq("|", ".", "$", "^", "?", "*", "+", "(", ")", "[", "{", "\\", "-+")
       separators.foreach { separator =>
         val alphabet = (Seq("a", "b", "é", "-", "|") ++ separator.map(_.toString)).distinct
         val ids =
@@ -171,6 +173,16 @@ final class SortKeyResolverSpec extends AnyFreeSpec with Matchers {
           ids.map(keyPair(_, separator)).distinct.size shouldBe ids.size
         }
       }
+    }
+
+    "changes the key of an id that a separator of several characters splits differently as a regular expression" in {
+      // `a.` also matches `ab` as a regular expression, so even an id with one separator can change.
+      legacyKeyPair("Xa.1", "a.") shouldBe Some(keyPair("Xa.1", "a."))
+      legacyKeyPair("Xa.1ab2", "a.") should not be Some(keyPair("Xa.1ab2", "a."))
+      legacyKeyPair("Order-+23", "-+").map(_._2) shouldBe Some("+23-0000000000000000001")
+      keyPair("Order-+23", "-+")._2 shouldBe "23-0000000000000000001"
+      legacyKeyPair("Order)1", ")") shouldBe None // PatternSyntaxException in 1.3.0
+      legacyKeyPair("Order]1", "]") shouldBe Some(keyPair("Order]1", "]"))
     }
 
     "keeps the key byte for byte for ids without a separator or with one separator in the middle" in {
