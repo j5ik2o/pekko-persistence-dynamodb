@@ -157,27 +157,63 @@ final class SnapshotStoreSpec extends AnyFreeSpec with Matchers with ScalaFuture
 
     override def respond(operation: Operation): OperationResult = synchronized {
       operation match {
-        case _: Operation.Query => OperationResult.Items(rows.values.toVector, None)
-        case Operation.BatchWrite(_, puts, deletes) if puts.isEmpty =>
-          rows --= deletes
-          // Like V1Responses/V2Responses.batch, count processed requests, including absent keys.
-          OperationResult.Written(deletes.size)
-        case other => fail(s"unexpected operation: $other")
+        case query: Operation.Query =>
+          OperationResult.Items(rows.values.filter(_.get(query.hashKey._1).contains(query.hashKey._2)).toVector, None)
+        case Operation.Delete(_, key, condition) =>
+          if (condition.forall(holds(rows.get(key), _))) {
+            rows -= key
+            OperationResult.Written(1)
+          } else OperationResult.ConditionRejected(Vector(ConditionFailure(0, "ConditionalCheckFailed")))
+        case Operation.Put(table, item, condition) =>
+          val key = RowKey(
+            table,
+            AttributeMap.of(
+              schema.partitionKey -> item.get(schema.partitionKey).get,
+              schema.sortKey      -> item.get(schema.sortKey).get
+            )
+          )
+          if (condition.forall(holds(rows.get(key), _))) {
+            rows += key -> item
+            OperationResult.Written(1)
+          } else OperationResult.ConditionRejected(Vector(ConditionFailure(0, "ConditionalCheckFailed")))
+        case Operation.Get(_, key, _) => OperationResult.Item(rows.get(key))
+        case other                    => fail(s"unexpected operation: $other")
       }
     }
   }
 
-  private final class FailingBatchAdapter(rows: Vector[AttributeMap], failures: Int, failure: () => Throwable)
+  /** Evaluates the conditions that the store sends: `attribute_not_exists`, equality, and `OR`. */
+  private def holds(item: Option[AttributeMap], condition: Condition): Boolean = condition match {
+    case Condition.AttributeNotExists(name) => item.forall(_.get(name).isEmpty)
+    case Condition.Compare(Operand.Column(name), CompareOp.Eq, Operand.Literal(value)) =>
+      item.flatMap(_.get(name)).contains(value)
+    case Condition.Or(left, right) => holds(item, left) || holds(item, right)
+    case other                     => fail(s"unexpected condition: $other")
+  }
+
+  private def sameRowOrNone(hash: AttributeName, persistenceId: String): Option[Condition] =
+    Some(
+      Condition.Or(
+        Condition.AttributeNotExists(hash),
+        Condition.Compare(
+          Operand.Column(schema.persistenceId),
+          CompareOp.Eq,
+          Operand.Literal(DdbValue.Str(persistenceId))
+        )
+      )
+    )
+
+  private final class FailingDeleteAdapter(rows: Vector[AttributeMap], failures: Int, failure: () => Throwable)
       extends DdbClientAdapter {
     private val attempts = new AtomicInteger(0)
 
-    def batchAttempts: Int = attempts.get()
+    def deleteAttempts: Int = attempts.get()
 
     override def capabilities: CapabilityProfile = CapabilityProfile.V2
 
     override def run(operation: Operation): Source[OperationResult, NotUsed] = operation match {
       case _: Operation.Query => Source.single(OperationResult.Items(rows, None))
-      case _: Operation.BatchWrite =>
+      case _: Operation.Delete =>
         if (attempts.incrementAndGet() <= failures) {
           Source.failed(failure())
         } else {
@@ -190,9 +226,6 @@ final class SnapshotStoreSpec extends AnyFreeSpec with Matchers with ScalaFuture
 
     override def close(): Unit = ()
   }
-
-  private def unprocessedBatchFailure: () => Throwable =
-    () => new BatchWriteUnprocessedItemsException(1)
 
   "SnapshotStore" - {
     "writes the key and the row columns" in {
@@ -281,18 +314,16 @@ final class SnapshotStoreSpec extends AnyFreeSpec with Matchers with ScalaFuture
         store.delete(PersistenceId("sample"), SequenceNumber(5)).runWith(Sink.ignore).futureValue
 
         adapter.operations should have size 3
-        adapter.operations.last shouldBe Operation.BatchWrite(
+        adapter.operations.last shouldBe Operation.Delete(
           TableName("Snapshot"),
-          Vector.empty,
-          Vector(
-            RowKey(
-              TableName("Snapshot"),
-              AttributeMap.of(
-                schema.partitionKey -> DdbValue.Str("sample-1"),
-                schema.sortKey      -> DdbValue.Str("sample-5")
-              )
+          RowKey(
+            TableName("Snapshot"),
+            AttributeMap.of(
+              schema.partitionKey -> DdbValue.Str("sample-1"),
+              schema.sortKey      -> DdbValue.Str("sample-5")
             )
-          )
+          ),
+          sameRowOrNone(schema.partitionKey, "sample")
         )
         adapter.remainingRows shouldBe (if (deleted) Map.empty[RowKey, AttributeMap] else initialRows)
       }
@@ -315,7 +346,7 @@ final class SnapshotStoreSpec extends AnyFreeSpec with Matchers with ScalaFuture
               schema.sequenceNumber -> DdbValue.Num(BigDecimal(5))
             )
           ),
-          None
+          sameRowOrNone(schema.persistenceId, "sample")
         )
       )
     }
@@ -327,108 +358,133 @@ final class SnapshotStoreSpec extends AnyFreeSpec with Matchers with ScalaFuture
 
       store.deleteAll(PersistenceId("sample")).runWith(Sink.ignore).futureValue
 
-      adapter.operations(1) shouldBe Operation.BatchWrite(
+      adapter.operations(1) shouldBe Operation.Delete(
         TableName("Snapshot"),
-        Vector.empty,
-        Vector(
-          RowKey(
-            TableName("Snapshot"),
-            AttributeMap.of(
-              schema.persistenceId  -> DdbValue.Str("sample"),
-              schema.sequenceNumber -> DdbValue.Num(BigDecimal(5))
-            )
+        RowKey(
+          TableName("Snapshot"),
+          AttributeMap.of(
+            schema.persistenceId  -> DdbValue.Str("sample"),
+            schema.sequenceNumber -> DdbValue.Num(BigDecimal(5))
           )
-        )
+        ),
+        sameRowOrNone(schema.persistenceId, "sample")
       )
     }
 
-    "retries a batch delete that DynamoDB leaves unprocessed" in {
-      val adapter = new FailingBatchAdapter(Vector(legacyItem), failures = 2, unprocessedBatchFailure)
-      val store =
-        new SnapshotStore(adapter, new SnapshotRowCodec(schema, legacy), consistentRead = false, 25, writeBackoff)
-
-      store.deleteAll(PersistenceId("sample")).runWith(Sink.ignore).futureValue
-
-      adapter.batchAttempts shouldBe 3
-    }
-
-    "fails with a retryable exception when a batch delete keeps failing" in {
-      val unprocessed = new BatchWriteUnprocessedItemsException(1)
-      val adapter     = new FailingBatchAdapter(Vector(legacyItem), failures = Int.MaxValue, () => unprocessed)
-      val store =
-        new SnapshotStore(adapter, new SnapshotRowCodec(schema, legacy), consistentRead = false, 25, writeBackoff)
-
-      val failure = store.deleteAll(PersistenceId("sample")).runWith(Sink.ignore).failed.futureValue
-
-      failure shouldBe a[SnapshotStoreException.BatchWriteRetriesExhausted]
-      val exhausted = failure.asInstanceOf[SnapshotStoreException.BatchWriteRetriesExhausted]
-      exhausted.attempts shouldBe 4
-      exhausted.table shouldBe TableName("Snapshot")
-      exhausted.getCause should be theSameInstanceAs unprocessed
-      adapter.batchAttempts shouldBe 4
-    }
-
-    "sends an unprocessed batch delete again at once when the backoff is disabled" in {
-      val adapter = new FailingBatchAdapter(Vector(legacyItem), failures = 3, unprocessedBatchFailure)
+    "retries a failed delete with the backoff when the backoff is enabled" in {
+      val adapter =
+        new FailingDeleteAdapter(Vector(legacyItem), failures = 2, () => new IllegalStateException("a service error"))
       val store =
         new SnapshotStore(
           adapter,
           new SnapshotRowCodec(schema, legacy),
           consistentRead = false,
           25,
-          writeBackoff.copy(enabled = false, minBackoff = 2.seconds, maxBackoff = 2.seconds)
+          writeBackoff.copy(enabled = true)
         )
 
-      val started = System.nanoTime()
       store.deleteAll(PersistenceId("sample")).runWith(Sink.ignore).futureValue
-      val elapsedMillis = (System.nanoTime() - started) / 1000000
 
-      adapter.batchAttempts shouldBe 4
-      elapsedMillis should be < 1500L
+      adapter.deleteAttempts shouldBe 3
     }
 
-    "waits for the backoff before it sends an unprocessed batch delete again when the backoff is enabled" in {
-      val adapter = new FailingBatchAdapter(Vector(legacyItem), failures = 2, unprocessedBatchFailure)
-      val store =
-        new SnapshotStore(
-          adapter,
-          new SnapshotRowCodec(schema, legacy),
-          consistentRead = false,
-          25,
-          writeBackoff.copy(enabled = true, minBackoff = 200.millis, maxBackoff = 400.millis)
-        )
-
-      val started = System.nanoTime()
-      store.deleteAll(PersistenceId("sample")).runWith(Sink.ignore).futureValue
-      val elapsedMillis = (System.nanoTime() - started) / 1000000
-
-      adapter.batchAttempts shouldBe 3
-      elapsedMillis should be >= 550L
-    }
-
-    "does not retry a permanent batch delete failure" in {
+    "does not retry a failed delete when the backoff is disabled" in {
       val permanent = new IllegalArgumentException("permanent")
       val adapter =
-        new FailingBatchAdapter(Vector(legacyItem), failures = Int.MaxValue, () => permanent)
+        new FailingDeleteAdapter(Vector(legacyItem), failures = Int.MaxValue, () => permanent)
       val store =
         new SnapshotStore(adapter, new SnapshotRowCodec(schema, legacy), consistentRead = false, 25, writeBackoff)
 
       val failure = store.deleteAll(PersistenceId("sample")).runWith(Sink.ignore).failed.futureValue
 
       failure should be theSameInstanceAs permanent
-      adapter.batchAttempts shouldBe 1
+      adapter.deleteAttempts shouldBe 1
     }
 
-    "does not retry when max-restarts is zero" in {
-      val adapter = new FailingBatchAdapter(Vector(legacyItem), failures = Int.MaxValue, unprocessedBatchFailure)
+    "stops retrying a failed delete after max-restarts when the backoff is enabled" in {
+      val adapter =
+        new FailingDeleteAdapter(Vector(legacyItem), failures = Int.MaxValue, () => new IllegalStateException("down"))
       val store =
-        new SnapshotStore(adapter, new SnapshotRowCodec(schema, legacy), consistentRead = false, 25, noRestartBackoff)
+        new SnapshotStore(
+          adapter,
+          new SnapshotRowCodec(schema, legacy),
+          consistentRead = false,
+          25,
+          noRestartBackoff.copy(enabled = true)
+        )
 
-      val failure = store.deleteAll(PersistenceId("sample")).runWith(Sink.ignore).failed.futureValue
+      store
+        .deleteAll(PersistenceId("sample")).runWith(Sink.ignore).failed.futureValue shouldBe an[IllegalStateException]
+      adapter.deleteAttempts shouldBe 1
+    }
 
-      failure shouldBe a[SnapshotStoreException.BatchWriteRetriesExhausted]
-      failure.asInstanceOf[SnapshotStoreException.BatchWriteRetriesExhausted].attempts shouldBe 1
-      adapter.batchAttempts shouldBe 1
+    "saves with a condition that the key holds no row or a row of the same persistence id" in {
+      val adapter = adapterReturning(Vector.empty)
+      val store =
+        new SnapshotStore(adapter, new SnapshotRowCodec(schema, sharded), consistentRead = false, 25, writeBackoff)
+
+      store.save(row).runWith(Sink.ignore).futureValue
+
+      adapter.operations.head.asInstanceOf[Operation.Put].condition shouldBe sameRowOrNone(
+        schema.partitionKey,
+        "sample"
+      )
+    }
+
+    "refuses to save over the snapshot of another persistence id that shares the key, and keeps it" in {
+      val sharedKey = new PartitionKeyResolver {
+        override def resolve(persistenceId: PersistenceId, sequenceNumber: SequenceNumber): PartitionKey =
+          PartitionKey("shared")
+      }
+      val seqOnly = new SortKeyResolver {
+        override def resolve(persistenceId: PersistenceId, sequenceNumber: SequenceNumber): SortKey =
+          SortKey(sequenceNumber.value.toString)
+      }
+      val spec =
+        SnapshotTableSpec.sharded(schema, TableName("Snapshot"), IndexName("GetSnapshotRowsIndex"), sharedKey, seqOnly)
+      val adapter = new StatefulDeleteAdapter(Map.empty)
+      val store =
+        new SnapshotStore(adapter, new SnapshotRowCodec(schema, spec), consistentRead = false, 25, writeBackoff)
+      val other = row.copy(persistenceId = PersistenceId("other"), snapshot = Array[Byte](9))
+
+      store.save(row).runWith(Sink.ignore).futureValue
+      store.save(row.copy(snapshot = Array[Byte](4))).runWith(Sink.ignore).futureValue
+      val failure = store.save(other).runWith(Sink.ignore).failed.futureValue
+
+      failure shouldBe a[SnapshotStoreException.KeyConflict]
+      val conflict = failure.asInstanceOf[SnapshotStoreException.KeyConflict]
+      conflict.persistenceId shouldBe "other"
+      conflict.conflictingPersistenceId shouldBe Some("sample")
+      conflict.getMessage should include("issues/1009")
+      adapter.remainingRows.values.map(_.get(schema.snapshot)) shouldBe Iterable(Some(DdbValue.Bin(Vector[Byte](4))))
+
+      store.delete(PersistenceId("other"), SequenceNumber(5)).runWith(Sink.ignore).futureValue
+      adapter.remainingRows should have size 1
+    }
+
+    "refuses to delete a row of another persistence id under the key it resolves to, and keeps that row" in {
+      // The query for `sample` returns its own row, which an earlier release stored under another key, while the key
+      // that the resolvers give `sample` now holds the snapshot of `other` (issue #1009).
+      val keyOfSample = RowKey(
+        TableName("Snapshot"),
+        AttributeMap.of(schema.partitionKey -> DdbValue.Str("sample-1"), schema.sortKey -> DdbValue.Str("sample-5"))
+      )
+      val oldKeyOfSample = RowKey(
+        TableName("Snapshot"),
+        AttributeMap.of(schema.partitionKey -> DdbValue.Str("sample-1"), schema.sortKey -> DdbValue.Str("old-5"))
+      )
+      val rowOfOther  = shardedItem.updated(schema.persistenceId, DdbValue.Str("other"))
+      val rowOfSample = shardedItem.updated(schema.sortKey, DdbValue.Str("old-5"))
+      val adapter     = new StatefulDeleteAdapter(Map(keyOfSample -> rowOfOther, oldKeyOfSample -> rowOfSample))
+      val store =
+        new SnapshotStore(adapter, new SnapshotRowCodec(schema, sharded), consistentRead = false, 25, writeBackoff)
+
+      store.delete(PersistenceId("sample"), SequenceNumber(5)).runWith(Sink.ignore).futureValue
+
+      adapter.operations.collect { case delete: Operation.Delete => delete } shouldBe Vector(
+        Operation.Delete(TableName("Snapshot"), keyOfSample, sameRowOrNone(schema.partitionKey, "sample"))
+      )
+      adapter.remainingRows.get(keyOfSample) shouldBe Some(rowOfOther)
     }
 
     "writes nothing when the delete query returns no rows" in {

@@ -17,7 +17,7 @@ package com.github.j5ik2o.pekko.persistence.dynamodb.journal.store
 
 import com.github.j5ik2o.pekko.persistence.dynamodb.ddb.TableName
 
-/** A journal row store failure that a caller can recover from. */
+/** A journal row store failure that a caller can tell apart from a failure of DynamoDB. */
 sealed abstract class JournalRowStoreException(message: String, cause: Throwable)
     extends RuntimeException(message, cause)
 
@@ -30,5 +30,23 @@ object JournalRowStoreException {
       extends JournalRowStoreException(
         s"the batch write to ${table.value} failed after $attempts attempt(s)",
         cause
+      )
+
+  /** A write was refused because the key of the row already holds an event of another persistence id.
+    *
+    * The default key resolvers give two persistence ids the same key when they differ only after the second separator
+    * (issue #1009). Earlier releases overwrote the other event; the write now fails and leaves it as it is. Retrying
+    * does not help: give the persistence id at most one separator, or see the compatibility note on the persistence id
+    * separator in the documentation.
+    */
+  final class KeyConflict(
+      val persistenceId: String,
+      val sequenceNr: Long,
+      val conflictingPersistenceId: Option[String],
+      val key: String
+  ) extends JournalRowStoreException(
+        s"persistenceId=[$persistenceId]: the journal row for sequence number $sequenceNr was not written because its key ($key) already holds an event of ${conflictingPersistenceId
+            .fold("another persistence id")(id => s"persistenceId=[$id]")}. The two ids resolve to the same key; see https://github.com/j5ik2o/pekko-persistence-dynamodb/issues/1009 for the workaround.",
+        null
       )
 }

@@ -16,7 +16,7 @@
 package com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.store
 
 import org.apache.pekko.NotUsed
-import org.apache.pekko.stream.scaladsl.Source
+import org.apache.pekko.stream.scaladsl.{ RestartSource, Source }
 import com.github.j5ik2o.pekko.persistence.dynamodb.client.Backoff
 import com.github.j5ik2o.pekko.persistence.dynamodb.config.BackoffConfig
 import com.github.j5ik2o.pekko.persistence.dynamodb.ddb._
@@ -40,8 +40,28 @@ final class SnapshotStore(
   private val schema: SnapshotSchema       = codec.schema
   private val tableSpec: SnapshotTableSpec = codec.tableSpec
 
-  def save(row: SnapshotRow): Source[Unit, NotUsed] =
-    written(Operation.Put(codec.key(row).table, codec.encode(row)))
+  /** Writes the snapshot when its key holds no row or a row of the same persistence id, so a snapshot saved again at
+    * the same sequence number replaces the earlier one. Two persistence ids can resolve to the same key (issue #1009);
+    * the snapshot of the other id is not replaced, and the save fails with `SnapshotStoreException.KeyConflict`.
+    */
+  def save(row: SnapshotRow): Source[Unit, NotUsed] = {
+    val key = codec.key(row)
+    adapter.run(Operation.Put(key.table, codec.encode(row), Some(sameRowOrNone(row.persistenceId)))).flatMapConcat {
+      case OperationResult.Written(_) => Source.single(())
+      case OperationResult.ConditionRejected(_) =>
+        conflict(key).flatMapConcat(other =>
+          Source.failed(
+            new SnapshotStoreException.KeyConflict(
+              row.persistenceId.asString,
+              row.sequenceNumber.value,
+              other,
+              key.values.entries.map { case (name, value) => s"${name.value}=$value" }.mkString(", ")
+            )
+          )
+        )
+      case other => Source.failed(new IllegalStateException(s"unexpected write result: $other"))
+    }
+  }
 
   def latest(persistenceId: PersistenceId): Source[Option[SnapshotRow], NotUsed] =
     first(query(persistenceId, SequenceNumber.MinValue, SequenceNumber.MaxValue, None, Some(1), scanForward = false))
@@ -74,7 +94,7 @@ final class SnapshotStore(
   def delete(persistenceId: PersistenceId, sequenceNumber: SequenceNumber): Source[Unit, NotUsed] =
     tableSpec.keyDerivation match {
       case SnapshotKeyDerivation.Identity =>
-        written(Operation.Delete(tableSpec.table.table, tableSpec.keyOf(persistenceId, sequenceNumber)))
+        deleteRow(persistenceId, tableSpec.keyOf(persistenceId, sequenceNumber))
       case SnapshotKeyDerivation.Sharded(_, _) =>
         deleteRows(query(persistenceId, sequenceNumber, sequenceNumber, None))
     }
@@ -137,60 +157,54 @@ final class SnapshotStore(
       }
       .fold(Option.empty[SnapshotRow]) { (_, row) => row }
 
+  /** Deletes the rows, each with its own conditional DeleteItem, at most `batchWriteLimit` at a time. */
   private def deleteRows(rows: Source[AttributeMap, NotUsed]): Source[Unit, NotUsed] =
     rows
       .map(codec.decode)
       .flatMapConcat {
-        case Right(row)  => Source.single(codec.key(row))
+        case Right(row)  => Source.single(row.persistenceId -> codec.key(row))
         case Left(error) => Source.failed(new IllegalArgumentException(s"cannot decode the snapshot row: $error"))
       }
-      .grouped(batchWriteLimit)
-      .flatMapConcat(keys => deleteBatch(keys.toVector))
+      .flatMapMerge(batchWriteLimit, { case (persistenceId, key) => deleteRow(persistenceId, key) })
 
-  /** DynamoDB can leave a batch write partly unprocessed. The adapter reports that transient condition as a
-    * `BatchWriteUnprocessedItemsException`, so retry only that failure. Other failures propagate unchanged, because a
-    * permanent service error is not retryable. The write path has no other retry, so the bound from write-backoff
-    * (`max-restarts`) applies even when its `enabled` flag is false. The flag decides only whether the retries wait:
-    * enabled waits the backoff between attempts, disabled sends the batch again at once, as the journal does.
+  /** Deletes the row under `key` when it is a row of `persistenceId`. A key that holds the snapshot of another
+    * persistence id (issue #1009) is left as it is, because that row is not the snapshot to delete.
     */
-  private def deleteBatch(keys: Vector[RowKey]): Source[Unit, NotUsed] = {
-    val operation   = Operation.BatchWrite(tableSpec.table.table, Vector.empty, keys)
-    val maxAttempts = math.max(0, writeBackoffConfig.maxRestarts) + 1
-
-    def attempt(attemptNo: Int): Source[OperationResult, NotUsed] =
-      adapter
-        .run(operation).recoverWithRetries(
-          1,
-          {
-            case _: BatchWriteUnprocessedItemsException if attemptNo < maxAttempts =>
-              if (writeBackoffConfig.enabled)
-                Source
-                  .single(()).initialDelay(Backoff.backoffDelay(writeBackoffConfig, attemptNo)).flatMapConcat(_ =>
-                    attempt(attemptNo + 1)
-                  )
-              else attempt(attemptNo + 1)
-            case cause: BatchWriteUnprocessedItemsException =>
-              Source.failed(
-                new SnapshotStoreException.BatchWriteRetriesExhausted(
-                  tableSpec.table.table,
-                  maxAttempts,
-                  cause
-                )
-              )
-          }
-        )
-
-    attempt(1).flatMapConcat {
-      case OperationResult.Written(_) => Source.single(())
-      case other                      => Source.failed(new IllegalStateException(s"unexpected write result: $other"))
+  private def deleteRow(persistenceId: PersistenceId, key: RowKey): Source[Unit, NotUsed] = {
+    def delete: Source[OperationResult, NotUsed] =
+      adapter.run(Operation.Delete(key.table, key, Some(sameRowOrNone(persistenceId))))
+    // The delete is idempotent, so with write-backoff enabled it is sent again after a failure, as the batch was.
+    val attempts =
+      if (writeBackoffConfig.enabled)
+        RestartSource.onFailuresWithBackoff(Backoff.restartSettings(writeBackoffConfig))(() => delete)
+      else delete
+    attempts.flatMapConcat {
+      case OperationResult.Written(_) | OperationResult.ConditionRejected(_) => Source.single(())
+      case other => Source.failed(new IllegalStateException(s"unexpected write result: $other"))
     }
   }
 
-  private def written(operation: Operation): Source[Unit, NotUsed] =
-    adapter.run(operation).flatMapConcat {
-      case OperationResult.Written(_) => Source.single(())
-      case other                      => Source.failed(new IllegalStateException(s"unexpected write result: $other"))
-    }
+  /** The key holds no row, or a row of `persistenceId`. */
+  private def sameRowOrNone(persistenceId: PersistenceId): Condition =
+    Condition.Or(
+      Condition.AttributeNotExists(tableSpec.table.primaryKey.hash),
+      Condition.Compare(
+        Operand.Column(schema.persistenceId),
+        CompareOp.Eq,
+        Operand.Literal(DdbValue.Str(persistenceId.asString))
+      )
+    )
+
+  /** The persistence id of the row under `key` that refused a write, or none when it cannot be read. */
+  private def conflict(key: RowKey): Source[Option[String], NotUsed] =
+    adapter
+      .run(Operation.Get(key.table, key, consistentRead = true))
+      .map {
+        case OperationResult.Item(item) =>
+          item.flatMap(_.get(schema.persistenceId)).collect { case DdbValue.Str(value) => value }
+        case _ => None
+      }
+      .recover { case _ => None }
 
   private def number(value: Long): DdbValue = DdbValue.Num(BigDecimal(value))
 }
