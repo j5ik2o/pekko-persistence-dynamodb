@@ -18,6 +18,7 @@ on:
       - 'project/build.properties'
       - '.tool-versions'
       - '.github/workflows/**'
+      - '.github/scripts/**'
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, edited]
 concurrency:

@@ -57,7 +57,11 @@ done
 
 # Build the merge from the parents read in the last attempt, so that every job
 # checks the same commit even if a branch moves again.
-git fetch --quiet --no-tags origin "$base_sha" "$head_sha"
+# The full clone and the candidate fetch usually hold both parents already;
+# fetch a parent by SHA only when it is missing.
+for sha in "$base_sha" "$head_sha"; do
+  git cat-file -e "$sha^{commit}" 2>/dev/null || git fetch --quiet --no-tags origin "$sha"
+done
 if ! tree=$(git merge-tree --write-tree "$base_sha" "$head_sha"); then
   printf '::error::Cannot create a conflict-free test merge of %s\n' "$expected"
   exit 1
