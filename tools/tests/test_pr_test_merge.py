@@ -7,7 +7,17 @@ import subprocess
 import tempfile
 import unittest
 
-import yaml
+try:
+    import yaml
+    HAVE_PYYAML = True
+except ImportError:
+    HAVE_PYYAML = False
+
+PYYAML_REASON = (
+    "requires PyYAML; see tools/README.md — install with "
+    "`python3 -m venv target/docs-venv && target/docs-venv/bin/pip install -r docs/requirements.txt` "
+    "(docs/requirements.txt pins PyYAML==6.0.2)"
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / ".github" / "scripts" / "pr-test-merge.sh"
@@ -25,6 +35,7 @@ def verify_steps():
             for name, job in jobs.items()}
 
 
+@unittest.skipUnless(HAVE_PYYAML, PYYAML_REASON)
 class PrTestMergeTests(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
