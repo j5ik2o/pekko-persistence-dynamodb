@@ -19,30 +19,97 @@ on:
       - '.tool-versions'
       - '.github/workflows/**'
   pull_request:
-    paths:
-      - '**.scala'
-      - '**.java'
-      - '**.sbt'
-      - '**.md'
-      - '**.conf'
-      - '**.allowlist'
-      - 'tools/**'
-      - '.scalafmt.conf'
-      - 'project/build.properties'
-      - '.tool-versions'
-      - '.github/workflows/**'
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
 env:
   JAVA_OPTS: -Xms2048M -Xmx2048M -Xss6M -XX:ReservedCodeCacheSize=256M -Dfile.encoding=UTF-8
   JVM_OPTS:  -Xms2048M -Xmx2048M -Xss6M -XX:ReservedCodeCacheSize=256M -Dfile.encoding=UTF-8
   AWS_JAVA_V1_DISABLE_DEPRECATION_ANNOUNCEMENT: true
   AWS_REGION: ap-northeast-1
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      checkout_sha: ${{ steps.select.outputs.checkout_sha }}
+      scala: ${{ steps.select.outputs.scala }}
+      tools: ${{ steps.select.outputs.tools }}
+    steps:
+      - name: Checkout the event merge commit
+        id: event-merge
+        uses: actions/checkout@v5
+        if: github.event_name == 'pull_request'
+        # The merge ref is a fallback if GitHub no longer serves the event commit.
+        continue-on-error: true
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@v5
+        if: github.event_name == 'pull_request' && steps.event-merge.outcome == 'failure'
+        with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Select PR checks
+        id: select
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          checkout_sha=$GITHUB_SHA
+          scala=true
+          tools=false
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            # The PR merge ref can still have the previous base when a PR is retargeted.
+            checkout_sha=$(git rev-parse HEAD)
+            echo "Expected merge parents: $BASE_SHA $HEAD_SHA"
+            for attempt in {1..5}; do
+              parents=$(git show -s --format=%P "$checkout_sha")
+              echo "Merge candidate $checkout_sha parents: $parents"
+              if [[ "$parents" == "$BASE_SHA $HEAD_SHA" ]]; then
+                break
+              fi
+              if [[ "$attempt" == 5 ]]; then
+                echo '::error::No test merge with the event base and head was available.'
+                exit 1
+              fi
+              sleep 3
+              if git fetch --no-tags origin "refs/pull/$PR_NUMBER/merge"; then
+                checkout_sha=$(git rev-parse FETCH_HEAD)
+              fi
+            done
+            git checkout --detach "$checkout_sha"
+            git log -1 --format='Verified checkout %H parents: %P'
+
+            scala=false
+            paths=$(mktemp)
+            git diff --no-renames --name-only -z "$BASE_SHA...$HEAD_SHA" -- > "$paths"
+            while IFS= read -r -d '' path; do
+              case "$path" in
+                *.scala|*.java|*.sbt|*.md|*.conf|*.allowlist|tools/*|project/build.properties|.tool-versions|.github/workflows/*|\
+                */src/main/resources/*|*/src/test/resources/*|schema-check/public-api-baseline.txt)
+                  scala=true ;;
+              esac
+              case "$path" in
+                tools/*|.github/workflows/tools-tests.yml) tools=true ;;
+              esac
+            done < "$paths"
+          fi
+          printf 'checkout_sha=%s\nscala=%s\ntools=%s\n' "$checkout_sha" "$scala" "$tools" | tee -a "$GITHUB_OUTPUT"
   lint:
+    needs: changes
+    if: needs.changes.outputs.scala == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
-        with: { fetch-depth: 0 }
+        with:
+          ref: ${{ needs.changes.outputs.checkout_sha }}
+          fetch-depth: 0
       - uses: actions/setup-java@v5
         with:
           distribution: 'temurin'
@@ -52,6 +119,10 @@ jobs:
       - name: sbt lint
         run: sbt -v lint
   test:
+    # Main PRs need every legacy check even when lint fails or Scala is out of scope.
+    if: >-
+      !cancelled() && (github.event_name != 'pull_request' || github.base_ref == 'main' ||
+      needs.changes.outputs.scala == 'true')
     timeout-minutes: 90
     strategy:
       fail-fast: false
@@ -59,17 +130,90 @@ jobs:
         jdk: [ 11, 17, 19 ]
         scala: [ 2.12.20, 2.13.16, 3.6.4 ]
     runs-on: ubuntu-latest
-    needs: lint
+    needs: [changes, lint]
     env:
       TEST_TIME_FACTOR: 3
+      RUN_SCALA: ${{ needs.changes.outputs.scala }}
     steps:
+      - name: Validate CI selection
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          LINT_RESULT: ${{ needs.lint.result }}
+          CHECKOUT_SHA: ${{ needs.changes.outputs.checkout_sha }}
+        run: |
+          if [[ ! "$CHECKOUT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo '::error::Verified checkout SHA is missing or invalid.'
+            exit 1
+          fi
+          case "$CHANGES_RESULT:$RUN_SCALA:$LINT_RESULT" in
+            success:true:success|success:false:skipped) ;;
+            *)
+              echo '::error::Scala CI selection or lint did not complete as expected.'
+              exit 1 ;;
+          esac
       - uses: actions/checkout@v5
-        with: { fetch-depth: 0 }
+        if: env.RUN_SCALA == 'true'
+        with:
+          ref: ${{ needs.changes.outputs.checkout_sha }}
+          fetch-depth: 0
       - uses: actions/setup-java@v5
+        if: env.RUN_SCALA == 'true'
         with:
           distribution: 'temurin'
           java-version: ${{ matrix.jdk }}
           cache: 'sbt'
       - uses: sbt/setup-sbt@v1
+        if: env.RUN_SCALA == 'true'
       - name: sbt test
+        if: env.RUN_SCALA == 'true'
         run: sbt -v ++${{ matrix.scala }} test
+  tools:
+    needs: changes
+    if: needs.changes.outputs.tools == 'true'
+    uses: ./.github/workflows/tools-tests.yml
+    with:
+      checkout_sha: ${{ needs.changes.outputs.checkout_sha }}
+  required:
+    name: ${{ github.base_ref == 'main' && 'PR CI Required' || 'CI Summary (other refs)' }}
+    needs: [changes, lint, test, tools]
+    if: always() && github.base_ref == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    env:
+      CHANGES_RESULT: ${{ needs.changes.result }}
+      RUN_SCALA: ${{ needs.changes.outputs.scala }}
+      LINT_RESULT: ${{ needs.lint.result }}
+      MATRIX_RESULT: ${{ needs.test.result }}
+      RUN_TOOLS: ${{ needs.changes.outputs.tools }}
+      TOOLS_RESULT: ${{ needs.tools.result }}
+    steps:
+      - name: Verify required results
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "changes=$CHANGES_RESULT scala=$RUN_SCALA lint=$LINT_RESULT matrix=$MATRIX_RESULT tools=$RUN_TOOLS/$TOOLS_RESULT"
+          case "$CHANGES_RESULT:$RUN_SCALA:$LINT_RESULT:$MATRIX_RESULT:$RUN_TOOLS:$TOOLS_RESULT" in
+            success:true:success:success:true:success|success:true:success:success:false:skipped|success:false:skipped:success:false:skipped) ;;
+            *) echo '::error::Required jobs did not complete as expected.'; exit 1 ;;
+          esac
+
+          # A matrix has one needs.result. Verify each named job in this run,
+          # including results retained from earlier attempts when rerunning failed jobs.
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?filter=all&per_page=100" |
+            jq -e --arg scala "$RUN_SCALA" --arg tools "$RUN_TOOLS" --argjson attempt "$GITHUB_RUN_ATTEMPT" '
+              [.[].jobs[] | select(.run_attempt >= 1 and .run_attempt <= $attempt)] as $jobs |
+              def passed($name; $step):
+                ([ $jobs[] | select(.name == $name) ] | group_by(.run_attempt) | last // []) as $matches |
+                ($matches | length) == 1 and
+                ($matches[0] | .status == "completed" and .conclusion == "success" and
+                  ([.steps[] | select(.name == $step and .conclusion == "success")] | length) == 1);
+              all(["11", "17", "19"][]; . as $jdk |
+                all(["2.12.20", "2.13.16", "3.6.4"][]; . as $version |
+                  passed("test (\($jdk), \($version))";
+                    if $scala == "true" then "sbt test" else "Validate CI selection" end))) and
+              (if $scala == "true" then passed("lint"; "sbt lint") else true end) and
+              (if $tools == "true" then passed("tools / tools-tests"; "Check the test counts") else true end)
+            ' || { echo '::error::A required job or step did not succeed.'; exit 1; }
