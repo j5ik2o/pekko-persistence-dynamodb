@@ -44,8 +44,10 @@ class PrCiRequiredTests(unittest.TestCase):
         bin_dir.mkdir()
         self.calls = self.root / "calls"
         # The fake jobs API answers read N from reads/N.json, or from the last file.
+        # reads/N.fail makes read N fail with that file's text on stderr.
         (bin_dir / "gh").write_text(
             '#!/bin/sh\necho "$*" >> "$CALLS"\nn=$(wc -l < "$CALLS" | tr -d " ")\n'
+            'if [ -f "$READS/$n.fail" ]; then cat "$READS/$n.fail" >&2; exit 1; fi\n'
             'f="$READS/$n.json"; [ -f "$f" ] || f=$(ls "$READS"/*.json | sort -n | tail -n 1)\n'
             'cat "$f"\n')
         (bin_dir / "sleep").write_text("#!/bin/sh\n")
@@ -62,6 +64,18 @@ class PrCiRequiredTests(unittest.TestCase):
     def answer(self, *reads):
         for n, jobs in enumerate(reads, start=1):
             (self.reads / f"{n}.json").write_text(json.dumps([{"jobs": jobs}]))
+
+    def answer_bad_reads_then_pass(self, write):
+        """Make reads 1 and 2 bad with write(path), and read 3 report every job as passed."""
+        self.answer(passed_jobs(), passed_jobs(), passed_jobs())
+        for n in (1, 2):
+            write(self.reads / f"{n}.json")
+
+    def assert_passes_on_read_3(self):
+        result, reads = self.run_step()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(reads, 3)
+        self.assertIn("Every required job and step succeeded (read 3)", result.stdout)
 
     def run_step(self, **env):
         result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", self.step],
@@ -84,6 +98,19 @@ class PrCiRequiredTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(reads, 3)
         self.assertIn("Every required job and step succeeded (read 3)", result.stdout)
+
+    def test_reads_again_when_the_api_returns_an_empty_response(self):
+        self.answer_bad_reads_then_pass(lambda path: path.write_text(""))
+        self.assert_passes_on_read_3()
+
+    def test_reads_again_when_the_api_returns_truncated_json(self):
+        self.answer_bad_reads_then_pass(lambda path: path.write_text('[{"jobs": ['))
+        self.assert_passes_on_read_3()
+
+    def test_reads_again_when_the_gh_api_call_fails(self):
+        self.answer_bad_reads_then_pass(
+            lambda path: path.with_suffix(".fail").write_text("API rate limit exceeded\n"))
+        self.assert_passes_on_read_3()
 
     def test_fails_when_a_job_stays_failed(self):
         failed = passed_jobs()
