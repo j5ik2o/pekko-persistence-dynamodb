@@ -46,11 +46,20 @@ A `persistenceId` that conflicts cannot write the sequence numbers whose keys an
 compatibility note in {ref}`Persistence id separator <persistence-id-separator>` describes the affected
 `persistenceId`s and the workaround. Events and snapshots that earlier releases already replaced cannot be restored.
 
-You are affected if a `persistenceId` contains `persistence-id-separator` (default `-`) two or more times, such as
-`shopping-cart-1`, or if the separator is a regular expression metacharacter such as `|`. After the upgrade, an
-affected write shows up as `JournalRowStoreException.KeyConflict` or `SnapshotStoreException.KeyConflict` in the
-logs, and the actor stops. Until a later release fixes the key format, give each `persistenceId` the separator at
-most once, and do not use a metacharacter as the separator.
+You can be affected if a `persistenceId` contains `persistence-id-separator` (default `-`) two or more times, such as
+`shopping-cart-1`, or if the separator is a regular expression metacharacter such as `|`. Two such `persistenceId`s
+share a key only when the parts before and after the first separator and their shard number also match. After the
+upgrade, a conflict shows up as follows:
+
+- A journal write with the JournalHead disabled fails with `JournalRowStoreException.KeyConflict`, and the actor
+  stops through `onPersistFailure`.
+- A journal write with the JournalHead enabled fails with `DuplicateJournalEventsException`, as in 1.2.0.
+- A snapshot save fails with `SnapshotStoreException.KeyConflict`. The actor receives `SaveSnapshotFailure` and keeps
+  running.
+
+Until a later release fixes the key format, give new `persistenceId`s the separator at most once, and do not choose a
+metacharacter as the separator of a new table. Do not change `persistence-id-separator` or the `persistenceId`s of
+data that already exists: the keys change, and the earlier events and snapshots can no longer be found.
 
 Because `BatchWriteItem` cannot carry a condition, the journal and the snapshot store now write and delete each row
 with its own `PutItem` or `DeleteItem`, up to `batch-write-item-limit` (25) requests at a time. The consumed write
