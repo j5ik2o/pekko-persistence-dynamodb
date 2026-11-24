@@ -93,6 +93,7 @@ class PrTestMergeTests(unittest.TestCase):
         if "bundle_name" in outputs:
             self.git("fetch", "--quiet", str(runner / "pr-test-merge.bundle"), "refs/pr-ci/merge", cwd=job)
             self.git("checkout", "--quiet", "--detach", "FETCH_HEAD", cwd=job)
+        self.job = job
         return " ".join([self.git("rev-parse", "HEAD", cwd=job),
                          self.git("show", "-s", "--format=%P", "HEAD", cwd=job)])
 
@@ -126,6 +127,8 @@ class PrTestMergeTests(unittest.TestCase):
         self.assertEqual(outputs["bundle_name"], "pr-test-merge-1")
         self.assertEqual(outputs["checkout_ref"], new_base)
         self.assert_checks(outputs, runner, new_base)
+        self.assertEqual((self.job / "main.txt").read_text(), "main\n")
+        self.assertEqual((self.job / "feature.txt").read_text(), "feature\n")
 
     def test_fails_an_event_for_an_old_head(self):
         old_head = self.head
