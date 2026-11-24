@@ -69,8 +69,8 @@ object SortKeyResolver {
       sequenceNumber
     )
 
-  /** The sort key of `LegacyPersistenceIdWithSeqNr`: the second element of a split that reads the separator as a
-    * regular expression. It throws where releases up to 1.3.0 threw.
+  /** The sort key of `PersistenceIdWithSeqNr`: the second element of a split that reads the separator as a regular
+    * expression. It throws where releases up to 1.3.0 threw.
     */
   private[snapshot] def legacyPersistenceIdWithSeqNrSKey(
       persistenceId: PersistenceId,
@@ -87,8 +87,8 @@ object SortKeyResolver {
     }
   }
 
-  /** A sort key resolver, other than `PersistenceIdWithSeqNr`, that can also give the key that releases up to 1.3.0
-    * gave an event. Tests use it; the default resolver is recognized by its class.
+  /** A sort key resolver, other than `PlainTextPersistenceIdWithSeqNr`, that can also give the key that releases up to
+    * 1.3.0 gave an event. Tests use it; the default resolver is recognized by its class.
     */
   private[snapshot] trait LegacyKeys {
     def resolveLegacy(persistenceId: PersistenceId, sequenceNumber: SequenceNumber): Option[SortKey]
@@ -103,10 +103,11 @@ object SortKeyResolver {
 
   }
 
-  /** The default resolver. The body is the text after the first `persistence-id-separator`, which is matched as plain
-    * text (issue #1009).
+  /** The experimental resolver of the new key format (issue #1009). The body is the text after the first
+    * `persistence-id-separator`, which is matched as plain text, so every id gets a key of its own. It is not the
+    * default; select it by its class name.
     */
-  final class PersistenceIdWithSeqNr(pluginContext: SnapshotPluginContext)
+  final class PlainTextPersistenceIdWithSeqNr(pluginContext: SnapshotPluginContext)
       extends SortKeyResolver
       with ToPersistenceIdOps {
 
@@ -121,8 +122,8 @@ object SortKeyResolver {
     override def resolve(persistenceId: PersistenceId, sequenceNumber: SequenceNumber): SortKey =
       SortKey(persistenceIdWithSeqNrSKey(persistenceId, sequenceNumber, separator))
 
-    /** The sort key that `LegacyPersistenceIdWithSeqNr` gives the event, which releases up to 1.3.0 used by default. It
-      * is none when that resolver cannot build a key for the id, and when `legacy-keys-enabled` is false.
+    /** The sort key that `PersistenceIdWithSeqNr` gives the event, the default of releases up to 1.3.0 and of this one.
+      * It is none when that resolver cannot build a key for the id, and when `legacy-keys-enabled` is false.
       */
     private[snapshot] def resolveLegacy(persistenceId: PersistenceId, sequenceNumber: SequenceNumber): Option[SortKey] =
       if (!legacyKeysEnabled) None
@@ -133,11 +134,11 @@ object SortKeyResolver {
 
   }
 
-  /** The default resolver of releases up to 1.3.0, kept as it was. It keeps only the second element of a split that
-    * reads `persistence-id-separator` as a regular expression, so ids can share a key with it (issue #1009). Select it
-    * only to keep the keys of an existing table exactly as they were.
+  /** The default resolver, which gives the keys of 1.3.0. It keeps only the second element of a split that reads
+    * `persistence-id-separator` as a regular expression, so ids can share a key with it (issue #1009).
+    * `PlainTextPersistenceIdWithSeqNr` gives every id a key of its own.
     */
-  final class LegacyPersistenceIdWithSeqNr(pluginContext: SnapshotPluginContext)
+  final class PersistenceIdWithSeqNr(pluginContext: SnapshotPluginContext)
       extends SortKeyResolver
       with ToPersistenceIdOps {
 

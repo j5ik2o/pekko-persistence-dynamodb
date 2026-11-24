@@ -77,8 +77,8 @@ object PartitionKeyResolver {
     df.format((hash.abs % shardCount) + 1)
   }
 
-  /** The partition key of `PersistenceIdBased`: `${prefix}-${shard}`, or the shard alone without a prefix. A prefix
-    * that would make the key exceed 2,048 bytes is replaced with its marked SHA-256 (see
+  /** The partition key of `PlainTextPersistenceIdBased`: `${prefix}-${shard}`, or the shard alone without a prefix. A
+    * prefix that would make the key exceed 2,048 bytes is replaced with its marked SHA-256 (see
     * `PersistenceIdKeyParts.partitionKey`).
     */
   private[snapshot] def persistenceIdBased(
@@ -88,7 +88,7 @@ object PartitionKeyResolver {
   ): PartitionKey =
     PartitionKey(PersistenceIdKeyParts.partitionKey(prefix, shardOf(persistenceId, shardCount)))
 
-  /** The partition key of `LegacyPersistenceIdBased`, the format of releases up to 1.3.0, which has no bound. */
+  /** The partition key of `PersistenceIdBased`, the format of 1.3.0, which has no bound. */
   private[snapshot] def legacyPersistenceIdBased(
       persistenceId: PersistenceId,
       prefix: Option[String],
@@ -101,17 +101,18 @@ object PartitionKeyResolver {
     }
   }
 
-  /** A partition key resolver, other than `PersistenceIdBased`, that can also give the key that releases up to 1.3.0
-    * gave an id. Tests use it; the default resolver is recognized by its class.
+  /** A partition key resolver, other than `PlainTextPersistenceIdBased`, that can also give the key that releases up to
+    * 1.3.0 gave an id. Tests use it; the default resolver is recognized by its class.
     */
   private[snapshot] trait LegacyKeys {
     def resolveLegacy(persistenceId: PersistenceId): Option[PartitionKey]
   }
 
-  /** The default resolver. The prefix is the text before the first `persistence-id-separator`, which is matched as
-    * plain text (issue #1009).
+  /** The experimental resolver of the new key format (issue #1009). The prefix is the text before the first
+    * `persistence-id-separator`, which is matched as plain text, so every id gets a key of its own. It is not the
+    * default; select it by its class name.
     */
-  final class PersistenceIdBased(pluginContext: SnapshotPluginContext)
+  final class PlainTextPersistenceIdBased(pluginContext: SnapshotPluginContext)
       extends PartitionKeyResolver
       with ToPersistenceIdOps {
     import pluginContext._
@@ -130,8 +131,8 @@ object PartitionKeyResolver {
         pluginConfig.shardCount
       )
 
-    /** The partition key that `LegacyPersistenceIdBased` gives the id, which releases up to 1.3.0 used by default. It
-      * is none when that resolver cannot build a key for the id, and when `legacy-keys-enabled` is false.
+    /** The partition key that `PersistenceIdBased` gives the id, the default of releases up to 1.3.0 and of this one.
+      * It is none when that resolver cannot build a key for the id, and when `legacy-keys-enabled` is false.
       */
     private[snapshot] def resolveLegacy(persistenceId: PersistenceId): Option[PartitionKey] =
       if (!legacyKeysEnabled) None
@@ -142,11 +143,11 @@ object PartitionKeyResolver {
 
   }
 
-  /** The default resolver of releases up to 1.3.0, kept as it was. It splits the id with `String.split`, which reads
-    * `persistence-id-separator` as a regular expression, so ids can share a key with it (issue #1009). Select it only
-    * to keep the keys of an existing table exactly as they were.
+  /** The default resolver, which gives the keys of 1.3.0. It splits the id with `String.split`, which reads
+    * `persistence-id-separator` as a regular expression, and keeps the first element, so ids can share a key with it
+    * (issue #1009). `PlainTextPersistenceIdBased` gives every id a key of its own.
     */
-  final class LegacyPersistenceIdBased(pluginContext: SnapshotPluginContext)
+  final class PersistenceIdBased(pluginContext: SnapshotPluginContext)
       extends PartitionKeyResolver
       with ToPersistenceIdOps {
     import pluginContext._

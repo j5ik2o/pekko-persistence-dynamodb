@@ -95,10 +95,11 @@ object PersistenceIdKeyConflictSpec extends DockerAssignedPort {
   final case class StoredRow(persistenceId: String, sequenceNr: Long, deleted: Option[Boolean])
 }
 
-/** Issue #1009: the legacy key resolvers, which keep the default keys of releases up to 1.3.0, give two persistence ids
-  * the same key when they differ only after the second separator, or always with the separator `|`. A write must not
-  * replace the row of the other id: it fails, and the replay, the highest sequence number, and the snapshot of the id
-  * that wrote first stay as they were. The default resolvers give each id a key of its own (`PersistenceIdKeySpec`).
+/** Issue #1009: the default key resolvers `PersistenceIdBased` and `PersistenceIdWithSeqNr`, named explicitly here,
+  * keep the keys of releases up to 1.3.0 and give two persistence ids the same key when they differ only after the
+  * second separator, or always with the separator `|`. A write must not replace the row of the other id: it fails, and
+  * the replay, the highest sequence number, and the snapshot of the id that wrote first stay as they were. The default
+  * resolvers give each id a key of its own (`PersistenceIdKeySpec`).
   */
 final class PersistenceIdKeyConflictSpec extends AnyWordSpec with Matchers with DynamoDBContainerHelper {
   import PersistenceIdKeyConflictSpec._
@@ -124,14 +125,14 @@ final class PersistenceIdKeyConflictSpec extends AnyWordSpec with Matchers with 
          |""".stripMargin)
     val legacyResolvers = Seq(
       "j5ik2o.dynamo-db-journal.partition-key-resolver-class-name" -> classOf[
-        PartitionKeyResolver.LegacyPersistenceIdBased
+        PartitionKeyResolver.PersistenceIdBased
       ],
-      "j5ik2o.dynamo-db-journal.sort-key-resolver-class-name" -> classOf[SortKeyResolver.LegacyPersistenceIdWithSeqNr],
+      "j5ik2o.dynamo-db-journal.sort-key-resolver-class-name" -> classOf[SortKeyResolver.PersistenceIdWithSeqNr],
       "j5ik2o.dynamo-db-snapshot.partition-key-resolver-class-name" -> classOf[
-        snapshot.PartitionKeyResolver.LegacyPersistenceIdBased
+        snapshot.PartitionKeyResolver.PersistenceIdBased
       ],
       "j5ik2o.dynamo-db-snapshot.sort-key-resolver-class-name" -> classOf[
-        snapshot.SortKeyResolver.LegacyPersistenceIdWithSeqNr
+        snapshot.SortKeyResolver.PersistenceIdWithSeqNr
       ]
     ).map { case (key, cls) => s"""\n$key = "${cls.getName}"""" }.mkString
     ConfigFactory
@@ -464,7 +465,7 @@ final class PersistenceIdKeyConflictSpec extends AnyWordSpec with Matchers with 
     }
   }
 
-  "the legacy key resolvers" should {
+  "the default key resolvers, named explicitly," should {
 
     "give the keys of 1.3.0, and fail where 1.3.0 failed" in {
       val alphabet = Seq("a", "b", "-", "|", ".")

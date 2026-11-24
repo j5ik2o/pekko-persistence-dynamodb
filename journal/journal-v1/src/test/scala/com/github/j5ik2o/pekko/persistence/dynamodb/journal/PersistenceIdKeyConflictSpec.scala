@@ -87,10 +87,10 @@ object PersistenceIdKeyConflictSpec extends DockerAssignedPort {
 }
 
 /** Issue #1009 with the AWS SDK v1 client, which cannot use the JournalHead. The snapshot store and the JournalHead are
-  * covered by the journal-v2 suite. The legacy key resolvers, which keep the default keys of releases up to 1.3.0, give
-  * two persistence ids the same key when they differ only after the second separator, or always with the separator `|`.
-  * A write must not replace the row of the other id: it fails, and the replay and the highest sequence number of the id
-  * that wrote first stay as they were.
+  * covered by the journal-v2 suite. The default key resolvers `PersistenceIdBased` and `PersistenceIdWithSeqNr`, named
+  * explicitly here, keep the keys of releases up to 1.3.0, give two persistence ids the same key when they differ only
+  * after the second separator, or always with the separator `|`. A write must not replace the row of the other id: it
+  * fails, and the replay and the highest sequence number of the id that wrote first stay as they were.
   */
 final class PersistenceIdKeyConflictSpec extends AnyWordSpec with Matchers with DynamoDBContainerHelper {
   import PersistenceIdKeyConflictSpec._
@@ -115,9 +115,9 @@ final class PersistenceIdKeyConflictSpec extends AnyWordSpec with Matchers with 
          |""".stripMargin)
     val legacyResolvers = Seq(
       "j5ik2o.dynamo-db-journal.partition-key-resolver-class-name" -> classOf[
-        PartitionKeyResolver.LegacyPersistenceIdBased
+        PartitionKeyResolver.PersistenceIdBased
       ],
-      "j5ik2o.dynamo-db-journal.sort-key-resolver-class-name" -> classOf[SortKeyResolver.LegacyPersistenceIdWithSeqNr]
+      "j5ik2o.dynamo-db-journal.sort-key-resolver-class-name" -> classOf[SortKeyResolver.PersistenceIdWithSeqNr]
     ).map { case (key, cls) => s"""\n$key = "${cls.getName}"""" }.mkString
     ConfigFactory
       .parseString(
@@ -390,7 +390,7 @@ final class PersistenceIdKeyConflictSpec extends AnyWordSpec with Matchers with 
     }
   }
 
-  "the legacy key resolvers" should {
+  "the default key resolvers, named explicitly," should {
 
     "give the keys of 1.3.0, and fail where 1.3.0 failed" in {
       val alphabet = Seq("a", "b", "-", "|", ".")

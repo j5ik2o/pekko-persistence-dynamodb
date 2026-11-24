@@ -13,41 +13,34 @@ Replace `v1.2.0` and `<SHA>` with the approved version and commit. If the lookup
 
 ## Unreleased
 
-### Persistence ids that shared a key get keys of their own
+### Experimental: resolvers that give every persistence id a key of its own
 
-The default key resolvers of the journal and the snapshot store, `PartitionKeyResolver$PersistenceIdBased` and
-`SortKeyResolver$PersistenceIdWithSeqNr`, now split a `persistenceId` at the first `persistence-id-separator`, matched
-as plain text, instead of reading the separator as a regular expression and keeping only the first two parts (#1009,
-#1014). Two `persistenceId`s no longer get the same key, so the `persistenceId`s that failed with `KeyConflict` in 1.3.0
-because they shared a key can be written. `persistenceId`s that 1.3.0 could not write at all, such as `order-` or any
-`persistenceId` with the separator `.`, can be written too. When `skey` would exceed 1,024 bytes or `pkey` 2,048 bytes,
-its text is replaced with a marked SHA-256, so every `persistenceId` that 1.3.0 could write can still be written.
+The key resolvers that you have configured do not change: a `persistenceId` gets the same journal and snapshot keys as
+in 1.3.0, byte for byte, and no extra request is sent. This holds for the defaults and for a configuration that names
+`PartitionKeyResolver$PersistenceIdBased` and `SortKeyResolver$PersistenceIdWithSeqNr` explicitly, as the examples of
+1.3.0 did.
 
-The key changes only for `persistenceId`s that contain the separator and that the 1.3.0 split, which read the
-separator as a regular expression, divided differently from the split at the first separator. With the default
-separator `-`, those are the `persistenceId`s that contain it two or more times. With `|`, nearly every `persistenceId`
-that contains it. With a separator of several characters that include a metacharacter, such as `-+`, also
-`persistenceId`s that contain it once, such as `Order-+23`. The keys of every other `persistenceId` stay the same, byte
-for byte, and they send no extra request. {ref}`Key format changes after 1.3.0 <key-format-change>` lists the `persistenceId`s whose key changes.
+The new `PartitionKeyResolver$PlainTextPersistenceIdBased` and `SortKeyResolver$PlainTextPersistenceIdWithSeqNr`
+(journal and snapshot) split a `persistenceId` at the first `persistence-id-separator`, matched as plain text (#1009,
+#1014). You select them by these class names. Two `persistenceId`s no
+longer get the same key, so the `persistenceId`s that fail with `KeyConflict` in 1.3.0 because they share a key can be
+written, and so can `persistenceId`s that 1.3.0 could not write at all, such as `order-` or any `persistenceId` with the
+separator `.`. When `skey` would exceed 1,024 bytes or `pkey` 2,048 bytes, its text is replaced with a marked SHA-256.
 
-No migration is needed before the upgrade. The rows that 1.3.0 and earlier releases wrote keep their old keys, and the
-default resolvers still replay, delete, and update them and load and delete their snapshots, next to the rows written
-under the new keys. For a `persistenceId` whose key changes, a hard delete sends one extra conditional `DeleteItem` per
-event, a soft delete two conditional `UpdateItem` per event instead of one `PutItem`, a snapshot save one extra
-conditional `DeleteItem`, and an in-place update of a row under the old key one refused update and two or three `GetItem`. These
-numbers were measured on DynamoDB Local.
+These resolvers are experimental. {ref}`The new key format <key-format-change>` describes them; before you select them:
 
-- A tool that moves the old rows to the new keys comes in a later change. Until the old rows are moved, a new key can
-  be the old key of another `persistenceId`, for example `Order-` and `Order--23`, or `A|B` and `AB|98` with the
-  separator `|`. Such a write fails with `KeyConflict` (with the JournalHead, `DuplicateJournalEventsException`), as in
-  1.3.0, and the row of the other `persistenceId` stays as it is.
-- After every old row is moved, `legacy-keys-enabled = false` stops the extra requests.
-- `PartitionKeyResolver$LegacyPersistenceIdBased` and `SortKeyResolver$LegacyPersistenceIdWithSeqNr` keep the keys of
-  1.3.0 exactly. Select them if a consumer of DynamoDB Streams or Kinesis Data Streams depends on the old keys.
-- A rollback to 1.3.0 replays the rows written under the new keys, but its deletes and in-place updates do not reach
-  them. A snapshot that 1.3.0 saves again at a sequence number that already has one is not returned after the upgrade
-  again; see {ref}`Key format changes after 1.3.0 <key-format-change>`.
-- The DAX item cache was not measured with this change.
+- No migration tool for the rows of 1.3.0 exists yet; it comes in a later change. The resolvers still replay, delete,
+  and update the old rows and load and delete their snapshots, next to the rows written under the new keys. For a
+  `persistenceId` whose key changes, that costs extra conditional requests, which `legacy-keys-enabled = false` stops
+  after the migration.
+- They change the keys of `persistenceId`s that the 1.3.0 split, which read the separator as a regular expression,
+  divided differently from the split at the first separator: with `-`, those that contain it two or more times; with
+  `|`, nearly every one that contains it.
+- Until the old rows are moved, a new key can be the old key of another `persistenceId`, for example `Order-` and
+  `Order--23`, or `A|B` and `AB|98` with the separator `|`. Such a write fails with `KeyConflict` (with the JournalHead,
+  `DuplicateJournalEventsException`), and the row of the other `persistenceId` stays as it is.
+- They were measured on DynamoDB Local only, not on DynamoDB or with DAX.
+- A later release, together with the migration tool, is planned to make them the default.
 
 ## 1.3.0
 

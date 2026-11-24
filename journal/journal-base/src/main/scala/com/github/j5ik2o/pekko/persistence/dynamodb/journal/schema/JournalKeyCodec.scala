@@ -49,19 +49,19 @@ final class JournalKeyCodec(schema: JournalSchema) {
       sortKeyResolver: SortKeyResolver
   ): Option[RowKey] =
     (partitionKeyResolver, sortKeyResolver) match {
-      case (_: PartitionKeyResolver.PersistenceIdBased | _: PartitionKeyResolver.LegacyKeys, _) |
-          (_, _: SortKeyResolver.PersistenceIdWithSeqNr | _: SortKeyResolver.LegacyKeys) =>
+      case (_: PartitionKeyResolver.PlainTextPersistenceIdBased | _: PartitionKeyResolver.LegacyKeys, _) |
+          (_, _: SortKeyResolver.PlainTextPersistenceIdWithSeqNr | _: SortKeyResolver.LegacyKeys) =>
         // A resolver that cannot build a key for the id, such as a legacy one, gives no legacy key.
         Try {
           val partitionKey = partitionKeyResolver.resolve(persistenceId, sequenceNumber)
           val sortKey      = sortKeyResolver.resolve(persistenceId, sequenceNumber)
           val legacyPartitionKey = partitionKeyResolver match {
-            case resolver: PartitionKeyResolver.PersistenceIdBased => resolver.resolveLegacy(persistenceId)
-            case resolver: PartitionKeyResolver.LegacyKeys         => resolver.resolveLegacy(persistenceId)
-            case _                                                 => Some(partitionKey)
+            case resolver: PartitionKeyResolver.PlainTextPersistenceIdBased => resolver.resolveLegacy(persistenceId)
+            case resolver: PartitionKeyResolver.LegacyKeys                  => resolver.resolveLegacy(persistenceId)
+            case _                                                          => Some(partitionKey)
           }
           val legacySortKey = sortKeyResolver match {
-            case resolver: SortKeyResolver.PersistenceIdWithSeqNr =>
+            case resolver: SortKeyResolver.PlainTextPersistenceIdWithSeqNr =>
               resolver.resolveLegacy(persistenceId, sequenceNumber)
             case resolver: SortKeyResolver.LegacyKeys => resolver.resolveLegacy(persistenceId, sequenceNumber)
             case _                                    => Some(sortKey)

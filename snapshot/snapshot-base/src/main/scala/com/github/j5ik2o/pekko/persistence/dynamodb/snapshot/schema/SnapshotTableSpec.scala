@@ -65,21 +65,21 @@ final case class SnapshotTableSpec(
   private[snapshot] def legacyKeyOf(persistenceId: PersistenceId, sequenceNumber: SequenceNumber): Option[RowKey] =
     keyDerivation match {
       case SnapshotKeyDerivation.Sharded(partitionKeyResolver, sortKeyResolver)
-          if partitionKeyResolver.isInstanceOf[PartitionKeyResolver.PersistenceIdBased] ||
+          if partitionKeyResolver.isInstanceOf[PartitionKeyResolver.PlainTextPersistenceIdBased] ||
           partitionKeyResolver.isInstanceOf[PartitionKeyResolver.LegacyKeys] ||
-          sortKeyResolver.isInstanceOf[SortKeyResolver.PersistenceIdWithSeqNr] ||
+          sortKeyResolver.isInstanceOf[SortKeyResolver.PlainTextPersistenceIdWithSeqNr] ||
           sortKeyResolver.isInstanceOf[SortKeyResolver.LegacyKeys] =>
         // A resolver that cannot build a key for the id, such as a legacy one, gives no legacy key.
         Try {
           val partitionKey = partitionKeyResolver.resolve(persistenceId, sequenceNumber)
           val sortKey      = sortKeyResolver.resolve(persistenceId, sequenceNumber)
           val legacyPartitionKey = partitionKeyResolver match {
-            case resolver: PartitionKeyResolver.PersistenceIdBased => resolver.resolveLegacy(persistenceId)
-            case resolver: PartitionKeyResolver.LegacyKeys         => resolver.resolveLegacy(persistenceId)
-            case _                                                 => Some(partitionKey)
+            case resolver: PartitionKeyResolver.PlainTextPersistenceIdBased => resolver.resolveLegacy(persistenceId)
+            case resolver: PartitionKeyResolver.LegacyKeys                  => resolver.resolveLegacy(persistenceId)
+            case _                                                          => Some(partitionKey)
           }
           val legacySortKey = sortKeyResolver match {
-            case resolver: SortKeyResolver.PersistenceIdWithSeqNr =>
+            case resolver: SortKeyResolver.PlainTextPersistenceIdWithSeqNr =>
               resolver.resolveLegacy(persistenceId, sequenceNumber)
             case resolver: SortKeyResolver.LegacyKeys => resolver.resolveLegacy(persistenceId, sequenceNumber)
             case _                                    => Some(sortKey)

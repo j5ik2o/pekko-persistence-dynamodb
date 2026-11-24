@@ -115,6 +115,8 @@ object PersistenceIdKeySpec extends DockerAssignedPort {
       softDelete: Boolean = true,
       separator: Option[String] = None,
       beforeFix: Boolean = false,
+      defaults: Boolean = false,
+      explicit130Names: Boolean = false,
       legacyKeys: Boolean = true,
       legacySnapshotResolvers: Boolean = false
   )
@@ -163,7 +165,37 @@ final class PersistenceIdKeySpec extends AnyWordSpec with Matchers with DynamoDB
             BeforeKeyFix.SnapshotSortKeyResolverBeforeFix
           ].getName}"
            |""".stripMargin
-      else ""
+      else if (mode.defaults) "" // the resolvers of reference.conf
+      else if (mode.explicit130Names)
+        // the class names that the configuration examples of 1.3.0 named
+        Seq(
+          "j5ik2o.dynamo-db-journal.partition-key-resolver-class-name" -> classOf[
+            PartitionKeyResolver.PersistenceIdBased
+          ],
+          "j5ik2o.dynamo-db-journal.sort-key-resolver-class-name" -> classOf[SortKeyResolver.PersistenceIdWithSeqNr],
+          "j5ik2o.dynamo-db-snapshot.partition-key-resolver-class-name" -> classOf[
+            snapshot.PartitionKeyResolver.PersistenceIdBased
+          ],
+          "j5ik2o.dynamo-db-snapshot.sort-key-resolver-class-name" -> classOf[
+            snapshot.SortKeyResolver.PersistenceIdWithSeqNr
+          ]
+        ).map { case (key, cls) => s"""\n$key = "${cls.getName}"""" }.mkString
+      else
+        // the resolvers of the new key format, which the configuration selects while the default keeps the 1.3.0 keys
+        Seq(
+          "j5ik2o.dynamo-db-journal.partition-key-resolver-class-name" -> classOf[
+            PartitionKeyResolver.PlainTextPersistenceIdBased
+          ],
+          "j5ik2o.dynamo-db-journal.sort-key-resolver-class-name" -> classOf[
+            SortKeyResolver.PlainTextPersistenceIdWithSeqNr
+          ],
+          "j5ik2o.dynamo-db-snapshot.partition-key-resolver-class-name" -> classOf[
+            snapshot.PartitionKeyResolver.PlainTextPersistenceIdBased
+          ],
+          "j5ik2o.dynamo-db-snapshot.sort-key-resolver-class-name" -> classOf[
+            snapshot.SortKeyResolver.PlainTextPersistenceIdWithSeqNr
+          ]
+        ).map { case (key, cls) => s"""\n$key = "${cls.getName}"""" }.mkString
     val legacyKeys =
       if (mode.legacyKeys) ""
       else """
@@ -174,8 +206,8 @@ final class PersistenceIdKeySpec extends AnyWordSpec with Matchers with DynamoDB
       if (!mode.legacySnapshotResolvers) ""
       else
         Seq(
-          "partition-key-resolver-class-name" -> classOf[snapshot.PartitionKeyResolver.LegacyPersistenceIdBased],
-          "sort-key-resolver-class-name"      -> classOf[snapshot.SortKeyResolver.LegacyPersistenceIdWithSeqNr]
+          "partition-key-resolver-class-name" -> classOf[snapshot.PartitionKeyResolver.PersistenceIdBased],
+          "sort-key-resolver-class-name"      -> classOf[snapshot.SortKeyResolver.PersistenceIdWithSeqNr]
         ).map { case (key, cls) => s"""\nj5ik2o.dynamo-db-snapshot.$key = "${cls.getName}"""" }.mkString
     val counter = s"""
          |j5ik2o.dynamo-db-journal.dynamo-db-client.v2.execution-interceptor-class-names = ["${classOf[
@@ -210,7 +242,10 @@ final class PersistenceIdKeySpec extends AnyWordSpec with Matchers with DynamoDB
           if (mode.headEnabled) "head" else "nohead",
           if (mode.softDelete) "soft" else "hard",
           mode.separator.fold("dash")(s => s"sep${s.map(_.toInt).mkString("x")}"),
-          if (mode.beforeFix) "before" else "after",
+          if (mode.beforeFix) "before"
+          else if (mode.defaults) "defaults"
+          else if (mode.explicit130Names) "explicit"
+          else "after",
           if (mode.legacyKeys) "legacy" else "nolegacy",
           if (mode.legacySnapshotResolvers) "legacysnap" else "snap"
         ).mkString("-")
@@ -826,6 +861,50 @@ final class PersistenceIdKeySpec extends AnyWordSpec with Matchers with DynamoDB
     }
   }
 
+  "the default configuration, and the 1.3.0 class names set explicitly," should {
+
+    "keep the keys of 1.3.0, and fail where 1.3.0 failed, with the same exception" in {
+      def outcome(key: => (String, String)): Either[Class[_], (String, String)] =
+        scala.util.Try(key).toEither.left.map(_.getClass)
+      val alphabet = Seq("a", "b", "-", "|", ".")
+      val ids = (1 to 3).flatMap(n =>
+        Seq.fill(n)(alphabet).foldLeft(Seq(""))((acc, cs) => acc.flatMap(a => cs.map(a + _)))
+      ) ++ Seq("Order-", "shopping-cart-1", "UserAccount|33", "Order.1", s"Order-item-${"x" * 1010}")
+      for {
+        separator <- Seq("-", "|", ".")
+        mode <- Seq(
+          Mode(defaults = true, separator = Some(separator)),
+          Mode(explicit130Names = true, separator = Some(separator))
+        )
+      } {
+        ids.foreach { id =>
+          withClue(s"journal id=[$id] separator=[$separator]: ") {
+            outcome(journalKey(mode, id, 7)) shouldBe outcome(
+              (
+                BeforeKeyFix.partitionKey(id, separator, context(mode)._1.pluginConfig.shardCount),
+                BeforeKeyFix.sortKey(id, 7, separator)
+              )
+            )
+          }
+          withClue(s"snapshot id=[$id] separator=[$separator]: ") {
+            outcome(snapshotKey(mode, id, 7)) shouldBe outcome(
+              (
+                BeforeKeyFix.partitionKey(id, separator, context(mode)._2.pluginConfig.shardCount),
+                BeforeKeyFix.sortKey(id, 7, separator)
+              )
+            )
+          }
+        }
+      }
+    }
+
+    "fail to persist an id that 1.3.0 could not write, as 1.3.0 did" in {
+      Seq(Mode(defaults = true), Mode(explicit130Names = true)).foreach { mode =>
+        persist(mode, s"${uniquePrefix("Order")}-", "e1").left.toOption.get shouldBe an[ArrayIndexOutOfBoundsException]
+      }
+    }
+  }
+
   "rows written after the change" should {
 
     "be replayed by 1.3.0, whose deletes do not reach them until the upgrade" in {
@@ -1019,6 +1098,17 @@ final class PersistenceIdKeySpec extends AnyWordSpec with Matchers with DynamoDB
         "snapshotDelete" -> Map.empty
       )
       noLegacy.extraOver(base).values.foreach(_ shouldBe empty)
+    }
+
+    "not grow with the default configuration or the 1.3.0 class names, which keep the 1.3.0 keys" in {
+      val base = cost(before, before, changedId("DefaultsBase"))
+      Seq(Mode(defaults = true), Mode(explicit130Names = true)).foreach { mode =>
+        val measured = cost(mode, mode, changedId("Defaults"))
+        info(
+          s"changed id, ${if (mode.defaults) "default configuration" else "1.3.0 class names"}: ${measured.extraOver(base)}"
+        )
+        measured.extraOver(base).values.foreach(_ shouldBe empty)
+      }
     }
 
     "grow for an in-place update with the JournalHead only when the row is under the 1.3.0 key" in {

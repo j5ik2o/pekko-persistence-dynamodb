@@ -110,6 +110,8 @@ object PersistenceIdKeySpec extends DockerAssignedPort {
       softDelete: Boolean = true,
       separator: Option[String] = None,
       beforeFix: Boolean = false,
+      defaults: Boolean = false,
+      explicit130Names: Boolean = false,
       legacyKeys: Boolean = true
   )
 }
@@ -151,7 +153,25 @@ final class PersistenceIdKeySpec extends AnyWordSpec with Matchers with DynamoDB
             BeforeKeyFix.JournalSortKeyResolver
           ].getName}"
            |""".stripMargin
-      else ""
+      else if (mode.defaults) "" // the resolvers of reference.conf
+      else if (mode.explicit130Names)
+        // the class names that the configuration examples of 1.3.0 named
+        Seq(
+          "j5ik2o.dynamo-db-journal.partition-key-resolver-class-name" -> classOf[
+            PartitionKeyResolver.PersistenceIdBased
+          ],
+          "j5ik2o.dynamo-db-journal.sort-key-resolver-class-name" -> classOf[SortKeyResolver.PersistenceIdWithSeqNr]
+        ).map { case (key, cls) => s"""\n$key = "${cls.getName}"""" }.mkString
+      else
+        // the resolvers of the new key format, which the configuration selects while the default keeps the 1.3.0 keys
+        Seq(
+          "j5ik2o.dynamo-db-journal.partition-key-resolver-class-name" -> classOf[
+            PartitionKeyResolver.PlainTextPersistenceIdBased
+          ],
+          "j5ik2o.dynamo-db-journal.sort-key-resolver-class-name" -> classOf[
+            SortKeyResolver.PlainTextPersistenceIdWithSeqNr
+          ]
+        ).map { case (key, cls) => s"""\n$key = "${cls.getName}"""" }.mkString
     val legacyKeys =
       if (mode.legacyKeys) ""
       else """
@@ -184,7 +204,10 @@ final class PersistenceIdKeySpec extends AnyWordSpec with Matchers with DynamoDB
           if (mode.headEnabled) "head" else "nohead",
           if (mode.softDelete) "soft" else "hard",
           mode.separator.fold("dash")(s => s"sep${s.map(_.toInt).mkString("x")}"),
-          if (mode.beforeFix) "before" else "after",
+          if (mode.beforeFix) "before"
+          else if (mode.defaults) "defaults"
+          else if (mode.explicit130Names) "explicit"
+          else "after",
           if (mode.legacyKeys) "legacy" else "nolegacy"
         ).mkString("-")
         val created = ActorSystem(name, config(mode))
@@ -636,6 +659,42 @@ final class PersistenceIdKeySpec extends AnyWordSpec with Matchers with DynamoDB
       command(noLegacy.copy(softDelete = false), id, DeleteTo(1))
       events(recover(noLegacy, id)) shouldBe Vector(1L -> "e1", 2L -> "e2")
       storedRows(journalTableName, id).map(r => (r.pkey, r.skey)) shouldBe Seq(1L, 2L).map(journalKey(before, id, _))
+    }
+  }
+
+  "the default configuration, and the 1.3.0 class names set explicitly," should {
+
+    "keep the keys of 1.3.0, and fail where 1.3.0 failed, with the same exception" in {
+      def outcome(key: => (String, String)): Either[Class[_], (String, String)] =
+        scala.util.Try(key).toEither.left.map(_.getClass)
+      val alphabet = Seq("a", "b", "-", "|", ".")
+      val ids = (1 to 3).flatMap(n =>
+        Seq.fill(n)(alphabet).foldLeft(Seq(""))((acc, cs) => acc.flatMap(a => cs.map(a + _)))
+      ) ++ Seq("Order-", "shopping-cart-1", "UserAccount|33", "Order.1", s"Order-item-${"x" * 1010}")
+      for {
+        separator <- Seq("-", "|", ".")
+        mode <- Seq(
+          Mode(defaults = true, separator = Some(separator)),
+          Mode(explicit130Names = true, separator = Some(separator))
+        )
+      } {
+        ids.foreach { id =>
+          withClue(s"journal id=[$id] separator=[$separator]: ") {
+            outcome(journalKey(mode, id, 7)) shouldBe outcome(
+              (
+                BeforeKeyFix.partitionKey(id, separator, context(mode).pluginConfig.shardCount),
+                BeforeKeyFix.sortKey(id, 7, separator)
+              )
+            )
+          }
+        }
+      }
+    }
+
+    "fail to persist an id that 1.3.0 could not write, as 1.3.0 did" in {
+      Seq(Mode(defaults = true), Mode(explicit130Names = true)).foreach { mode =>
+        persist(mode, s"${uniquePrefix("Order")}-", "e1").left.toOption.get shouldBe an[ArrayIndexOutOfBoundsException]
+      }
     }
   }
 
