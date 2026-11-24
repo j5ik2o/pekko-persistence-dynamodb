@@ -270,10 +270,13 @@ jobs:
             (if $tools == "true" then passed("tools / tools-tests"; "Check the test counts") else true end)'
           # needs.* already reported every job as passed, but the jobs API can show
           # a job that has just finished as still running, so read it a few times.
+          # A read counts only when gh succeeds and jq prints true: jq 1.6 exits 0
+          # with -e on empty input, so its exit status alone is not enough.
           for n in 1 2 3 4 5 6; do
             if jobs=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?filter=all&per_page=100") &&
-               jq -e --arg scala "$RUN_SCALA" --arg tools "$RUN_TOOLS" --argjson attempt "$GITHUB_RUN_ATTEMPT" \
-                 "$program" <<< "$jobs" > /dev/null; then
+               verdict=$(jq --arg scala "$RUN_SCALA" --arg tools "$RUN_TOOLS" --argjson attempt "$GITHUB_RUN_ATTEMPT" \
+                 "$program" <<< "$jobs") &&
+               [[ "$verdict" == true ]]; then
               echo "Every required job and step succeeded (read $n)."
               exit 0
             fi
