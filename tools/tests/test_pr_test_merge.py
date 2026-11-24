@@ -87,10 +87,12 @@ class PrTestMergeTests(unittest.TestCase):
     def checkout_in_job(self, outputs, runner):
         """Do what a product job does: check out, load the bundle, read the parents."""
         job = runner / "job"
-        self.git("clone", "--quiet", str(self.origin), str(job))
-        self.git("fetch", "--quiet", "origin", f"refs/pull/{PR}/merge", cwd=job)
+        self.git("clone", "--quiet", "--no-local", str(self.origin), str(job))
+        if "bundle_name" not in outputs:
+            self.git("fetch", "--quiet", "origin", f"refs/pull/{PR}/merge", cwd=job)
         self.git("checkout", "--quiet", "--detach", outputs["checkout_ref"], cwd=job)
         if "bundle_name" in outputs:
+            # Only the base history and the bundle: the bundle must carry the head.
             self.git("fetch", "--quiet", str(runner / "pr-test-merge.bundle"), "refs/pr-ci/merge", cwd=job)
             self.git("checkout", "--quiet", "--detach", "FETCH_HEAD", cwd=job)
         self.job = job
