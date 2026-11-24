@@ -305,6 +305,18 @@ final class PersistenceIdKeyConflictSpec extends AnyWordSpec with Matchers with 
       storedRows(journalTableName, b) shouldBe empty
     }
 
+    "leave no event of a persistAll whose first event conflicts, so a restart replays none of it" in {
+      val (a, b) = collidingPair(s"${uniquePrefix("Atomic")}-X-", id => journalKey(headDisabled, id, 1))
+      persistOk(headDisabled, a, "a1")
+      expectKeyConflict(persist(headDisabled, b, "b1", "b2", "b3"), b, a)
+
+      storedRows(journalTableName, b) shouldBe empty
+      val recoveredB = recover(headDisabled, b)
+      recoveredB.events shouldBe empty
+      recoveredB.lastSequenceNr shouldBe 0L
+      recover(headDisabled, a).events shouldBe Vector(1L -> "a1")
+    }
+
     "fail to persist with the separator '|', which shares a key with a single separator" in {
       val (a, b) = collidingPair(s"${uniquePrefix("Account")}|", id => journalKey(pipe, id, 1))
       persistOk(pipe, a, "a1")

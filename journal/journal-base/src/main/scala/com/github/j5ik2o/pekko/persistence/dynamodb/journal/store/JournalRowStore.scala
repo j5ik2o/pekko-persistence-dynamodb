@@ -147,9 +147,10 @@ final class JournalRowStore(
     *
     * A row is written only when its key holds no row or a row of the same persistence id. Two persistence ids can
     * resolve to the same key (issue #1009), and an unconditional write would replace the event of the other id without
-    * a trace. Such a write fails with `JournalRowStoreException.KeyConflict` and writes nothing under that key. A
-    * rewrite of an event of the same persistence id, such as a soft delete, is accepted. BatchWriteItem is not used,
-    * because it cannot carry a condition.
+    * a trace. Such a write fails with `JournalRowStoreException.KeyConflict` and writes nothing under that key; the
+    * other new events of the same write are deleted again (see `undoWrites`). A rewrite of an event of the same
+    * persistence id, such as a soft delete, is accepted. BatchWriteItem is not used, because it cannot carry a
+    * condition.
     */
   def write(rows: Seq[JournalRow]): Source[Long, NotUsed] = {
     if (rows.isEmpty) {
@@ -170,9 +171,20 @@ final class JournalRowStore(
               run(
                 Operation.Put(schema.table, rowCodec.encode(row, key), Some(sameRowOrNone(row.persistenceId))),
                 writeBackoffConfig
-              ).flatMapConcat {
-                case OperationResult.ConditionRejected(_) =>
-                  conflict(key).flatMapConcat(other =>
+              ).map {
+                case OperationResult.ConditionRejected(_) => Left(row -> key)
+                case other                                => expectWritten(other); Right(row -> key)
+              }
+            }
+          )
+          .fold(Vector.empty[Either[(JournalRow, RowKey), (JournalRow, RowKey)]])(_ :+ _)
+          .flatMapConcat { results =>
+            results.collectFirst { case Left(rejected) => rejected } match {
+              case None => Source.single(results.size.toLong)
+              case Some((row, key)) =>
+                val written = results.collect { case Right(entry) => entry }
+                undoWrites(written)
+                  .flatMapConcat(_ => conflict(key)).flatMapConcat(other =>
                     Source.failed(
                       new JournalRowStoreException.KeyConflict(
                         row.persistenceId.asString,
@@ -182,14 +194,41 @@ final class JournalRowStore(
                       )
                     )
                   )
-                case other => Source.single(expectWritten(other))
-              }
             }
-          )
-          .fold(0L)(_ + _)
+          }
       }
     }
   }
+
+  /** Deletes the new events of a write that failed with a key conflict, so the failed write leaves no part of itself: a
+    * restarted actor must not replay the later events of a `persistAll` without the event that was refused. A row is
+    * deleted only while it still holds the message that this write put there. A rewrite of an existing event, such as a
+    * soft delete (`deleted = true`), is not undone, because deleting it would delete the event.
+    */
+  private def undoWrites(written: Vector[(JournalRow, RowKey)]): Source[Unit, NotUsed] =
+    Source(written.filterNot { case (row, _) => row.deleted })
+      .flatMapMerge(
+        batchWriteLimit,
+        { case (row, key) =>
+          val sameWrite = Condition.And(
+            Condition.And(samePersistenceId(row.persistenceId), sameSequenceNr(row.sequenceNumber)),
+            Condition.Compare(
+              Operand.Column(schema.message),
+              CompareOp.Eq,
+              Operand.Literal(DdbValue.Bin(row.message.toVector))
+            )
+          )
+          run(Operation.Delete(schema.table, key, Some(sameWrite)), writeBackoffConfig).map(_ => ())
+        }
+      )
+      .fold(())((_, _) => ())
+
+  private def sameSequenceNr(sequenceNumber: SequenceNumber): Condition =
+    Condition.Compare(
+      Operand.Column(schema.sequenceNr),
+      CompareOp.Eq,
+      Operand.Literal(DdbValue.Num(BigDecimal(sequenceNumber.value)))
+    )
 
   /** Deletes the rows, each with its own conditional DeleteItem, at most `batchWriteLimit` at a time. A key that holds
     * the row of another persistence id is left as it is, because that row is not the event to delete.

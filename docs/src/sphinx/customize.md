@@ -185,7 +185,8 @@ replaced events were lost. Snapshots were replaced whether the JournalHead was e
 write never replaces a row of another `persistenceId`:
 
 - A journal write fails with `JournalRowStoreException.KeyConflict`, which names both `persistenceId`s. Pekko calls
-  `onPersistFailure`, and the actor stops. The events of the other `persistenceId` stay as they are.
+  `onPersistFailure`, and the actor stops. The events of the other `persistenceId` stay as they are. The other new
+  events of the same `persistAll` are deleted again, so a restarted actor does not replay part of the write.
 - A snapshot save fails with `SnapshotStoreException.KeyConflict`, and the actor receives `SaveSnapshotFailure`.
 - An in-place update is refused with `JournalHeadRowUpdateRejectedException`, and a delete leaves the row of the other
   `persistenceId`.
@@ -205,6 +206,9 @@ To make the writes conditional, the journal and the snapshot store write and del
 `PutItem` or `DeleteItem`, up to `dynamo-db-client.batch-write-item-limit` (25 by default) at a time, instead of
 `BatchWriteItem`. The consumed write capacity does not change. The number of write requests becomes one per event
 instead of one per 25 events.
+
+The IAM policy must allow `dynamodb:PutItem`, `dynamodb:DeleteItem`, and `dynamodb:GetItem` on the journal and
+snapshot tables; `dynamodb:BatchWriteItem` is no longer used.
 ```
 
 ### Journal

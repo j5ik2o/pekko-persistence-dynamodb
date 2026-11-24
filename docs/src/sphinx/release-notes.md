@@ -39,6 +39,14 @@ the plugin did not change beyond the variation between runs; the latency and the
 not measured. A throttled `PutItem` is retried by the AWS SDK, where a `BatchWriteItem` left unprocessed items for the
 plugin to send again.
 
+The IAM policy of the plugin must allow `dynamodb:PutItem` and `dynamodb:DeleteItem` on the journal and snapshot
+tables, and `dynamodb:GetItem`, which reads the persistence id that holds a conflicting key. A policy that allowed only
+`dynamodb:BatchWriteItem` for multi-row writes and for snapshot deletes fails with an access-denied error after the
+upgrade. `dynamodb:BatchWriteItem` is no longer used.
+
+A write whose event conflicts deletes the other new events of the same `persistAll` again, so a restarted actor does
+not replay part of it.
+
 `JournalRowStoreException.BatchWriteRetriesExhausted` and `SnapshotStoreException.BatchWriteRetriesExhausted` are no
 longer raised by the stores. They remain in the API.
 

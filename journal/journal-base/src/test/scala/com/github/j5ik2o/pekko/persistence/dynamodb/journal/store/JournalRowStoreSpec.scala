@@ -475,7 +475,7 @@ final class JournalRowStoreSpec extends AnyFreeSpec with Matchers with BeforeAnd
     run(store.read(idB, None, SequenceNumber(1), None, None)) shouldBe empty
   }
 
-  "write refuses a multi-row write when one row conflicts, and writes the rows that do not" in {
+  "write refuses a multi-row write when one row conflicts, and leaves none of its new rows" in {
     val fixture = newFixture()
     val store   = sharedKeyStore(fixture.adapter)
     run(store.write(Seq(JournalTestSupport.row(idA, 2L, "a2"))))
@@ -488,6 +488,8 @@ final class JournalRowStoreSpec extends AnyFreeSpec with Matchers with BeforeAnd
     failure shouldBe a[JournalRowStoreException.KeyConflict]
     failure.asInstanceOf[JournalRowStoreException.KeyConflict].sequenceNr shouldBe 2L
     run(store.read(idA, None, SequenceNumber(3), None, None)).map(_.sequenceNumber.value) shouldBe Vector(2L)
+    run(store.read(idB, None, SequenceNumber(3), None, None)) shouldBe empty
+    run(store.highestSequenceNr(idB, None, None)) shouldBe Vector(None)
   }
 
   "write accepts a rewrite of an event of the same persistence id, such as a soft delete" in {

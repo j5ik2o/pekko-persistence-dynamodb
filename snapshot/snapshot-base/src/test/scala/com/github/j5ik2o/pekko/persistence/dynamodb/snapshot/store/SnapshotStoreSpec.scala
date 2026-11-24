@@ -462,6 +462,31 @@ final class SnapshotStoreSpec extends AnyFreeSpec with Matchers with ScalaFuture
       adapter.remainingRows should have size 1
     }
 
+    "refuses to delete a row of another persistence id under the key it resolves to, and keeps that row" in {
+      // The query for `sample` returns its own row, which an earlier release stored under another key, while the key
+      // that the resolvers give `sample` now holds the snapshot of `other` (issue #1009).
+      val keyOfSample = RowKey(
+        TableName("Snapshot"),
+        AttributeMap.of(schema.partitionKey -> DdbValue.Str("sample-1"), schema.sortKey -> DdbValue.Str("sample-5"))
+      )
+      val oldKeyOfSample = RowKey(
+        TableName("Snapshot"),
+        AttributeMap.of(schema.partitionKey -> DdbValue.Str("sample-1"), schema.sortKey -> DdbValue.Str("old-5"))
+      )
+      val rowOfOther  = shardedItem.updated(schema.persistenceId, DdbValue.Str("other"))
+      val rowOfSample = shardedItem.updated(schema.sortKey, DdbValue.Str("old-5"))
+      val adapter     = new StatefulDeleteAdapter(Map(keyOfSample -> rowOfOther, oldKeyOfSample -> rowOfSample))
+      val store =
+        new SnapshotStore(adapter, new SnapshotRowCodec(schema, sharded), consistentRead = false, 25, writeBackoff)
+
+      store.delete(PersistenceId("sample"), SequenceNumber(5)).runWith(Sink.ignore).futureValue
+
+      adapter.operations.collect { case delete: Operation.Delete => delete } shouldBe Vector(
+        Operation.Delete(TableName("Snapshot"), keyOfSample, sameRowOrNone(schema.partitionKey, "sample"))
+      )
+      adapter.remainingRows.get(keyOfSample) shouldBe Some(rowOfOther)
+    }
+
     "writes nothing when the delete query returns no rows" in {
       val adapter = adapterReturning(Vector.empty)
       val store =
