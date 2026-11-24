@@ -34,8 +34,7 @@ object ModuleBoundaryCheck {
     "state/state-v1"       -> ModuleKind.SdkHolding,
     "state/state-v2"       -> ModuleKind.SdkHolding,
     "test"                 -> ModuleKind.SdkHolding,
-    "example"              -> ModuleKind.SdkHolding,
-    "metrics/metrics-v2"   -> ModuleKind.SdkHolding
+    "example"              -> ModuleKind.SdkHolding
   )
 
   def kindOf(path: String): ModuleKind =
