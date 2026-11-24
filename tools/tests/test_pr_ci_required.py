@@ -1,6 +1,7 @@
 """Tests for the "Verify required results" step of the PR CI Required job in ci.yml."""
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import tempfile
@@ -44,14 +45,23 @@ class PrCiRequiredTests(unittest.TestCase):
         bin_dir.mkdir()
         self.calls = self.root / "calls"
         # The fake jobs API answers read N from reads/N.json, or from the last file.
-        # reads/N.fail makes read N fail with that file's text on stderr.
+        # reads/N.fail makes read N exit 1 with that file's text on stderr, after
+        # printing reads/N.json when it exists.
         (bin_dir / "gh").write_text(
             '#!/bin/sh\necho "$*" >> "$CALLS"\nn=$(wc -l < "$CALLS" | tr -d " ")\n'
-            'if [ -f "$READS/$n.fail" ]; then cat "$READS/$n.fail" >&2; exit 1; fi\n'
+            'if [ -f "$READS/$n.fail" ]; then\n'
+            '  [ -f "$READS/$n.json" ] && cat "$READS/$n.json"; cat "$READS/$n.fail" >&2; exit 1\n'
+            'fi\n'
             'f="$READS/$n.json"; [ -f "$f" ] || f=$(ls "$READS"/*.json | sort -n | tail -n 1)\n'
             'cat "$f"\n')
         (bin_dir / "sleep").write_text("#!/bin/sh\n")
-        for tool in ("gh", "sleep"):
+        # Like jq 1.6, this jq exits 0 on empty input even with -e.
+        real_jq = shutil.which("jq")
+        (bin_dir / "jq-1.6").write_text(
+            f'#!/bin/bash\ninput=$(cat)\n[ -z "$input" ] && exit 0\n'
+            # The original PATH keeps a version manager's jq shim from finding this file.
+            f'printf %s "$input" | PATH="{os.environ["PATH"]}" "{real_jq}" "$@"\n')
+        for tool in ("gh", "sleep", "jq-1.6"):
             (bin_dir / tool).chmod(0o755)
         self.reads = self.root / "reads"
         self.reads.mkdir()
@@ -108,8 +118,22 @@ class PrCiRequiredTests(unittest.TestCase):
         self.assert_passes_on_read_3()
 
     def test_reads_again_when_the_gh_api_call_fails(self):
+        self.answer_bad_reads_then_pass(lambda path: (
+            path.unlink(), path.with_suffix(".fail").write_text("API rate limit exceeded\n")))
+        self.assert_passes_on_read_3()
+
+    def test_reads_again_when_gh_fails_after_printing_a_passing_answer(self):
+        # Only the exit status says that this read failed.
         self.answer_bad_reads_then_pass(
-            lambda path: path.with_suffix(".fail").write_text("API rate limit exceeded\n"))
+            lambda path: path.with_suffix(".fail").write_text("gh: HTTP 502\n"))
+        self.assert_passes_on_read_3()
+
+    def test_reads_again_on_an_empty_response_with_a_jq_that_accepts_empty_input(self):
+        jq16 = self.root / "jq16"
+        jq16.mkdir()
+        (jq16 / "jq").symlink_to(self.root / "bin" / "jq-1.6")
+        self.env["PATH"] = f"{jq16}{os.pathsep}{self.env['PATH']}"
+        self.answer_bad_reads_then_pass(lambda path: path.write_text(""))
         self.assert_passes_on_read_3()
 
     def test_fails_when_a_job_stays_failed(self):
