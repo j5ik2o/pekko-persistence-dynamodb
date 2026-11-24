@@ -24,7 +24,7 @@ libraryDependencies += Seq(
 :height: 250px
 :name: tag-list
 
-Choose from the tag list in the Github repository
+Choose a release version from the GitHub tags list.
 ```
 
 The Journal and Snapshot plugins are independent and can be used separately. For example, you can use DynamoDB for Journal and another plugin for Snapshot. And vice versa.
