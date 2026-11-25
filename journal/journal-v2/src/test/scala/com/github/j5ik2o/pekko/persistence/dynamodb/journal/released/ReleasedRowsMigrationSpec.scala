@@ -31,6 +31,7 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.{ Files, Paths }
 import java.util.Locale
 import java.util.concurrent.TimeUnit
+import scala.concurrent.duration._
 import scala.jdk.CollectionConverters._
 
 object ReleasedRowsMigrationSpec extends DockerAssignedPort {
@@ -63,7 +64,7 @@ final class ReleasedRowsMigrationSpec extends AnyWordSpec with Matchers with Dyn
     val property = s"pekko-persistence-dynamodb.released-classpath.$version"
     val jars = sys.props.getOrElse(
       property,
-      fail(s"$property is not set; run the spec through sbt, which resolves the published plugins")
+      fail(s"$property is not set: run the spec through sbt, which resolves the published plugins (see its warnings)")
     )
     val driver = Paths.get(ReleasedRowsDriver.getClass.getProtectionDomain.getCodeSource.getLocation.toURI).toString
     // The published JARs come first, so that no class of this code base replaces one of them.
@@ -117,6 +118,8 @@ final class ReleasedRowsMigrationSpec extends AnyWordSpec with Matchers with Dyn
        |""".stripMargin
   }
 
+  private val driverTimeout = 5.minutes
+
   /** Runs `ReleasedRowsDriver` with `plugin` in a new JVM and returns the states that its `read` steps printed. */
   private def drive(plugin: Plugin, locale: Option[Locale], steps: String, ids: Seq[String]): Seq[(String, String)] = {
     val configFile = Files.createTempFile("released-rows", ".conf")
@@ -127,15 +130,31 @@ final class ReleasedRowsMigrationSpec extends AnyWordSpec with Matchers with Dyn
     val command = Seq(Paths.get(sys.props("java.home"), "bin", "java").toString, "-cp", plugin.classpath) ++
       localeOptions ++ Seq(s"-Dconfig.file=$configFile", ReleasedRowsDriver.getClass.getName.stripSuffix("$"), steps) ++
       ids
-    val process = new ProcessBuilder(command: _*).redirectErrorStream(true).start()
-    val output  = scala.io.Source.fromInputStream(process.getInputStream, "UTF-8").getLines().toVector
-    val exited  = process.waitFor(5, TimeUnit.MINUTES)
-    Files.delete(configFile)
+    // The output goes to a file, so that the wait below bounds a driver that hangs, whatever it prints.
+    val outputFile = Files.createTempFile("released-rows", ".out")
+    val (exited, exitValue, output) =
+      try {
+        val process =
+          new ProcessBuilder(command: _*).redirectErrorStream(true).redirectOutput(outputFile.toFile).start()
+        val exited = process.waitFor(driverTimeout.toSeconds, TimeUnit.SECONDS)
+        if (!exited) {
+          process.destroyForcibly()
+          process.waitFor(30, TimeUnit.SECONDS)
+        }
+        (
+          exited,
+          if (exited) process.exitValue() else -1,
+          Files.readAllLines(outputFile, StandardCharsets.UTF_8).asScala.toVector
+        )
+      } finally {
+        Files.delete(configFile)
+        Files.delete(outputFile)
+      }
     val states = output.filter(_.startsWith("STATE\t")).map(_.split('\t')).map(f => s"${f(1)} ${f(2)}" -> f(3))
     info(s"${plugin.label} ($steps): ${states.map { case (k, v) => s"$k $v" }.mkString("; ")}")
     withClue(s"${plugin.label}, $steps:\n${output.filterNot(_.startsWith("STATE\t")).mkString("\n")}\n") {
-      exited shouldBe true
-      process.exitValue() shouldBe 0
+      withClue(s"the driver did not end within $driverTimeout and was stopped: ") { exited shouldBe true }
+      exitValue shouldBe 0
     }
     states
   }
@@ -230,6 +249,29 @@ final class ReleasedRowsMigrationSpec extends AnyWordSpec with Matchers with Dyn
     }.toSet
   }
 
+  /** The attributes of each row except its key, by persistence id and sequence number. A move changes only the key, so
+    * these stay equal across a migration, also for the soft-deleted events, which no replay reads.
+    */
+  private def values(table: String): Map[(String, String), Map[String, AttributeValue]] =
+    dynamoDBClient
+      .scan(new ScanRequest(table).withConsistentRead(true))
+      .getItems
+      .asScala
+      .map { item =>
+        val row = item.asScala.toMap
+        (row("persistence-id").getS, row("sequence-nr").getN) -> (row - "pkey" - "skey")
+      }
+      .toMap
+
+  private def migrateBothKeepingValues(locale: Option[Locale], reverse: Boolean): (Set[String], Set[String]) = {
+    val journalValues  = values(journalTableName)
+    val snapshotValues = values(snapshotTableName)
+    val moved          = migrateBoth(locale, reverse)
+    values(journalTableName) shouldBe journalValues
+    values(snapshotTableName) shouldBe snapshotValues
+    moved
+  }
+
   private def sortKeys(table: String): Seq[String] =
     dynamoDBClient.scan(new ScanRequest(table).withConsistentRead(true)).getItems.asScala.map(_.get("skey").getS).toSeq
 
@@ -267,7 +309,7 @@ final class ReleasedRowsMigrationSpec extends AnyWordSpec with Matchers with Dyn
       }
     }
 
-    migrateBoth(locale, reverse = false) shouldBe ((forwardMovers, forwardMovers))
+    migrateBothKeepingValues(locale, reverse = false) shouldBe ((forwardMovers, forwardMovers))
     shapes(journalTableName) shouldBe journalShapes
     shapes(snapshotTableName) shouldBe snapshotShapes
 
@@ -276,7 +318,7 @@ final class ReleasedRowsMigrationSpec extends AnyWordSpec with Matchers with Dyn
     shapes(journalTableName) shouldBe journalShapes
     shapes(snapshotTableName) shouldBe snapshotShapes
 
-    migrateBoth(locale, reverse = true) shouldBe ((reverseMovers, reverseMovers))
+    migrateBothKeepingValues(locale, reverse = true) shouldBe ((reverseMovers, reverseMovers))
 
     drive(released("1.3.0"), locale, "read,mutate,read", ids) shouldBe mutatedOnce(ids) ++ mutatedTwice(ids)
     shapes(journalTableName) shouldBe journalShapes

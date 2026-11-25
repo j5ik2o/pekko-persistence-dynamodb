@@ -37,13 +37,19 @@ object ReleasedPlugins {
               )
             )
         )
-        val report = lm.update(descriptor, UpdateConfiguration(), UnresolvedWarningConfiguration(), log) match {
-          case Right(r) => r
-          case Left(w)  => throw w.resolveException
+        // A release that does not resolve (offline, without it in the cache) leaves its property unset, so that the
+        // other suites of the module still run; ReleasedRowsMigrationSpec then fails and names the property.
+        lm.update(descriptor, UpdateConfiguration(), UnresolvedWarningConfiguration(), log) match {
+          case Right(report) =>
+            Some(
+              version -> report
+                .select(configurationFilter("compile"), moduleFilter(), artifactFilter(`type` = types)).distinct
+            )
+          case Left(warning) =>
+            log.warn(s"the published plugins of $version did not resolve: ${warning.resolveException.getMessage}")
+            None
         }
-        version -> report
-          .select(configurationFilter("compile"), moduleFilter(), artifactFilter(`type` = types)).distinct
-      }
+      }.flatten
     },
     Test / javaOptions ++= releasedPluginClasspaths.value.map { case (version, jars) =>
       s"-D${property(version)}=${jars.map(_.getAbsolutePath).mkString(java.io.File.pathSeparator)}"
