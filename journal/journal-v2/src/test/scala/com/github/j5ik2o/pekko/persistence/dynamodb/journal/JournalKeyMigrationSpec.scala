@@ -833,7 +833,7 @@ final class JournalKeyMigrationSpec extends AnyWordSpec with Matchers with Dynam
       SnapshotKeyMigration.run(args, config(plain), lines += _).candidates should have size 1
       lines.filter(_.contains("key migration (forward)")).foreach(_ should startWith("[dry-run] "))
       rows(journalTableName, id).map(r => (r.pkey, r.skey)) shouldBe (1L to 3L).map(journalKey(v130, id, _))
-      lines.exists(_.contains("legacy-keys-enabled = false: not safe")) shouldBe true
+      lines.exists(_.contains("is safe")) shouldBe false // only --verify says it
       the[IllegalArgumentException] thrownBy JournalKeyMigration.run(
         "--execute" +: args,
         config(plain),
@@ -842,20 +842,21 @@ final class JournalKeyMigrationSpec extends AnyWordSpec with Matchers with Dynam
       val execute = Seq("--execute", "--writers-stopped") ++ args
       JournalKeyMigration.run(execute, config(plain), lines += _).moved shouldBe 3
       SnapshotKeyMigration.run(execute, config(plain), lines += _).moved shouldBe 1
-      lines.count(
-        _.contains("the persistence-id index matches the table for the 1 selected persistence ids")
-      ) shouldBe 2
-      lines.count(
-        _ == "complete for the selected persistence ids; the rows of the other persistence ids were not checked"
-      ) shouldBe 2
+      lines.count(_.contains("run --verify, without --persistence-id")) should be >= 4
+      lines.exists(_.contains("complete")) shouldBe false
       underNewKeys(plain, id)
-      val after   = JournalKeyMigration.run(args, config(plain), lines += _)
-      val verdict = lines.filter(_.contains("legacy-keys-enabled = false:")).last
-      after.candidates shouldBe empty
-      // With --persistence-id, the verdict covers the whole table, where `other` still has rows of 1.3.0.
-      after.outsideToMove should be >= 3L
-      verdict should include("not safe")
-      verdict should include("outside the selection")
+      JournalKeyMigration.run(args, config(plain), lines += _).candidates shouldBe empty
+      // --verify reads the whole table, where `CliOther` still has rows of 1.3.0, so it does not pass.
+      val verified = JournalKeyMigration.verify(Seq("--verify", "--verify-timeout", "5"), config(plain), lines += _)
+      verified.toMove should be >= 3L
+      verified.verified shouldBe false
+      lines.exists(_.contains("[verify] not verified")) shouldBe true
+      lines.exists(_.contains("is safe")) shouldBe false
+      an[IllegalArgumentException] should be thrownBy JournalKeyMigration.verify(
+        Seq("--verify", "--persistence-id", id),
+        config(plain),
+        _ => ()
+      )
       lines.foreach(line => info(line))
       an[IllegalArgumentException] should be thrownBy JournalKeyMigration.run(Seq("--bogus"), config(plain), _ => ())
       an[IllegalArgumentException] should be thrownBy JournalKeyMigration.run(Seq("--max-rate"), config(plain), _ => ())
@@ -947,6 +948,18 @@ final class JournalKeyMigrationSpec extends AnyWordSpec with Matchers with Dynam
       val dry  = measure(execute = false)
       val exec = measure(execute = true)
       val done = measure(execute = false)
+      val verify = com.github.j5ik2o.pekko.persistence.dynamodb.migration.KeyVerification.run(
+        v2Client,
+        JournalKeyMigration.table(journalConfig(plain)),
+        journalConfig(plain).getJournalRowsIndexName,
+        JournalKeyMigration.plan(journalConfig(plain), reverse = false),
+        com.github.j5ik2o.pekko.persistence.dynamodb.migration.VerifySettings(timeout = 10.seconds)
+      )
+      info(
+        s"rows=$count verify (the whole table): scanned=${verify.scannedRows} ids=${verify.persistenceIds} " +
+        s"to-move=${verify.toMove} index-mismatch=${verify.indexMismatch.size} elapsed=${verify.elapsedMillis}ms " +
+        s"requests=${verify.usage.requests} capacity=${verify.usage.capacityUnits}"
+      )
       Seq("dry-run" -> dry, "execute" -> exec, "dry-run after" -> done).foreach { case (label, r) =>
         info(
           s"rows=$count $label: scanned=${r.scannedRows} to-move=${r.candidates.size} moved=${r.moved} " +

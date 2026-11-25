@@ -188,6 +188,7 @@ final class KeyMigrationSpec extends AnyWordSpec with Matchers with DynamoDBCont
       after: Int => Unit = _ => (),
       down: AtomicBoolean = new AtomicBoolean(false),
       query: QueryRequest => Option[QueryResponse] = _ => None,
+      indexScan: ScanResponse => ScanResponse = identity,
       concurrent: AtomicInteger = new AtomicInteger(),
       maxConcurrent: AtomicInteger = new AtomicInteger(),
       scans: java.util.concurrent.ConcurrentLinkedQueue[ScanRequest] = new java.util.concurrent.ConcurrentLinkedQueue()
@@ -208,9 +209,13 @@ final class KeyMigrationSpec extends AnyWordSpec with Matchers with DynamoDBCont
               case _              =>
             }
             val faked = args.headOption.collect { case r: QueryRequest => query(r) }.flatten
+            def scanned(result: AnyRef): AnyRef = (args.headOption, result) match {
+              case (Some(r: ScanRequest), response: ScanResponse) if r.indexName() != null => indexScan(response)
+              case _                                                                       => result
+            }
             if (transaction) maxConcurrent.accumulateAndGet(concurrent.incrementAndGet(), math.max)
             val result =
-              try faked.getOrElse(method.invoke(client, Option(args).getOrElse(Array.empty[AnyRef]): _*))
+              try faked.getOrElse(scanned(method.invoke(client, Option(args).getOrElse(Array.empty[AnyRef]): _*)))
               catch { case e: InvocationTargetException => throw e.getCause }
               finally if (transaction) concurrent.decrementAndGet()
             if (transaction) after(index)
@@ -253,8 +258,8 @@ final class KeyMigrationSpec extends AnyWordSpec with Matchers with DynamoDBCont
       rowAt(table, k(2)) shouldBe None
       rowAt(table, k(11)).get shouldBe (before ++ Map("pkey" -> s("p11"), "skey" -> s("s11")))
       rowAt(table, k(12)).get("deleted") shouldBe b(true)
-      // per move: one GetItem of the target key before the moves, one GetItem of the row, and one TransactWriteItems
-      report.usage.requests("GetItem") shouldBe 4
+      // per move: one consistent GetItem of the row and one TransactWriteItems
+      report.usage.requests("GetItem") shouldBe 2
       report.usage.requests("TransactWriteItems") shouldBe 2
       val again = run(journal(table), p, execute = true)
       again.candidates shouldBe empty
@@ -275,7 +280,7 @@ final class KeyMigrationSpec extends AnyWordSpec with Matchers with DynamoDBCont
       owner(table, k(1)) shouldBe None
     }
 
-    "swap rows that hold each other's target keys in one transaction" in {
+    "leave rows that hold each other's target keys where they are, and list them" in {
       val table = newTable()
       putRow(table, k(1), "A", 1)
       putRow(table, k(2), "B", 1)
@@ -287,14 +292,15 @@ final class KeyMigrationSpec extends AnyWordSpec with Matchers with DynamoDBCont
         plan(("A", 1L) -> k(2), ("B", 1L) -> k(1), ("C", 1L) -> k(4), ("D", 1L) -> k(5), ("E", 1L) -> k(3))
       val dry = run(journal(table), p, execute = false)
       dry.cycles.map(_.size).sorted shouldBe Seq(2, 3)
+      dry.directMoves shouldBe 0
       val report = run(journal(table), p, execute = true)
-      report.swapped shouldBe 5
-      report.remaining shouldBe empty
-      Seq(1 -> "B", 2 -> "A", 3 -> "E", 4 -> "C", 5 -> "D").foreach { case (key, id) =>
+      report.moved shouldBe 0
+      report.remaining should have size 5
+      report.remaining.foreach(_._2 should include("does not swap"))
+      report.incomplete shouldBe true
+      Seq(1 -> "A", 2 -> "B", 3 -> "C", 4 -> "D", 5 -> "E").foreach { case (key, id) =>
         owner(table, k(key)) shouldBe Some(id -> 1L)
       }
-      allRows(table) should have size 5
-      run(journal(table), p, execute = false).candidates shouldBe empty
     }
 
     "leave a row whose target key holds a row of another persistence id that does not move, and list it" in {
@@ -537,63 +543,21 @@ final class KeyMigrationSpec extends AnyWordSpec with Matchers with DynamoDBCont
       owner(table, k(3)) shouldBe Some("A" -> 1L)
     }
 
-    "list a row whose target key a swap fills as blocked" in {
+    "list a row that waits for a row in a cycle" in {
       val table = newTable()
       putRow(table, k(1), "A", 1)
       putRow(table, k(2), "B", 1)
       putRow(table, k(3), "C", 1)
-      val p   = plan(("A", 1L) -> k(2), ("B", 1L) -> k(1), ("C", 1L) -> k(1))
+      putRow(table, k(4), "D", 1)
+      // A <-> B; D waits for A to leave key 1... A is in the cycle, so D waits for good
+      val p   = plan(("A", 1L) -> k(2), ("B", 1L) -> k(1), ("D", 1L) -> k(3), ("C", 1L) -> k(2))
       val dry = run(journal(table), p, execute = false)
       dry.cycles.map(_.map(_.persistenceId).sorted) shouldBe Seq(Seq("A", "B"))
       dry.orderedMoves shouldBe 0
-      dry.blocked.map(b => (b.candidate.persistenceId, b.occupantPersistenceId)) shouldBe Seq("C" -> "B")
+      dry.waiting.map(_.persistenceId) should contain("D")
       val report = run(journal(table), p, execute = true)
-      report.swapped shouldBe 2
-      report.remaining.map(_._1.persistenceId) shouldBe Seq("C")
-    }
-
-    "count a swap whose response was lost as swapped" in {
-      val table = newTable()
-      putRow(table, k(1), "A", 1)
-      putRow(table, k(2), "B", 1)
-      val lost   = new AtomicBoolean(false)
-      val c      = hooked(after = _ => if (lost.compareAndSet(false, true)) throw SdkClientException.create("lost"))
-      val report = run(journal(table), plan(("A", 1L) -> k(2), ("B", 1L) -> k(1)), execute = true, c = c)
-      report.swapped shouldBe 2
-      report.remaining shouldBe empty
-      owner(table, k(1)) shouldBe Some("B" -> 1L)
-      owner(table, k(2)) shouldBe Some("A" -> 1L)
-    }
-
-    "move the rest of a cycle that another writer broke" in {
-      val table = newTable()
-      putRow(table, k(1), "A", 1)
-      putRow(table, k(2), "B", 1)
-      val c = hooked(before =
-        index =>
-          if (index == 1)
-            client.deleteItem(
-              DeleteItemRequest.builder().tableName(table).key(Map("pkey" -> s("p2"), "skey" -> s("s2")).asJava).build()
-            )
-      )
-      val report = run(journal(table), plan(("A", 1L) -> k(2), ("B", 1L) -> k(1)), execute = true, c = c)
-      report.moved shouldBe 1
-      report.alreadyGone shouldBe 1
-      report.remaining shouldBe empty
-      allRows(table).map(r => (r("skey").s(), r("persistence-id").s())) shouldBe Vector("s2" -> "A")
-    }
-
-    "not swap rows that do not fit in one transaction" in {
-      val table = newTable()
-      val big = AttributeValue
-        .builder().b(software.amazon.awssdk.core.SdkBytes.fromByteArray(Array.fill(390 * 1024)(1.toByte))).build()
-      (1 to 11).foreach(i => putRow(table, k(i), s"P$i", 1, "message" -> big))
-      val p      = plan((1 to 11).map(i => (s"P$i", 1L) -> k(i % 11 + 1)): _*)
-      val report = run(journal(table), p, execute = true)
-      report.swapped shouldBe 0
-      report.remaining should have size 11
-      report.remaining.head._2 should include("more than")
-      (1 to 11).foreach(i => owner(table, k(i)) shouldBe Some(s"P$i" -> 1L))
+      report.moved shouldBe 0
+      report.remaining.map(_._1.persistenceId).sorted shouldBe Seq("A", "B", "C", "D")
     }
 
     "list a row that would exceed the item size of DynamoDB under its new key" in {
@@ -608,32 +572,6 @@ final class KeyMigrationSpec extends AnyWordSpec with Matchers with DynamoDBCont
       report.remaining should have size 1
       report.remaining.head._2 should include("rejected")
       owner(table, k(1)) shouldBe Some("A" -> 1L)
-    }
-
-    "wait until the index shows the moved rows, and report the ids that it does not show" in {
-      val table   = newTable(index = true)
-      val indexed = journal(table).copy(readIndex = Some("rows"))
-      putRow(table, k(1), "A", 1)
-      putRow(table, k(2), "B", 1)
-      val p     = plan(("A", 1L) -> k(11), ("B", 1L) -> k(12))
-      val stale = new AtomicInteger()
-      // The index first returns the old keys, as DynamoDB does until it has applied the moves.
-      def staleRow(id: String, key: StoredKey) =
-        QueryResponse.builder().items(Map("pkey" -> s(key.partitionKey), "skey" -> s(key.sortKey)).asJava).build()
-      val c = hooked(query = r => {
-        val id = r.expressionAttributeValues().values().asScala.head.s()
-        if (id == "B" || stale.incrementAndGet() <= 2) Some(staleRow(id, if (id == "A") k(1) else k(2))) else None
-      })
-      val report = run(indexed, p, execute = true, c = c, settings = _.copy(indexWait = 3.seconds))
-      report.moved shouldBe 2
-      report.indexLagging shouldBe Seq("B")
-      report.incomplete shouldBe true
-      report.usage.requests("Query") should be > 3L
-      val clean = newTable(index = true)
-      putRow(clean, k(1), "A", 1)
-      val ok = run(journal(clean).copy(readIndex = Some("rows")), plan(("A", 1L) -> k(11)), execute = true)
-      ok.indexLagging shouldBe empty
-      ok.incomplete shouldBe false
     }
 
     "report the shared-key groups of snapshots without counting the sequence numbers between them as missing" in {
@@ -653,21 +591,6 @@ final class KeyMigrationSpec extends AnyWordSpec with Matchers with DynamoDBCont
       journalLines should include("99 missing")
     }
 
-    "say whether legacy-keys-enabled = false is safe" in {
-      val table = newTable()
-      putRow(table, k(1), "A", 1)
-      putRow(table, k(2), "C", 1)
-      def line(p: KeyPlan) =
-        KeyMigration
-          .render(run(journal(table), p, execute = false), "test", legacyKeysCheck = true).filter(
-            _.contains("legacy-keys-enabled")
-          )
-      line(plan()) shouldBe Seq(
-        "[dry-run] legacy-keys-enabled = false: safe; no row is left under an old key (0 to move, 0 blocked, 0 not movable)"
-      )
-      line(plan(("A", 1L) -> k(2))).head should include("not safe; 1 rows to move (1 of them blocked)")
-    }
-
     "fail an --execute that leaves a selected row that cannot move (review of #1025, round 3)" in {
       val table = newTable()
       putRow(table, k(1), "A", 1)
@@ -679,50 +602,7 @@ final class KeyMigrationSpec extends AnyWordSpec with Matchers with DynamoDBCont
       val report = run(journal(table), unmovable, execute = true)
       report.unmovable should have size 1
       report.incomplete shouldBe true
-      KeyMigration.render(report, "test").mkString("\n") should include("not complete")
-    }
-
-    "not say that legacy-keys-enabled = false is safe when other ids, outside the selection, still have rows to move" in {
-      val table = newTable()
-      putRow(table, k(1), "A", 1)
-      putRow(table, k(2), "B", 1)
-      val p      = plan(("B", 1L) -> k(12))
-      val report = run(journal(table), p, execute = false, settings = _.copy(persistenceIds = Some(Set("A"))))
-      report.candidates shouldBe empty
-      report.noRowLeftBehind shouldBe false
-      val lines = KeyMigration.render(report, "test", legacyKeysCheck = true).mkString("\n")
-      lines should include("not safe")
-      lines should include("outside the selection")
-    }
-
-    "check the index also for the rows that a stopped run moved, when it runs again" in {
-      val table   = newTable(index = true)
-      val indexed = journal(table).copy(readIndex = Some("rows"))
-      putRow(table, k(1), "A", 1)
-      putRow(table, k(2), "B", 1)
-      val p = plan(("A", 1L) -> k(11), ("B", 1L) -> k(12))
-      // The first run moves both rows and stops before the index catches up.
-      val first = run(
-        indexed,
-        p,
-        execute = true,
-        c = hooked(query =
-          r => Some(QueryResponse.builder().items(Map("pkey" -> s("p1"), "skey" -> s("s1")).asJava).build())
-        ),
-        settings = _.copy(indexWait = 1.second)
-      )
-      first.indexLagging should not be empty
-      // The second run finds nothing to move; the index still lags for A, and the run must not report success.
-      val stale = hooked(query = r => {
-        val id = r.expressionAttributeValues().values().asScala.head.s()
-        if (id == "A") Some(QueryResponse.builder().items(Map("pkey" -> s("p1"), "skey" -> s("s1")).asJava).build())
-        else None
-      })
-      val again = run(indexed, p, execute = true, c = stale, settings = _.copy(indexWait = 1.second))
-      again.candidates shouldBe empty
-      again.indexLagging shouldBe Seq("A")
-      again.incomplete shouldBe true
-      run(indexed, p, execute = true).indexLagging shouldBe empty
+      KeyMigration.render(report, "test").mkString("\n") should include("not finished")
     }
 
     "move only the selected persistence ids" in {
@@ -738,6 +618,170 @@ final class KeyMigrationSpec extends AnyWordSpec with Matchers with DynamoDBCont
       report.moved shouldBe 1
       owner(table, k(1)) shouldBe Some("A" -> 1L)
       owner(table, k(12)) shouldBe Some("B" -> 1L)
+    }
+  }
+
+  "--verify" should {
+
+    def verify(
+        table: String,
+        p: KeyPlan,
+        c: DynamoDbClient = client,
+        settings: VerifySettings = VerifySettings(timeout = 2.seconds)
+    ): VerifyReport = {
+      val report = KeyVerification.run(c, journal(table), "rows", p, settings)
+      KeyVerification.render(report, "test", legacyKeysLine = true).foreach(line => info(line))
+      report
+    }
+
+    "pass when every row is under its key and the index matches the table" in {
+      val table = newTable(index = true)
+      putRow(table, k(1), "A", 1, "deleted" -> b(false))
+      putRow(table, k(2), "B", 1)
+      val report = verify(table, plan())
+      report.verified shouldBe true
+      report.persistenceIds shouldBe 2
+      KeyVerification.render(report, "test", legacyKeysLine = true).mkString("\n") should include(
+        "legacy-keys-enabled = false is safe"
+      )
+    }
+
+    "fail while a row is to move or not movable, wherever it is in the table" in {
+      val table = newTable(index = true)
+      putRow(table, k(1), "A", 1)
+      putRow(table, k(2), "B", 1)
+      verify(table, plan(("B", 1L) -> k(12))).toMove shouldBe 1
+      val unmovable = new KeyPlan {
+        override def placement(persistenceId: String, sequenceNr: Long, stored: StoredKey): Placement =
+          if (persistenceId == "B") Placement.Unmovable("1.3.0 cannot build a key") else Placement.InPlace
+        override def sharedKeyGroup(persistenceId: String): Option[String] = None
+      }
+      val report = verify(table, unmovable)
+      report.notMovable shouldBe 1
+      report.verified shouldBe false
+      KeyVerification.render(report, "test", legacyKeysLine = true).mkString("\n") should not include "is safe"
+    }
+
+    "fail while the index shows a merged row with its old value of deleted (review of #1025, round 4)" in {
+      val table = newTable(index = true)
+      putRow(table, k(1), "A", 1, "deleted" -> b(true))
+      putRow(table, k(2), "A", 1, "deleted" -> b(false))
+      run(journal(table), plan(("A", 1L) -> k(2)), execute = true).merged shouldBe 1
+      // The index has dropped key 1 but still shows key 2 with deleted = false.
+      def stale(item: java.util.Map[String, AttributeValue]) = {
+        val m = new java.util.HashMap[String, AttributeValue](item); m.put("deleted", b(false)); m
+      }
+      val c = hooked(
+        indexScan = r => r.toBuilder.items(r.items().asScala.map(stale).asJava).build(),
+        query = r =>
+          Some(
+            QueryResponse
+              .builder().items(
+                Map(
+                  "pkey"           -> s("p2"),
+                  "skey"           -> s("s2"),
+                  "persistence-id" -> s("A"),
+                  "sequence-nr"    -> n(1),
+                  "deleted"        -> b(false),
+                  "message"        -> rowAt(table, k(2)).get("message")
+                ).asJava
+              ).build()
+          )
+      )
+      val report = verify(table, plan(), c)
+      report.indexMismatch shouldBe Seq("A")
+      report.verified shouldBe false
+      verify(table, plan()).verified shouldBe true
+    }
+
+    "fail for the persistence id of a row that the table no longer holds but the index still shows" in {
+      val table = newTable(index = true)
+      putRow(table, k(2), "B", 1)
+      val ghost = Map("pkey" -> s("p1"), "skey" -> s("s1"), "persistence-id" -> s("A"), "sequence-nr" -> n(1)).asJava
+      val c = hooked(
+        indexScan = r => r.toBuilder.items((r.items().asScala :+ ghost).asJava).build(),
+        query = r =>
+          if (r.expressionAttributeValues().values().asScala.head.s() == "A")
+            Some(QueryResponse.builder().items(ghost).build())
+          else None
+      )
+      val report = verify(table, plan(), c)
+      report.indexMismatch shouldBe Seq("A")
+      report.verified shouldBe false
+    }
+
+    "check every persistence id, also those that an earlier run moved, after a lagging run and a filtered one" in {
+      val table = newTable(index = true)
+      putRow(table, k(1), "A", 1)
+      putRow(table, k(2), "B", 1)
+      val p = plan(("A", 1L) -> k(11), ("B", 1L) -> k(12))
+      run(journal(table), p, execute = true, settings = _.copy(persistenceIds = Some(Set("A"))))
+      run(
+        journal(table),
+        p,
+        execute = true,
+        settings = _.copy(persistenceIds = Some(Set("B")))
+      ).incomplete shouldBe false
+      // The index of A still shows the old key.
+      val staleA = Map(
+        "pkey"           -> s("p1"),
+        "skey"           -> s("s1"),
+        "persistence-id" -> s("A"),
+        "sequence-nr"    -> n(1),
+        "message"        -> rowAt(table, k(11)).get("message")
+      ).asJava
+      val c = hooked(
+        indexScan = r =>
+          r.toBuilder
+            .items(r.items().asScala.map(i => if (i.get("persistence-id").s() == "A") staleA else i).asJava).build(),
+        query = r =>
+          if (r.expressionAttributeValues().values().asScala.head.s() == "A")
+            Some(QueryResponse.builder().items(staleA).build())
+          else None
+      )
+      verify(table, p, c).indexMismatch shouldBe Seq("A")
+      verify(table, p).verified shouldBe true
+    }
+
+    "keep to --verify-timeout as a whole, also with a low --max-rate" in {
+      val table = newTable(index = true)
+      (1 to 30).foreach(i => putRow(table, k(i), s"P$i", 1))
+      val c = hooked(
+        indexScan = r => r.toBuilder.items(Seq.empty[java.util.Map[String, AttributeValue]].asJava).build(),
+        query = _ => Some(QueryResponse.builder().build())
+      )
+      val started = System.nanoTime()
+      val report  = verify(table, plan(), c, VerifySettings(timeout = 2.seconds, maxRate = Some(5.0)))
+      val seconds = (System.nanoTime() - started) / 1e9
+      seconds should be < 4.0
+      report.verified shouldBe false
+      report.indexMismatch should have size 30
+    }
+
+    "refuse a negative --verify-timeout, --persistence-id, and --execute" in {
+      an[IllegalArgumentException] should be thrownBy MigrationOptions.parse(Seq("--verify", "--verify-timeout", "-1"))
+      an[IllegalArgumentException] should be thrownBy MigrationOptions.parse(Seq("--verify", "--persistence-id", "A"))
+      an[IllegalArgumentException] should be thrownBy MigrationOptions.parse(
+        Seq("--verify", "--execute", "--writers-stopped")
+      )
+      an[IllegalArgumentException] should be thrownBy MigrationOptions.parse(Seq("--verify-timeout", "1"))
+      MigrationOptions.parse(Seq("--verify", "--verify-timeout", "0")).verify.map(_.timeout) shouldBe Some(
+        Duration.Zero
+      )
+    }
+  }
+
+  "the shared-key groups" should {
+    "not join different pairs of keys into one group" in {
+      // ("A", "B C") and ("A B", "C") both read "A B C" when the two keys are joined with a space.
+      def key(partition: String, body: String) = Some(StoredKey(partition, s"$body-0000000000000000001"))
+      val p = new ResolverKeyPlan(
+        (id, _) => if (id == "one") key("A", "B C") else key("A B", "C"),
+        (_, _) => None,
+        KeyForm.Release130,
+        reverse = false
+      )
+      p.sharedKeyGroup("one") should not be p.sharedKeyGroup("two")
     }
   }
 

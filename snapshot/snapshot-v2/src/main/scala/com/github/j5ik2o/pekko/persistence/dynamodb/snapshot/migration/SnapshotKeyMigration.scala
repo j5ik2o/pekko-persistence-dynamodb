@@ -130,20 +130,57 @@ object SnapshotKeyMigration {
       persistenceIdColumn = columns.persistenceIdColumnName,
       sequenceNrColumn = columns.sequenceNrColumnName,
       optionalColumns = Seq.empty,
-      readIndex = Some(pluginConfig.getSnapshotRowsIndexName),
       sequential = false,
       duplicates = DuplicateRule.LatestCreated(columns.createdColumnName)
     )
   }
 
   def main(args: Array[String]): Unit = {
-    val report = run(args.toSeq, ConfigFactory.load(), println)
-    // A run that left rows behind or did not see them in the index is not a success for a script that checks it.
-    if (report.incomplete) sys.exit(1)
+    // A run that left a selected row behind, or a check that did not pass, is not a success for a script.
+    val ok =
+      if (args.contains("--verify")) verify(args.toSeq, ConfigFactory.load(), println).verified
+      else !run(args.toSeq, ConfigFactory.load(), println).incomplete
+    if (!ok) sys.exit(1)
   }
 
-  /** Runs the tool with the given configuration and prints the report with `out`. */
-  private[dynamodb] def run(args: Seq[String], config: Config, out: String => Unit): MigrationReport = {
+  /** Moves the rows (a dry-run without `--execute`) and prints the report with `out`. */
+  private[dynamodb] def run(args: Seq[String], config: Config, out: String => Unit): MigrationReport =
+    withClient(args, config) { (options, pluginConfig, client) =>
+      require(options.verify.isEmpty, "use verify for --verify")
+      val prefix = if (options.settings.execute) "" else "[dry-run] "
+      val report = KeyMigration.run(
+        client,
+        table(pluginConfig),
+        plan(pluginConfig, options.reverse),
+        options.settings,
+        if (options.progress) text => Console.err.println(s"${prefix}snapshot key migration progress $text")
+        else _ => ()
+      )
+      KeyMigration.render(report, if (options.reverse) "reverse" else "forward").foreach(out)
+      report
+    }
+
+  /** Checks the whole table and its index (`--verify`) and prints the report with `out`. */
+  private[dynamodb] def verify(args: Seq[String], config: Config, out: String => Unit): VerifyReport =
+    withClient(args, config) { (options, pluginConfig, client) =>
+      val settings = options.verify.getOrElse(throw new IllegalArgumentException("verify needs --verify"))
+      val report = KeyVerification.run(
+        client,
+        table(pluginConfig),
+        pluginConfig.getSnapshotRowsIndexName,
+        plan(pluginConfig, options.reverse),
+        settings,
+        if (options.progress) text => Console.err.println(s"[verify] snapshot key migration progress $text")
+        else _ => ()
+      )
+      val legacyKeysLine = !options.reverse && configuredForm(pluginConfig) == KeyForm.PlainText
+      KeyVerification.render(report, if (options.reverse) "reverse" else "forward", legacyKeysLine).foreach(out)
+      report
+    }
+
+  private def withClient[T](args: Seq[String], config: Config)(
+      f: (MigrationOptions, SnapshotPluginConfig, software.amazon.awssdk.services.dynamodb.DynamoDbClient) => T
+  ): T = {
     val options = MigrationOptions.parse(args)
     // The tool connects with the plain v2 client whatever client-version the plugin uses: the moves bypass DAX, and
     // the v2 client builders accept only a v2 client-version.
@@ -154,27 +191,13 @@ object SnapshotKeyMigration {
     val system = ActorSystem("snapshot-key-migration", toolConfig)
     try {
       val pluginConfig  = SnapshotPluginConfig.fromConfig(system.settings.config.getConfig("j5ik2o.dynamo-db-snapshot"))
-      val keyPlan       = plan(pluginConfig, options.reverse)
       val pluginContext = SnapshotPluginContext(system, pluginConfig)
-      // The plain DynamoDB client of the v2 SDK, also for a DAX or v1 configuration: the moves bypass the DAX cache.
       val client = pluginContext
         .newDynamicAccessor[V2SyncClientFactory]()
         .createThrow(pluginConfig.v2SyncClientFactoryClassName)
         .create
-      try {
-        val prefix = if (options.settings.execute) "" else "[dry-run] "
-        val report = KeyMigration.run(
-          client,
-          table(pluginConfig),
-          keyPlan,
-          options.settings,
-          if (options.progress) text => Console.err.println(s"${prefix}snapshot key migration progress $text")
-          else _ => ()
-        )
-        val legacyKeysCheck = !options.reverse && configuredForm(pluginConfig) == KeyForm.PlainText
-        KeyMigration.render(report, if (options.reverse) "reverse" else "forward", legacyKeysCheck).foreach(out)
-        report
-      } finally client.close()
+      try f(options, pluginConfig, client)
+      finally client.close()
     } finally {
       system.terminate()
       ()

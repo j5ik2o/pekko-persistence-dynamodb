@@ -73,19 +73,28 @@ private[dynamodb] final class ResolverKeyPlan(
 
   /** The partition key and the sort key without the sequence number that 1.3.0 gave the id. */
   override def sharedKeyGroup(persistenceId: String): Option[String] =
-    release130(persistenceId, 1L).map(key => s"${key.partitionKey} ${key.sortKey.dropRight(20)}")
+    // The length of the partition key comes first, so two different pairs of keys never give the same text.
+    release130(persistenceId, 1L).map { key =>
+      s"${key.partitionKey.length}:${key.partitionKey}${key.sortKey.dropRight(20)}"
+    }
 }
 
 import scala.concurrent.duration._
 
 /** The command line options of the key migration tools. */
-private[dynamodb] final case class MigrationOptions(settings: MigrationSettings, reverse: Boolean, progress: Boolean)
+private[dynamodb] final case class MigrationOptions(
+    settings: MigrationSettings,
+    reverse: Boolean,
+    progress: Boolean,
+    verify: Option[VerifySettings] = None
+)
 
 private[dynamodb] object MigrationOptions {
 
   val usage: String =
     "options: [--execute --writers-stopped] [--reverse] [--progress] [--persistence-id <id>]... [--segments <n>] " +
-    "[--parallelism <n>] [--max-rate <rows per second>] [--scan-page-size <items>] [--index-wait <seconds>]"
+    "[--parallelism <n>] [--max-rate <rows per second>] [--scan-page-size <items>], or " +
+    "--verify [--reverse] [--verify-timeout <seconds>] [--segments <n>] [--max-rate <requests per second>]"
 
   /** The tool moves rows only while nothing else writes to or recovers from the table (issue #1014). */
   val writersStoppedRequired: String =
@@ -98,6 +107,8 @@ private[dynamodb] object MigrationOptions {
     var reverse  = false
     var progress = false
     var stopped  = false
+    var verify   = false
+    var timeout  = Option.empty[Int]
     var ids      = Set.empty[String]
     var rest     = args.toList
     def value(name: String, tail: List[String]): (String, List[String]) = tail match {
@@ -113,9 +124,12 @@ private[dynamodb] object MigrationOptions {
         case "--reverse" :: tail         => reverse = true; rest = tail
         case "--progress" :: tail        => progress = true; rest = tail
         case "--writers-stopped" :: tail => stopped = true; rest = tail
-        case (name @ "--index-wait") :: tail =>
+        case "--verify" :: tail          => verify = true; rest = tail
+        case (name @ "--verify-timeout") :: tail =>
           val (v, more) = value(name, tail)
-          settings = settings.copy(indexWait = number(name, v)(_.toInt).seconds); rest = more
+          val seconds   = number(name, v)(_.toInt)
+          if (seconds < 0) throw new IllegalArgumentException(s"$name must not be negative: $v")
+          timeout = Some(seconds); rest = more
         case (name @ "--persistence-id") :: tail =>
           val (v, more) = value(name, tail); ids += v; rest = more
         case (name @ "--segments") :: tail =>
@@ -133,11 +147,26 @@ private[dynamodb] object MigrationOptions {
         case Nil        =>
       }
     }
+    if (verify && settings.execute)
+      throw new IllegalArgumentException(s"--verify does not move rows; drop --execute. $usage")
+    if (verify && ids.nonEmpty)
+      throw new IllegalArgumentException("--verify checks the whole table, so it does not take --persistence-id")
+    if (timeout.nonEmpty && !verify) throw new IllegalArgumentException(s"--verify-timeout needs --verify. $usage")
     if (settings.execute && !stopped) throw new IllegalArgumentException(writersStoppedRequired)
     MigrationOptions(
       settings.copy(persistenceIds = if (ids.isEmpty) None else Some(ids)),
       reverse,
-      progress
+      progress,
+      if (verify)
+        Some(
+          VerifySettings(
+            timeout = timeout.getOrElse(300).seconds,
+            segments = settings.segments,
+            maxRate = settings.maxRate,
+            scanPageSize = settings.scanPageSize
+          )
+        )
+      else None
     )
   }
 }

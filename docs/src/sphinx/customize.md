@@ -332,24 +332,34 @@ $ sbt -batch "snapshot-v2/runMain com.github.j5ik2o.pekko.persistence.dynamodb.s
 | :-- | :-- |
 | `--execute` | Move the rows. Without it, the tool reports what it would do (dry-run). |
 | `--writers-stopped` | Required with `--execute`: every application that writes to or recovers from the tables is stopped. |
-| `--reverse` | Move the rows under the new keys back to the keys of 1.3.0. |
-| `--persistence-id <id>` | Move only the rows of these `persistenceId`s. Repeat it for more. |
-| `--max-rate <n>` | Move at most `n` rows a second, also within a swap (in a dry-run, check at most `n` target keys a second). |
+| `--verify` | Check the whole table and its `persistence-id` index, and move nothing (see below). |
+| `--verify-timeout <seconds>` | With `--verify`: the most time the whole check takes, waits included (default 300, at least 0). |
+| `--reverse` | Move the rows under the new keys back to the keys of 1.3.0, or, with `--verify`, check for the keys of 1.3.0. |
+| `--persistence-id <id>` | Move only the rows of these `persistenceId`s. Repeat it for more. `--verify` does not take it. |
+| `--max-rate <n>` | Move at most `n` rows a second (in a dry-run, check at most `n` target keys a second; with `--verify`, send at most `n` requests a second). |
 | `--parallelism <n>` | Move up to `n` rows at the same time (default 4). `--segments` does not change it. |
 | `--segments <n>` | Scan the table in `n` parallel segments (default 1). |
 | `--scan-page-size <n>` | Read at most `n` items per scan request. |
-| `--index-wait <seconds>` | After the moves, wait at most this long for the `persistence-id` index (default 120). |
 | `--progress` | Print the progress to the standard error. |
 
-The tools exit with 1 when `--execute` leaves a selected row unmoved, finds a selected row that cannot move (for
-example, with `--reverse`, a row of `order-`, which 1.3.0 cannot hold), or finds that the index does not match the table
-for a selected `persistenceId` in time, and with 0 otherwise. With `--persistence-id`, the exit code and the report
-cover only the selected `persistenceId`s. A dry-run exits with 0, and does not check the index.
+`--execute` exits with 1 when it leaves a selected row unmoved or finds a selected row that cannot move (for example,
+with `--reverse`, a row of `order-`, which 1.3.0 cannot hold), and with 0 otherwise. A dry-run exits with 0. Neither
+says that the table or the index is ready: they cover the selected rows only and do not read the index.
+
+`--verify` is the one check that says the application can start. It takes no `--persistence-id`: it scans the whole
+table, places every row, and scans the whole `persistence-id` index. It passes, and exits with 0, only when every row
+is under the key it belongs under (none to move, none blocked, none under an unknown key, none that cannot move), and
+when, for every `persistenceId`, the index shows the same rows as the table: the same keys and the same values of the
+attributes that the index projects, such as `deleted`, and no row that the table no longer holds. The index is updated
+asynchronously, so the `persistenceId`s that differ are queried again until they match or `--verify-timeout` passes;
+the timeout bounds the whole check, including the waits for `--max-rate`. With the PlainText resolvers, a forward
+`--verify` that passes also says that `legacy-keys-enabled = false` is safe. Otherwise it lists what does not match and
+exits with 1.
 
 The IAM policy of the tools needs, on the journal or the snapshot table: `dynamodb:Scan` and `dynamodb:GetItem` for a
-dry-run; and for `--execute` also `dynamodb:Query` on the `persistence-id` index, and
-`dynamodb:PutItem`, `dynamodb:DeleteItem`, `dynamodb:UpdateItem`, and `dynamodb:ConditionCheckItem`, which the actions
-of `TransactWriteItems` need.
+dry-run; for `--execute` also `dynamodb:PutItem`, `dynamodb:DeleteItem`, `dynamodb:UpdateItem`, and
+`dynamodb:ConditionCheckItem`, which the actions of `TransactWriteItems` need; and for `--verify`
+`dynamodb:DescribeTable`, `dynamodb:Scan`, and `dynamodb:Query` on the table and its `persistence-id` index.
 
 How a row moves: the tool scans the table with consistent reads and compares the stored key of each row with the key
 that the resolvers give its `persistenceId` and sequence number. A row under the key of 1.3.0 moves to the new key.
@@ -357,40 +367,32 @@ For each row, the tool reads it again and sends one `TransactWriteItems`: a `Put
 that the key holds no row, and a `Delete` under the old key on the condition that the row still has every attribute
 that was read. Both happen or neither does, so a run that stops leaves each row once, under its old key or its new
 key, and the next run continues. When a response is lost, the tool reads the keys again and counts a row that has left
-the old key as moved, and a swap whose rows are under their new keys as swapped. Running the tool again after it
-finished moves nothing.
+the old key as moved. Running the tool again after it finished moves nothing.
 
 - When the new key already holds the same event (the same `persistenceId` and sequence number), the tool keeps the row
   under the new key and deletes the old copy, in one transaction. The kept event is deleted when either copy was. For a
-  snapshot, the copy with the larger `created` is kept.
-- When the new key holds the old row of another `persistenceId` that moves too, the tool moves that row first. Rows that
-  hold each other's new keys are swapped in one transaction, up to 100 rows and 4 MB; a larger cycle is listed and not
-  moved.
-- When the new key holds a row of another `persistenceId` that does not move, or a swap moves another row into it, the
-  row stays and is listed. When two rows need the same new key, the one with the smaller stored key gets it, in the
-  dry-run and in `--execute` alike, and the other is listed. The dry-run lists such rows as blocked.
+  snapshot, the copy with the larger `created` is kept. `--verify` then checks the kept row in the index.
+- When the new key holds the old row of another `persistenceId` that moves too, the tool moves that row first.
+- When the new key holds a row of another `persistenceId` that does not move, the row stays and is listed. When two rows
+  need the same new key, the one with the smaller stored key gets it, in the dry-run and in `--execute` alike, and the
+  other is listed. The dry-run lists such rows as blocked.
+- Rows that hold each other's new keys (a cycle) are not moved: the tool lists them, and the rows that wait for them,
+  as remaining. Move them by hand, for example by moving one row of the cycle to a free key first.
 - A row under a key that is neither the key of 1.3.0, of issue #831, nor of the new format (for example a row written
   with another `shard-count`) is listed as not movable and not moved.
 - The dry-run does not read the items, so it cannot tell whether an item exceeds the 400 KB of DynamoDB under its
   longer new key. `--execute` lists such a row as remaining with the error of DynamoDB, and leaves it under the old key.
 - The JournalHead table is keyed by the `persistenceId` alone, so its items do not move and do not change.
-- After the moves, the tool queries the `persistence-id` index for every selected `persistenceId` that the scan found,
-  not only for those that this run moved, until the keys that the index shows are the keys that the table holds, for at
-  most `--index-wait`. A row that an earlier, stopped run moved is therefore checked too. The tool lists the
-  `persistenceId`s whose index did not match, and exits with 1. Before the moves, it reads each target key once to tell
-  a move onto a copy of the same row from a new one.
 
-The dry-run prints the rows to move per `persistenceId`, the blocked rows, the swaps, the copies to merge, the rows that
-are not moved, and the requests and the capacity units that DynamoDB reported. With the PlainText resolvers it ends with
-one line that says whether `legacy-keys-enabled = false` is safe: only when no row is to move, none is blocked, and
-none is under an unknown key, in the whole table. With `--persistence-id`, the tool still places the rows of the other
-`persistenceId`s, counts them in that line, and prints how many of them are to move or not movable. It also lists the `persistenceId`s that shared their keys in 1.3.0 (the same `prefix`,
-second part, and shard). For the journal, each comes with its highest sequence number and the sequence numbers below it
-that have no row. A missing number in such a group can be an event that the other `persistenceId` replaced up to 1.2.0,
-or one that a hard delete removed; the table cannot tell them apart, so check the missing numbers against your own
-records. For the snapshot store, which does not save every sequence number, the tool lists the group with the number of
-snapshots of each `persistenceId`. Events and snapshots that were replaced are not in the table, and the tool cannot
-bring them back.
+The dry-run prints the rows to move per `persistenceId`, the blocked rows, the cycles, the copies to merge, the rows
+that are not moved, and the requests and the capacity units that DynamoDB reported. With `--persistence-id`, it places
+only the rows of those `persistenceId`s. It also lists the `persistenceId`s that shared their keys in 1.3.0 (the same
+`prefix`, second part, and shard). For the journal, each comes with its highest sequence number and the sequence
+numbers below it that have no row. A missing number in such a group can be an event that the other `persistenceId`
+replaced up to 1.2.0, or one that a hard delete removed; the table cannot tell them apart, so check the missing numbers
+against your own records. For the snapshot store, which does not save every sequence number, the tool lists the group
+with the number of snapshots of each `persistenceId`. Events and snapshots that were replaced are not in the table, and
+the tool cannot bring them back.
 
 The steps:
 
@@ -398,23 +400,24 @@ The steps:
    runs, it writes under the old keys, misses the rows under the new keys when it deletes or updates (a hard delete
    leaves those events in the replay), and a `persistenceId` whose new key holds an old row of another `persistenceId`
    fails with `KeyConflict`. Replays read every row on both kinds of node.
-2. Run both tools without `--execute`, and read the blocked rows and the shared-key groups.
+2. Run both tools without `--execute`, and read the blocked rows, the cycles, and the shared-key groups.
 3. Stop every application that writes to or recovers from the tables.
-4. Run both tools with `--execute --writers-stopped`. Set `--max-rate` to what the table can take.
-5. Check that both tools exit with 0 and report `complete`. If a run stopped or the index did not match in time, run
-   the same `--execute` command again: it checks the index for every selected `persistenceId`, also for the rows that the
-   earlier run moved. Run both tools without `--execute` again and check that they report nothing to move. If you used
-   `--persistence-id`, the check covers only those `persistenceId`s; run without it before you start the application.
+4. Run both tools with `--execute --writers-stopped`, with or without `--persistence-id`. Set `--max-rate` to what the
+   table can take. If a run stops, run it again.
+5. Run both tools with `--verify`. Start the application only when both pass. If one does not, keep the application
+   stopped: run `--execute` again for the rows to move, resolve the blocked rows, the cycles, and the rows that are not
+   movable, or run `--verify` again later when only the index does not match yet.
 6. Start the application.
-7. Set `legacy-keys-enabled = false` only when the dry-run of both tools says that it is safe. A blocked row or a row
-   that is not movable stays under an old key, and with `false` deletes and updates do not reach it.
+7. Set `legacy-keys-enabled = false` only after a forward `--verify` of both tools passed. A blocked row or a row that is
+   not movable stays under an old key, and with `false` deletes and updates do not reach it.
 
-If the tool stops, run the same command again. To go back to 1.3.0, stop the application, run both tools with
-`--reverse --execute --writers-stopped`, switch the nodes to the resolvers of 1.3.0 (or to 1.3.0 itself), and start
-them. After `--reverse`, do not start nodes with the PlainText resolvers and `legacy-keys-enabled = false`: the rows are
-then under the old keys, which those nodes do not delete or update. A row cannot go back when 1.3.0 cannot build a key
-for its `persistenceId` (such as `order-`, or `.` as the separator), or when two `persistenceId`s share the key of
-1.3.0; such rows are listed and stay under the new key, where 1.3.0 replays them but does not delete or update them.
+To go back to 1.3.0: stop the application, run both tools with `--reverse --execute --writers-stopped`, and then with
+`--reverse --verify`. Only when both pass, switch the nodes to the resolvers of 1.3.0 (or to 1.3.0 itself) and start
+them. A row cannot go back when 1.3.0 cannot build a key for its `persistenceId` (such as `order-`, or `.` as the
+separator), or when two `persistenceId`s share the key of 1.3.0; then `--reverse --verify` does not pass. In that case
+stay with the new key format: start the nodes again with the PlainText resolvers and `legacy-keys-enabled = true`
+(the default), which handle the rows under both keys, and run the forward `--execute` and `--verify` before you set
+`legacy-keys-enabled = false` again.
 
 The rows of issue #831 (`skey` is the sequence number alone, written by releases before #831 for a `persistenceId`
 without the separator) move to `${persistenceId}-${sequenceNumber}` in both directions, the key that both formats give
@@ -430,9 +433,9 @@ numbers vary with the load of the machine):
 | 100,000 (50,000) | 18.1 s | 421 s | 8.0 s | 33 `Scan`, 50,000 `GetItem`, 50,000 `TransactWriteItems` | 8,371 read by the scan, 50,000 read, 200,000 written |
 | 100,000 (50,000), `--parallelism 16` | 18.4 s | 950 s | 7.9 s | the same | the same |
 
-The dry-run reads the table once and checks each target key with one `GetItem`. These runs were measured before the
-check of the index was added. `--execute` now also reads each target key once before the moves (one more `GetItem` per
-row to move) and queries the index once or more for each selected `persistenceId` after them. DynamoDB Local was the
+The dry-run reads the table once and checks each target key with one `GetItem`. `--verify` reads the whole table again (with
+consistent reads, so one read capacity unit per 4 KB) and the whole index once, and queries the index again only for
+the `persistenceId`s that differ; on DynamoDB Local it took 1.0 s for 10,000 rows of 1,000 `persistenceId`s (835 read capacity units for the table and 418 for the index). DynamoDB Local was the
 limit: 16 moves at a time were slower than 4. On DynamoDB, the time depends on the capacity of the table and on `--max-rate`.
 
 On DynamoDB, a scan with consistent reads consumes one read capacity unit per 4 KB read, so it reads the whole table
