@@ -1239,6 +1239,8 @@ journal-v2	journal/journal-v2/src/main/scala/com/github/j5ik2o/pekko/persistence
 journal-v2	journal/journal-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/head/MigrationPlan.scala	MigrationSource.Snapshot	override def target: SequenceNumber
 journal-v2	journal/journal-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/head/MigrationPlanner.scala		object MigrationPlanner
 journal-v2	journal/journal-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/head/MigrationPlanner.scala	MigrationPlanner	def plan( journal: Map[PersistenceId, SequenceNumber], snapshot: Option[Map[PersistenceId, SequenceNumber]], heads: Map[PersistenceId, SequenceNumber] ): MigrationPlan
+journal-v2	journal/journal-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/migration/JournalKeyMigration.scala		object JournalKeyMigration
+journal-v2	journal/journal-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/migration/JournalKeyMigration.scala	JournalKeyMigration	def main(args: Array[String]): Unit
 snapshot-base	snapshot/snapshot-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/config/package.scala		package object config
 snapshot-base	snapshot/snapshot-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/config/package.scala	config	type SnapshotColumnsDefConfig
 snapshot-base	snapshot/snapshot-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/config/package.scala	config	type SnapshotPluginConfig
@@ -1424,6 +1426,8 @@ snapshot-v2	snapshot/snapshot-v2/src/main/scala/com/github/j5ik2o/pekko/persiste
 snapshot-v2	snapshot/snapshot-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/snapshot/dao/V2DaxSnapshotDaoFactory.scala	V2DaxSnapshotDaoFactory	override def create( serialization: Serialization ): SnapshotDao
 snapshot-v2	snapshot/snapshot-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/snapshot/dao/V2SnapshotDaoFactory.scala		final class V2SnapshotDaoFactory(pluginContext: SnapshotPluginContext) extends SnapshotDaoFactory
 snapshot-v2	snapshot/snapshot-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/snapshot/dao/V2SnapshotDaoFactory.scala	V2SnapshotDaoFactory	override def create( serialization: Serialization ): SnapshotDao
+snapshot-v2	snapshot/snapshot-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/snapshot/migration/SnapshotKeyMigration.scala		object SnapshotKeyMigration
+snapshot-v2	snapshot/snapshot-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/snapshot/migration/SnapshotKeyMigration.scala	SnapshotKeyMigration	def main(args: Array[String]): Unit
 state-base	state/state-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/state/AkkaSerialized.scala		final case class AkkaSerialized(serializerId: Int, serializerManifest: Option[String], payload: Array[Byte])
 state-base	state/state-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/state/DynamoDBDurableStateStoreProvider.scala		final class DynamoDBDurableStateStoreProvider(system: ExtendedActorSystem) extends DurableStateStoreProvider
 state-base	state/state-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/state/DynamoDBDurableStateStoreProvider.scala		object DynamoDBDurableStateStoreProvider
