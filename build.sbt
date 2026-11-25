@@ -237,6 +237,8 @@ lazy val `journal-v2` = (project in file("journal/journal-v2"))
   .settings(
     publishedModuleSettings,
     name := "pekko-persistence-dynamodb-journal-v2",
+    // ReleasedRowsMigrationSpec runs the published plugins of earlier releases in a separate JVM (issue #1027).
+    ReleasedPlugins.settings,
     libraryDependencies ++= Seq(
       pekko.persistence(pekkoVersion),
       pekko.testkit(pekkoVersion)             % Test,

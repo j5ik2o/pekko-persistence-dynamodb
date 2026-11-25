@@ -385,9 +385,15 @@ Set each only after its own tool matched. Otherwise it lists what does not match
 
 The tools print the default format locale of their JVM when they start. The keys hold numbers in the digits of that
 locale, as the plugin writes them, so run the tools in a JVM with the locale of the application that wrote the rows;
-in a JVM whose digits differ (for example `ar-EG` and `en-US`), the tools list the rows as not movable. Rows that the
-published JARs wrote were not used in the tests; the keys of the releases are checked as fixed values
-([#1027](https://github.com/j5ik2o/pekko-persistence-dynamodb/issues/1027)).
+in a JVM whose digits differ (for example `ar-EG` and `en-US`), the tools list the rows as not movable.
+
+The tests run the tools on rows that the published JARs of 1.0.59 and 1.3.0 wrote to DynamoDB Local: events, a soft
+delete, and a snapshot of `persistenceId`s with no separator, one, and two, and for 1.3.0 also in a JVM with the locale
+`ar-EG` (`ReleasedRowsMigrationSpec`, [#1027](https://github.com/j5ik2o/pekko-persistence-dynamodb/issues/1027)). After
+the forward move, this release with the PlainText resolvers, and after `--reverse`, the published 1.3.0, replay the
+events, read the highest sequence number and the snapshot, and delete and write again. The tests do not cover
+`persistenceId`s that share their keys of 1.3.0, the JournalHead, the tags, the hard delete, or the releases between
+1.0.59 and 1.3.0.
 
 The IAM policy of the tools needs, on the journal or the snapshot table: `dynamodb:Scan` and `dynamodb:GetItem` for a
 dry-run; for `--execute` also `dynamodb:PutItem`, `dynamodb:DeleteItem`, `dynamodb:UpdateItem`, and
