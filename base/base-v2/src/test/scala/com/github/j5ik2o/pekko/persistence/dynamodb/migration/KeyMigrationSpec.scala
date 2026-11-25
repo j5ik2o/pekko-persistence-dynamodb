@@ -253,8 +253,8 @@ final class KeyMigrationSpec extends AnyWordSpec with Matchers with DynamoDBCont
       rowAt(table, k(2)) shouldBe None
       rowAt(table, k(11)).get shouldBe (before ++ Map("pkey" -> s("p11"), "skey" -> s("s11")))
       rowAt(table, k(12)).get("deleted") shouldBe b(true)
-      // one consistent GetItem of the row and one TransactWriteItems per move
-      report.usage.requests("GetItem") shouldBe 2
+      // per move: one GetItem of the target key before the moves, one GetItem of the row, and one TransactWriteItems
+      report.usage.requests("GetItem") shouldBe 4
       report.usage.requests("TransactWriteItems") shouldBe 2
       val again = run(journal(table), p, execute = true)
       again.candidates shouldBe empty
@@ -666,6 +666,63 @@ final class KeyMigrationSpec extends AnyWordSpec with Matchers with DynamoDBCont
         "[dry-run] legacy-keys-enabled = false: safe; no row is left under an old key (0 to move, 0 blocked, 0 not movable)"
       )
       line(plan(("A", 1L) -> k(2))).head should include("not safe; 1 rows to move (1 of them blocked)")
+    }
+
+    "fail an --execute that leaves a selected row that cannot move (review of #1025, round 3)" in {
+      val table = newTable()
+      putRow(table, k(1), "A", 1)
+      val unmovable = new KeyPlan {
+        override def placement(persistenceId: String, sequenceNr: Long, stored: StoredKey): Placement =
+          Placement.Unmovable("1.3.0 cannot build a key for this persistence id")
+        override def sharedKeyGroup(persistenceId: String): Option[String] = None
+      }
+      val report = run(journal(table), unmovable, execute = true)
+      report.unmovable should have size 1
+      report.incomplete shouldBe true
+      KeyMigration.render(report, "test").mkString("\n") should include("not complete")
+    }
+
+    "not say that legacy-keys-enabled = false is safe when other ids, outside the selection, still have rows to move" in {
+      val table = newTable()
+      putRow(table, k(1), "A", 1)
+      putRow(table, k(2), "B", 1)
+      val p      = plan(("B", 1L) -> k(12))
+      val report = run(journal(table), p, execute = false, settings = _.copy(persistenceIds = Some(Set("A"))))
+      report.candidates shouldBe empty
+      report.noRowLeftBehind shouldBe false
+      val lines = KeyMigration.render(report, "test", legacyKeysCheck = true).mkString("\n")
+      lines should include("not safe")
+      lines should include("outside the selection")
+    }
+
+    "check the index also for the rows that a stopped run moved, when it runs again" in {
+      val table   = newTable(index = true)
+      val indexed = journal(table).copy(readIndex = Some("rows"))
+      putRow(table, k(1), "A", 1)
+      putRow(table, k(2), "B", 1)
+      val p = plan(("A", 1L) -> k(11), ("B", 1L) -> k(12))
+      // The first run moves both rows and stops before the index catches up.
+      val first = run(
+        indexed,
+        p,
+        execute = true,
+        c = hooked(query =
+          r => Some(QueryResponse.builder().items(Map("pkey" -> s("p1"), "skey" -> s("s1")).asJava).build())
+        ),
+        settings = _.copy(indexWait = 1.second)
+      )
+      first.indexLagging should not be empty
+      // The second run finds nothing to move; the index still lags for A, and the run must not report success.
+      val stale = hooked(query = r => {
+        val id = r.expressionAttributeValues().values().asScala.head.s()
+        if (id == "A") Some(QueryResponse.builder().items(Map("pkey" -> s("p1"), "skey" -> s("s1")).asJava).build())
+        else None
+      })
+      val again = run(indexed, p, execute = true, c = stale, settings = _.copy(indexWait = 1.second))
+      again.candidates shouldBe empty
+      again.indexLagging shouldBe Seq("A")
+      again.incomplete shouldBe true
+      run(indexed, p, execute = true).indexLagging shouldBe empty
     }
 
     "move only the selected persistence ids" in {

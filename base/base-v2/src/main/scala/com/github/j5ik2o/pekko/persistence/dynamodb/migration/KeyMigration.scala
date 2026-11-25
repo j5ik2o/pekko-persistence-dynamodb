@@ -188,7 +188,12 @@ private[dynamodb] final case class MigrationReport(
     remaining: Seq[(Candidate, String)],
     indexLagging: Seq[String],
     usage: Usage,
-    elapsedMillis: Long
+    elapsedMillis: Long,
+    // rows of the persistence ids that --persistence-id left out: to move (blocked ones included), and not movable
+    outsideToMove: Long = 0,
+    outsideUnmovable: Long = 0,
+    filtered: Boolean = false,
+    indexChecked: Int = 0
 ) {
   def movesByPersistenceId: Seq[(String, Int)] =
     candidates.groupBy(_.persistenceId).map { case (id, rows) => id -> rows.size }.toSeq.sortBy(_._1)
@@ -197,10 +202,13 @@ private[dynamodb] final case class MigrationReport(
     * unknown key. Only then can `legacy-keys-enabled = false` be set without leaving a row that deletes and updates do
     * not reach.
     */
-  def noRowLeftBehind: Boolean = candidates.isEmpty && unmovable.isEmpty
+  def noRowLeftBehind: Boolean =
+    candidates.isEmpty && unmovable.isEmpty && outsideToMove == 0 && outsideUnmovable == 0
 
-  /** An `--execute` run that did not finish: a row was not moved, or the index did not show every moved row. */
-  def incomplete: Boolean = execute && (remaining.nonEmpty || indexLagging.nonEmpty)
+  /** An `--execute` run that did not finish: a selected row was not moved or cannot move, or the index does not match
+    * the table for a selected persistence id.
+    */
+  def incomplete: Boolean = execute && (remaining.nonEmpty || unmovable.nonEmpty || indexLagging.nonEmpty)
 }
 
 /** Moves journal or snapshot rows from the key that an earlier release gave them to the key they belong under (issue
@@ -263,14 +271,25 @@ private[dynamodb] object KeyMigration {
         s"${report.alreadyGone} already moved or deleted by another writer, ${report.remaining.size} remaining"
       )
       list("remaining rows (not moved):", report.remaining) { case (c, reason) => s"${c.describe}: $reason" }
+      val scope = if (report.filtered) "; the rows of the other persistence ids were not checked" else ""
       if (report.indexLagging.isEmpty)
-        line("the persistence-id index shows every moved row under its new key")
+        line(
+          s"the persistence-id index matches the table for the ${report.indexChecked} selected persistence ids$scope"
+        )
       else
         list(
-          "the persistence-id index did not show every moved row under its new key yet; do not start the " +
-          "application, and run a dry-run again later:",
+          "the persistence-id index does not match the table yet for these persistence ids; do not start the " +
+          "application, and run the same --execute command again:",
           report.indexLagging
         )(identity)
+      if (report.incomplete)
+        line(
+          s"not complete: ${report.remaining.size} rows remaining, ${report.unmovable.size} rows not movable, " +
+          s"${report.indexLagging.size} persistence ids whose index does not match the table"
+        )
+      else if (report.filtered)
+        line("complete for the selected persistence ids; the rows of the other persistence ids were not checked")
+      else line("complete")
     }
     list("rows that are not moved:", report.unmovable) { u =>
       s"${u.persistenceId}@${u.sequenceNr} ${u.stored}: ${u.reason}"
@@ -304,7 +323,15 @@ private[dynamodb] object KeyMigration {
           "legacy-keys-enabled = false: safe; no row is left under an old key (0 to move, 0 blocked, 0 not movable)"
         else
           s"legacy-keys-enabled = false: not safe; ${report.candidates.size} rows to move (" +
-          s"${report.blocked.size + report.waiting.size} of them blocked) and ${report.unmovable.size} rows not movable"
+          s"${report.blocked.size + report.waiting.size} of them blocked) and ${report.unmovable.size} rows not movable" +
+          (if (report.filtered)
+             s", and outside the selection ${report.outsideToMove} rows to move and ${report.outsideUnmovable} not movable"
+           else "")
+      )
+    if (!report.execute && report.filtered)
+      line(
+        s"outside the selection: ${report.outsideToMove} rows to move and ${report.outsideUnmovable} rows not movable " +
+        "(not listed, not moved)"
       )
     line(
       s"requests: ${report.usage.totalRequests}, consumed capacity units: " +
@@ -366,6 +393,24 @@ private[dynamodb] object KeyMigration {
     var rows: Long    = 0L
     var highest: Long = 0L
     val sequenceNrs   = new SequenceRanges
+    var keys          = KeyDigest.empty
+  }
+
+  /** The keys of the rows of one persistence id, as a count and a sum of 64-bit hashes, so that the keys that the index
+    * shows can be compared with those of the table without keeping every key.
+    */
+  private[migration] final case class KeyDigest(count: Long, sum: Long) {
+    def +(key: StoredKey): KeyDigest = KeyDigest(count + 1, sum + KeyDigest.hash(key))
+    def -(key: StoredKey): KeyDigest = KeyDigest(count - 1, sum - KeyDigest.hash(key))
+  }
+
+  private[migration] object KeyDigest {
+    val empty: KeyDigest = KeyDigest(0, 0)
+    def hash(key: StoredKey): Long = {
+      val text = key.partitionKey + "\u0000" + key.sortKey
+      (scala.util.hashing.MurmurHash3.stringHash(text, 0x9747b28c).toLong << 32) ^
+      (scala.util.hashing.MurmurHash3.stringHash(text, 0x5bd1e995).toLong & 0xffffffffL)
+    }
   }
 
   private final class RateLimiter(perSecond: Double) {
@@ -474,7 +519,10 @@ private[dynamodb] object KeyMigration {
       inPlace: Long,
       candidates: Vector[Candidate],
       unmovable: Vector[UnmovableRow],
-      groups: Vector[SharedKeyGroup]
+      groups: Vector[SharedKeyGroup],
+      digests: Map[String, KeyDigest],
+      outsideToMove: Long,
+      outsideUnmovable: Long
   )
 
   private final class Session(
@@ -529,22 +577,27 @@ private[dynamodb] object KeyMigration {
         remaining = Seq.empty,
         indexLagging = Seq.empty,
         usage = Usage(Map.empty, Map.empty),
-        elapsedMillis = 0
+        elapsedMillis = 0,
+        outsideToMove = scan.outsideToMove,
+        outsideUnmovable = scan.outsideUnmovable,
+        filtered = settings.persistenceIds.isDefined
       )
-      val report = if (settings.execute) execute(base) else dryRun(base)
+      val report = if (settings.execute) execute(base, scan.digests) else dryRun(base)
       report.copy(usage = usage.snapshot, elapsedMillis = (System.nanoTime() - started) / 1000000L)
     }
 
     // --- scan --------------------------------------------------------------------------------------------------
 
     private def scanTable(plan: KeyPlan): ScanResult = {
-      val lock       = new Object
-      var rows       = 0L
-      var inPlace    = 0L
-      val candidates = Vector.newBuilder[Candidate]
-      val unmovable  = Vector.newBuilder[UnmovableRow]
-      val stats      = mutable.HashMap.empty[String, IdStats]
-      val pages      = new AtomicLong()
+      val lock             = new Object
+      var rows             = 0L
+      var inPlace          = 0L
+      var outsideToMove    = 0L
+      var outsideUnmovable = 0L
+      val candidates       = Vector.newBuilder[Candidate]
+      val unmovable        = Vector.newBuilder[UnmovableRow]
+      val stats            = mutable.HashMap.empty[String, IdStats]
+      val pages            = new AtomicLong()
       def scanSegment(segment: Int): Unit = {
         var startKey = Option.empty[java.util.Map[String, AttributeValue]]
         var more     = true
@@ -579,15 +632,25 @@ private[dynamodb] object KeyMigration {
               s.rows += 1
               s.highest = math.max(s.highest, sequenceNr)
               s.sequenceNrs.add(sequenceNr)
+              s.keys = s.keys + stored
+              // Every row is placed, also outside the selection, so that a table-wide verdict counts it.
+              val placement = plan.placement(persistenceId, sequenceNr, stored)
               if (selected(persistenceId)) {
-                plan.placement(persistenceId, sequenceNr, stored) match {
+                placement match {
                   case Placement.InPlace => inPlace += 1
                   case Placement.Move(target, from) =>
                     candidates += Candidate(persistenceId, sequenceNr, stored, target, from)
                   case Placement.Unmovable(reason) =>
                     unmovable += UnmovableRow(persistenceId, sequenceNr, stored, reason)
                 }
-              } else inPlace += 1
+              } else {
+                inPlace += 1
+                placement match {
+                  case Placement.Move(_, _)   => outsideToMove += 1
+                  case Placement.Unmovable(_) => outsideUnmovable += 1
+                  case Placement.InPlace      =>
+                }
+              }
             }
           }
           startKey = Option(response.lastEvaluatedKey()).filterNot(_.isEmpty)
@@ -621,7 +684,17 @@ private[dynamodb] object KeyMigration {
         }
         .toVector
         .sortBy(_.ids.head.persistenceId)
-      ScanResult(rows, inPlace, candidates.result(), unmovable.result(), groups)
+      val digests = stats.collect { case (id, s) if selected(id) => id -> s.keys }.toMap
+      ScanResult(
+        rows,
+        inPlace,
+        candidates.result(),
+        unmovable.result(),
+        groups,
+        digests,
+        outsideToMove,
+        outsideUnmovable
+      )
     }
 
     // --- dry-run -----------------------------------------------------------------------------------------------
@@ -729,7 +802,7 @@ private[dynamodb] object KeyMigration {
 
     // --- execute -----------------------------------------------------------------------------------------------
 
-    private def execute(base: MigrationReport): MigrationReport = {
+    private def execute(base: MigrationReport, scanned: Map[String, KeyDigest]): MigrationReport = {
       val pending    = mutable.LinkedHashMap(base.candidates.map(c => c.from -> c): _*)
       val remaining  = mutable.ArrayBuffer.empty[(Candidate, String)]
       val moved      = new AtomicLong()
@@ -737,8 +810,22 @@ private[dynamodb] object KeyMigration {
       val gone       = new AtomicLong()
       var swapped    = 0L
       val cycleTries = mutable.HashMap.empty[Set[StoredKey], Int]
-      val done       = java.util.concurrent.ConcurrentHashMap.newKeySet[Candidate]()
-      var lastEmit   = System.nanoTime()
+      // What each row did, to work out the keys that the table holds after the run.
+      val placed                      = new java.util.concurrent.ConcurrentLinkedQueue[(Candidate, Boolean)]()
+      def movedTo(c: Candidate): Unit = placed.add((c, true))
+      def removed(c: Candidate): Unit = placed.add((c, false))
+      // A target key that already held the same row before the run is in the scan, so a move onto it adds no key.
+      val bySource = base.candidates.map(_.from).toSet
+      val preExisting: Set[Candidate] = Await
+        .result(
+          Future.traverse(base.candidates.filterNot(c => bySource.contains(c.to)).toVector) { c =>
+            Future(c -> read(c.to, projected = true).exists(isRowOf(_, c)))
+          },
+          Duration.Inf
+        )
+        .collect { case (c, true) => c }
+        .toSet
+      var lastEmit = System.nanoTime()
       def report(): Unit =
         if (System.nanoTime() - lastEmit > 5.seconds.toNanos) {
           lastEmit = System.nanoTime()
@@ -770,7 +857,11 @@ private[dynamodb] object KeyMigration {
                   case Gone   => gone.incrementAndGet()
                   case _      =>
                 }
-                if (outcome == Moved || outcome == Merged) done.add(c)
+                outcome match {
+                  case Moved         => movedTo(c)
+                  case Merged | Gone => removed(c)
+                  case _             =>
+                }
                 c -> outcome
               }
             },
@@ -793,11 +884,11 @@ private[dynamodb] object KeyMigration {
             swap(cycle) match {
               case SwapApplied =>
                 swapped += cycle.size
-                cycle.foreach { c => pending.remove(c.from); done.add(c) }
+                cycle.foreach { c => pending.remove(c.from); movedTo(c) }
                 progressMade = true
               case SwapBroken(left) =>
                 // A row of the cycle left its key, so the others no longer wait for each other: plan them again.
-                left.foreach { c => pending.remove(c.from); gone.incrementAndGet() }
+                left.foreach { c => pending.remove(c.from); gone.incrementAndGet(); removed(c) }
                 progressMade = true
               case SwapFailed(reason) =>
                 cycle.foreach { c =>
@@ -821,14 +912,21 @@ private[dynamodb] object KeyMigration {
         }
       }
       pending.values.foreach(c => remaining += c -> "waits for a row that did not move")
-      val lagging = waitForIndex(done.asScala.toVector)
+      // The keys of the table after the run: those of the scan, with the moves of this run applied. A row that an
+      // earlier run moved is in the scan under its new key, so its index is checked too.
+      val expected = placed.asScala.foldLeft(scanned) { case (digests, (c, moved)) =>
+        val d = digests.getOrElse(c.persistenceId, KeyDigest.empty) - c.from
+        digests.updated(c.persistenceId, if (moved && !preExisting.contains(c)) d + c.to else d)
+      }
+      val lagging = waitForIndex(expected)
       base.copy(
         moved = moved.get(),
         merged = merged.get(),
         swapped = swapped,
         alreadyGone = gone.get(),
         remaining = remaining.toVector,
-        indexLagging = lagging
+        indexLagging = lagging,
+        indexChecked = if (table.readIndex.isDefined) expected.size else 0
       )
     }
 
@@ -836,30 +934,36 @@ private[dynamodb] object KeyMigration {
       * new key and none under its old key, because a replay and the highest sequence number read that index. It returns
       * the ids for which it did not within `indexWait`.
       */
-    private def waitForIndex(moved: Vector[Candidate]): Vector[String] =
+    private def waitForIndex(expected: Map[String, KeyDigest]): Vector[String] =
       table.readIndex match {
         case None => Vector.empty
         case Some(indexName) =>
-          val byId     = moved.groupBy(_.persistenceId)
-          var lagging  = byId.keySet
+          var lagging  = expected.keySet
           val deadline = System.nanoTime() + settings.indexWait.toNanos
           var round    = 0
-          while (lagging.nonEmpty && System.nanoTime() < deadline) {
+          while (lagging.nonEmpty && (round == 0 || System.nanoTime() < deadline)) {
             if (round > 0) Thread.sleep(math.min(1000L, 100L * round))
             round += 1
-            lagging = lagging.filterNot { id =>
-              try {
-                val keys = indexKeys(indexName, id)
-                byId(id).forall(c => keys.contains(c.to) && !keys.contains(c.from))
-              } catch { case NonFatal(_) => false }
-            }
+            val matched = Await.result(
+              Future.traverse(lagging.toVector) { id =>
+                Future {
+                  limiter.foreach(_.acquire())
+                  val ok =
+                    try indexKeys(indexName, id).foldLeft(KeyDigest.empty)(_ + _) == expected(id)
+                    catch { case NonFatal(_) => false }
+                  id -> ok
+                }
+              },
+              Duration.Inf
+            )
+            lagging = matched.collect { case (id, false) => id }.toSet
           }
           if (lagging.nonEmpty) emit(s"phase=index lagging=${lagging.size}")
           lagging.toVector.sorted
       }
 
-    private def indexKeys(indexName: String, persistenceId: String): Set[StoredKey] = {
-      val keys     = Set.newBuilder[StoredKey]
+    private def indexKeys(indexName: String, persistenceId: String): Vector[StoredKey] = {
+      val keys     = Vector.newBuilder[StoredKey]
       var startKey = Option.empty[java.util.Map[String, AttributeValue]]
       var more     = true
       while (more) {
@@ -1094,7 +1198,9 @@ private[dynamodb] object KeyMigration {
                     case None => // the source changed or the transaction raced; try again
                   }
               }
-            case _ => result = Some(Gone)
+            case _ =>
+              // The row left its key: moved by an earlier attempt whose response was lost, or deleted.
+              result = Some(if (read(c.to, projected = true).exists(isRowOf(_, c))) Moved else Gone)
           }
         } catch {
           case e: DynamoDbException if Option(e.awsErrorDetails()).exists(_.errorCode() == "ValidationException") =>

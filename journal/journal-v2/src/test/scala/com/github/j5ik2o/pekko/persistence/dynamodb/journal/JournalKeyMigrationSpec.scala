@@ -798,6 +798,9 @@ final class JournalKeyMigrationSpec extends AnyWordSpec with Matchers with Dynam
       j.moved shouldBe 7 + 1 // the events of ids, and one of the pair
       j.remaining.map(_._1.persistenceId) should have size 1
       s.moved shouldBe 2
+      // the rows that 1.3.0 cannot hold make the run incomplete (review of #1025, round 3)
+      j.unmovable.map(_.persistenceId) shouldBe Seq(trailing)
+      j.incomplete shouldBe true
       ids.foreach { id =>
         rows(journalTableName, id).foreach(r => (r.pkey, r.skey) shouldBe journalKey(v130, id, r.sequenceNr))
       }
@@ -823,6 +826,7 @@ final class JournalKeyMigrationSpec extends AnyWordSpec with Matchers with Dynam
     "run a dry-run by default and move the rows with --execute, for the journal and the snapshot store" in {
       val id = changedId("Cli")
       writtenBy130(id)
+      writtenBy130(changedId("CliOther")) // not selected, so not moved
       val lines = scala.collection.mutable.ArrayBuffer.empty[String]
       val args  = Seq("--persistence-id", id, "--max-rate", "100", "--segments", "2", "--progress")
       JournalKeyMigration.run(args, config(plain), lines += _).candidates should have size 3
@@ -838,10 +842,20 @@ final class JournalKeyMigrationSpec extends AnyWordSpec with Matchers with Dynam
       val execute = Seq("--execute", "--writers-stopped") ++ args
       JournalKeyMigration.run(execute, config(plain), lines += _).moved shouldBe 3
       SnapshotKeyMigration.run(execute, config(plain), lines += _).moved shouldBe 1
-      lines.count(_.contains("the persistence-id index shows every moved row under its new key")) shouldBe 2
+      lines.count(
+        _.contains("the persistence-id index matches the table for the 1 selected persistence ids")
+      ) shouldBe 2
+      lines.count(
+        _ == "complete for the selected persistence ids; the rows of the other persistence ids were not checked"
+      ) shouldBe 2
       underNewKeys(plain, id)
-      JournalKeyMigration.run(args, config(plain), lines += _).candidates shouldBe empty
-      lines.exists(_.contains("legacy-keys-enabled = false: safe")) shouldBe true
+      val after   = JournalKeyMigration.run(args, config(plain), lines += _)
+      val verdict = lines.filter(_.contains("legacy-keys-enabled = false:")).last
+      after.candidates shouldBe empty
+      // With --persistence-id, the verdict covers the whole table, where `other` still has rows of 1.3.0.
+      after.outsideToMove should be >= 3L
+      verdict should include("not safe")
+      verdict should include("outside the selection")
       lines.foreach(line => info(line))
       an[IllegalArgumentException] should be thrownBy JournalKeyMigration.run(Seq("--bogus"), config(plain), _ => ())
       an[IllegalArgumentException] should be thrownBy JournalKeyMigration.run(Seq("--max-rate"), config(plain), _ => ())
