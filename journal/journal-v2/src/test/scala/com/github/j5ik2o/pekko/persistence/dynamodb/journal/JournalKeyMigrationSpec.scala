@@ -639,8 +639,9 @@ final class JournalKeyMigrationSpec extends AnyWordSpec with Matchers with Dynam
         val id = unique("Format831")
         persistOk(mode, id, "e1", "e2")
         command(mode, id, Snap("s2"))
-        copyRow(journalTableName, journalKey(mode, id, 1), (journalKey(mode, id, 1)._1, "1"))
-        copyRow(snapshotTableName, snapshotKey(mode, id, 2), (snapshotKey(mode, id, 2)._1, "2"))
+        // the keys that releases up to 1.0.59 wrote for an id without the separator
+        copyRow(journalTableName, journalKey(mode, id, 1), (journalKey(mode, id, 1)._1, "%019d".format(1L)))
+        copyRow(snapshotTableName, snapshotKey(mode, id, 2), (snapshotKey(mode, id, 2)._1, "%019d".format(2L)))
         val changed = changedId("Changed831")
         writtenBy130(changed)
         val (j, s) = migrate(mode, Set(id, changed), execute = true)

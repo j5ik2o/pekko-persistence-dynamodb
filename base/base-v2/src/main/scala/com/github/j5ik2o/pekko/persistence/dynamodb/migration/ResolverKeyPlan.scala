@@ -39,8 +39,13 @@ private[dynamodb] final class ResolverKeyPlan(
     "the stored key is neither the key of 1.3.0, of issue #831, nor of the new key format; it may come from another " +
     "shard-count, persistence-id-separator, or key resolver"
 
+  /** The key that releases before issue #831 (up to 1.0.59) gave an id without the separator: the same partition key,
+    * and the sequence number alone in 19 digits, `"%019d".format(sequenceNr)` with the default format locale, as the
+    * releases wrote it. The form without the zeros, which `SortKeyResolver$SeqNr` gives, is not a default key; the
+    * tools refuse that resolver.
+    */
   private def isIssue831Key(stored: StoredKey, target: StoredKey, sequenceNr: Long): Boolean =
-    stored.partitionKey == target.partitionKey && stored.sortKey == sequenceNr.toString
+    stored.partitionKey == target.partitionKey && stored.sortKey == "%019d".format(sequenceNr)
 
   override def placement(persistenceId: String, sequenceNr: Long, stored: StoredKey): Placement =
     if (!reverse) {
@@ -128,7 +133,7 @@ private[dynamodb] object MigrationOptions {
         case (name @ "--verify-timeout") :: tail =>
           val (v, more) = value(name, tail)
           val seconds   = number(name, v)(_.toInt)
-          if (seconds < 0) throw new IllegalArgumentException(s"$name must not be negative: $v")
+          if (seconds < 1) throw new IllegalArgumentException(s"$name must be at least 1: $v")
           timeout = Some(seconds); rest = more
         case (name @ "--persistence-id") :: tail =>
           val (v, more) = value(name, tail); ids += v; rest = more

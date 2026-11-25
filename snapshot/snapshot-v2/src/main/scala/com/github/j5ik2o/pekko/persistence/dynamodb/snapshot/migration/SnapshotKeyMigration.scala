@@ -173,8 +173,11 @@ object SnapshotKeyMigration {
         if (options.progress) text => Console.err.println(s"[verify] snapshot key migration progress $text")
         else _ => ()
       )
-      val legacyKeysLine = !options.reverse && configuredForm(pluginConfig) == KeyForm.PlainText
-      KeyVerification.render(report, if (options.reverse) "reverse" else "forward", legacyKeysLine).foreach(out)
+      val legacyKeysSetting =
+        if (!options.reverse && configuredForm(pluginConfig) == KeyForm.PlainText)
+          Some(("j5ik2o.dynamo-db-snapshot.legacy-keys-enabled", "JournalKeyMigration"))
+        else None
+      KeyVerification.render(report, if (options.reverse) "reverse" else "forward", legacyKeysSetting).foreach(out)
       report
     }
 

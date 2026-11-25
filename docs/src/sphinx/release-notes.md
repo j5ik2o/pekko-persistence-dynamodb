@@ -53,9 +53,10 @@ row in one `TransactWriteItems` (a conditional `Put` under the new key and a con
 and can be run again after a stop. `--reverse` moves the rows back to the keys of 1.3.0 before a rollback, and lists the
 rows that cannot go back. `--max-rate`, `--parallelism`, `--segments`, and `--persistence-id` limit the run. `--execute` exits with 1 when a
 selected row is left. `--verify` checks the whole table and its `persistence-id` index, attribute for attribute, and is
-the one check that says the application can start and when `legacy-keys-enabled = false` is safe. The tools do not
-swap rows that hold each other's new keys; they list them. The rows
-of issue #831 (`skey` is the sequence number alone) move too, also with the default resolvers. The dry-run lists the
+the one check that says the application can start and when `legacy-keys-enabled = false` is safe for its table. The
+tools do not swap rows that hold each other's new keys, and do not merge copies of the same row whose contents differ;
+they list them. `--execute` also exits with 1 when it sees a sign of another writer. The rows
+of issue #831 (`skey` is the sequence number alone in 19 digits, written up to 1.0.59) move too, also with the default resolvers. The dry-run lists the
 `persistenceId`s that shared keys in 1.3.0 with the sequence numbers that have no row, which may be events that were
 replaced up to 1.2.0; the tools cannot restore them. {ref}`Moving the old rows <key-migration>` gives the steps and the
 cost measured on DynamoDB Local. DynamoDB and DAX were not measured.

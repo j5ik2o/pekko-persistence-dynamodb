@@ -30,7 +30,7 @@ private[dynamodb] final case class VerifySettings(
     maxRate: Option[Double] = None,
     scanPageSize: Option[Int] = None
 ) {
-  require(timeout >= Duration.Zero, "--verify-timeout must not be negative")
+  require(timeout >= 1.second, "--verify-timeout must be at least 1 second")
   require(segments >= 1, "--segments must be at least 1")
   require(maxRate.forall(_ > 0), "--max-rate must be positive")
   require(scanPageSize.forall(_ >= 1), "--scan-page-size must be at least 1")
@@ -47,12 +47,17 @@ private[dynamodb] final case class VerifyReport(
     examples: Seq[String],
     // persistence ids whose index did not show the rows of the table, attribute for attribute, at the last look
     indexMismatch: Seq[String],
+    // persistence ids whose index could not be queried at the last look, with the error (no permission, throttling)
+    indexErrors: Seq[(String, String)],
+    // the scan that the timeout stopped, when it did
+    stoppedBy: Option[String],
     usage: Usage,
     elapsedMillis: Long
 ) {
 
   /** Every row of the table is under the key it belongs under, and the index shows exactly the rows of the table. */
-  def verified: Boolean = toMove == 0 && notMovable == 0 && indexMismatch.isEmpty
+  def verified: Boolean =
+    toMove == 0 && notMovable == 0 && indexMismatch.isEmpty && indexErrors.isEmpty && stoppedBy.isEmpty
 }
 
 /** The one check that says whether the application can start after a key migration (issue #1014).
@@ -90,7 +95,7 @@ private[dynamodb] object KeyVerification {
     var notMovable = 0L
     val examples   = mutable.ArrayBuffer.empty[String]
     val expected   = mutable.HashMap.empty[String, Digest]
-    scan(client, table.tableName, None, settings, usage, limiter) { item =>
+    val tableDone = scan(client, table.tableName, None, settings, deadline, usage, limiter) { item =>
       val id     = item(table.persistenceIdColumn).s()
       val seq    = item(table.sequenceNrColumn).n().toLong
       val stored = StoredKey(item(table.partitionKeyColumn).s(), item(table.sortKeyColumn).s())
@@ -110,25 +115,42 @@ private[dynamodb] object KeyVerification {
 
     // The index, read once, and then the persistence ids that differ, one by one until they match.
     val observed = mutable.HashMap.empty[String, Digest]
-    scan(client, table.tableName, Some(indexName), settings, usage, limiter) { item =>
-      val id = item(table.persistenceIdColumn).s()
-      observed.update(id, observed.getOrElse(id, Digest.empty) + projected(item))
-    }
+    val indexDone =
+      tableDone && scan(client, table.tableName, Some(indexName), settings, deadline, usage, limiter) { item =>
+        val id = item(table.persistenceIdColumn).s()
+        observed.update(id, observed.getOrElse(id, Digest.empty) + projected(item))
+      }
+    val stoppedBy =
+      if (!tableDone) Some(s"the scan of the table ${table.tableName}")
+      else if (!indexDone) Some(s"the scan of the index $indexName")
+      else None
     def differs(id: String, digest: Option[Digest]): Boolean =
       digest.getOrElse(Digest.empty) != expected.getOrElse(id, Digest.empty)
     // An id that differs stays in the list until a query shows the rows of the table; the list at the timeout is the
     // result, whether an id was queried again or not.
-    var mismatch = (expected.keySet ++ observed.keySet).filter(id => differs(id, observed.get(id))).toVector.sorted
-    var round    = 0
+    var mismatch =
+      if (stoppedBy.isDefined) Vector.empty[String]
+      else (expected.keySet ++ observed.keySet).filter(id => differs(id, observed.get(id))).toVector.sorted
+    val errors = mutable.LinkedHashMap.empty[String, String]
+    var round  = 0
     while (mismatch.nonEmpty && System.nanoTime() < deadline) {
       round += 1
       Thread.sleep(math.min(math.min(1000L, 100L * round), math.max(0L, (deadline - System.nanoTime()) / 1000000L)))
       mismatch = mismatch.filterNot { id =>
-        System.nanoTime() < deadline &&
-        query(client, table, indexName, id, deadline, usage, limiter)
-          .exists(rows => !differs(id, Some(rows.foldLeft(Digest.empty)(_ + projected(_)))))
+        System.nanoTime() < deadline && {
+          query(client, table, indexName, id, deadline, usage, limiter) match {
+            case Right(Some(rows)) =>
+              errors.remove(id)
+              !differs(id, Some(rows.foldLeft(Digest.empty)(_ + projected(_))))
+            case Right(None) => false // the deadline passed while it read
+            case Left(error) =>
+              errors.update(id, error)
+              false
+          }
+        }
       }
     }
+    val failed = errors.filter { case (id, _) => mismatch.contains(id) }.toVector
     VerifyReport(
       tableName = table.tableName,
       indexName = indexName,
@@ -137,24 +159,38 @@ private[dynamodb] object KeyVerification {
       toMove = toMove,
       notMovable = notMovable,
       examples = examples.toVector,
-      indexMismatch = mismatch,
+      indexMismatch = mismatch.filterNot(id => failed.exists(_._1 == id)),
+      indexErrors = failed,
+      stoppedBy = stoppedBy,
       usage = usage.snapshot,
       elapsedMillis = (System.nanoTime() - started) / 1000000L
     )
   }
 
-  def render(report: VerifyReport, direction: String, legacyKeysLine: Boolean): Seq[String] = {
+  /** `legacyKeysSetting` is the setting key of this plugin and the command for the other plugin, for the line on
+    * `legacy-keys-enabled`; none when the line does not apply.
+    */
+  def render(report: VerifyReport, direction: String, legacyKeysSetting: Option[(String, String)]): Seq[String] = {
     val lines = mutable.ArrayBuffer.empty[String]
     lines += s"[verify] key migration ($direction) of ${report.tableName}: scanned ${report.scannedRows} rows of " +
     s"${report.persistenceIds} persistence ids; ${report.toMove} rows to move, ${report.notMovable} rows not movable; " +
     s"${report.indexMismatch.size} persistence ids whose index ${report.indexName} does not match the table"
     report.examples.foreach(e => lines += s"[verify]   - $e")
+    report.stoppedBy.foreach(scan =>
+      lines += s"[verify] the timeout stopped $scan; raise --verify-timeout (it bounds the whole check, scans included)"
+    )
+    report.indexErrors.take(50).foreach { case (id, error) =>
+      lines += s"[verify] the index could not be queried for $id: $error (check the permissions and the throttling)"
+    }
     if (report.indexMismatch.nonEmpty)
       lines += s"[verify] index does not match: ${report.indexMismatch.take(50).mkString(", ")}"
     if (report.verified) {
       lines += "[verify] verified: every row is under the key it belongs under, and the index matches the table; " +
       "the application can start"
-      if (legacyKeysLine) lines += "[verify] legacy-keys-enabled = false is safe: no row is left under an old key"
+      legacyKeysSetting.foreach { case (setting, other) =>
+        lines += s"[verify] $setting = false is safe for this table: no row is left under an old key. It is one " +
+        s"table: set the setting of the other plugin only after $other --verify passes too"
+      }
     } else
       lines += "[verify] not verified: do not start the application; run --execute for the rows to move, resolve the " +
       "rows that are not movable, or run --verify again later for the index"
@@ -231,28 +267,33 @@ private[dynamodb] object KeyVerification {
       tableName: String,
       indexName: Option[String],
       settings: VerifySettings,
+      deadline: Long,
       usage: KeyMigration.UsageCounter,
       limiter: Option[KeyMigration.RateLimiter]
-  )(f: Map[String, AttributeValue] => Unit): Unit =
-    (0 until settings.segments).foreach { segment =>
+  )(f: Map[String, AttributeValue] => Unit): Boolean =
+    (0 until settings.segments).forall { segment =>
       var startKey = Option.empty[java.util.Map[String, AttributeValue]]
       var more     = true
-      while (more) {
-        limiter.foreach(_.acquire())
-        val builder = ScanRequest.builder().tableName(tableName).returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
-        indexName match {
-          case Some(name) => builder.indexName(name) // an index can only be read eventually consistent
-          case None       => builder.consistentRead(true)
+      var inTime   = true
+      while (more && inTime) {
+        if (!limiter.forall(_.acquireBefore(deadline)) || System.nanoTime() >= deadline) inTime = false
+        else {
+          val builder = ScanRequest.builder().tableName(tableName).returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
+          indexName match {
+            case Some(name) => builder.indexName(name) // an index can only be read eventually consistent
+            case None       => builder.consistentRead(true)
+          }
+          if (settings.segments > 1) builder.segment(segment).totalSegments(settings.segments)
+          settings.scanPageSize.foreach(limit => builder.limit(limit))
+          startKey.foreach(builder.exclusiveStartKey)
+          val response = client.scan(builder.build())
+          usage.record(if (indexName.isDefined) "Scan (index)" else "Scan", Option(response.consumedCapacity()).toList)
+          response.items().asScala.foreach(item => f(item.asScala.toMap))
+          startKey = Option(response.lastEvaluatedKey()).filterNot(_.isEmpty)
+          more = startKey.nonEmpty
         }
-        if (settings.segments > 1) builder.segment(segment).totalSegments(settings.segments)
-        settings.scanPageSize.foreach(limit => builder.limit(limit))
-        startKey.foreach(builder.exclusiveStartKey)
-        val response = client.scan(builder.build())
-        usage.record(if (indexName.isDefined) "Scan (index)" else "Scan", Option(response.consumedCapacity()).toList)
-        response.items().asScala.foreach(item => f(item.asScala.toMap))
-        startKey = Option(response.lastEvaluatedKey()).filterNot(_.isEmpty)
-        more = startKey.nonEmpty
       }
+      inTime
     }
 
   /** The rows that the index shows for one persistence id, or none when the deadline passed before all were read. */
@@ -264,15 +305,13 @@ private[dynamodb] object KeyVerification {
       deadline: Long,
       usage: KeyMigration.UsageCounter,
       limiter: Option[KeyMigration.RateLimiter]
-  ): Option[Vector[Map[String, AttributeValue]]] = {
+  ): Either[String, Option[Vector[Map[String, AttributeValue]]]] = {
     val items    = Vector.newBuilder[Map[String, AttributeValue]]
     var startKey = Option.empty[java.util.Map[String, AttributeValue]]
     var more     = true
     try {
       while (more) {
-        if (System.nanoTime() >= deadline) return None
-        limiter.foreach(_.acquire())
-        if (System.nanoTime() >= deadline) return None
+        if (System.nanoTime() >= deadline || !limiter.forall(_.acquireBefore(deadline))) return Right(None)
         val expression = new KeyMigration.Expression
         val condition =
           s"${expression.name(table.persistenceIdColumn)} = ${expression.value(AttributeValue.builder().s(persistenceId).build())}"
@@ -291,8 +330,8 @@ private[dynamodb] object KeyVerification {
         startKey = Option(response.lastEvaluatedKey()).filterNot(_.isEmpty)
         more = startKey.nonEmpty
       }
-      Some(items.result())
-    } catch { case NonFatal(_) => None }
+      Right(Some(items.result()))
+    } catch { case NonFatal(e) => Left(s"${e.getClass.getSimpleName}: ${e.getMessage}") }
   }
 
 }

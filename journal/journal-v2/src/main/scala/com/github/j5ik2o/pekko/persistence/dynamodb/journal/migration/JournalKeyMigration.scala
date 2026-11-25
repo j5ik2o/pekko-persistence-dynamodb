@@ -172,8 +172,11 @@ object JournalKeyMigration {
         settings,
         if (options.progress) text => Console.err.println(s"[verify] journal key migration progress $text") else _ => ()
       )
-      val legacyKeysLine = !options.reverse && configuredForm(pluginConfig) == KeyForm.PlainText
-      KeyVerification.render(report, if (options.reverse) "reverse" else "forward", legacyKeysLine).foreach(out)
+      val legacyKeysSetting =
+        if (!options.reverse && configuredForm(pluginConfig) == KeyForm.PlainText)
+          Some(("j5ik2o.dynamo-db-journal.legacy-keys-enabled", "SnapshotKeyMigration"))
+        else None
+      KeyVerification.render(report, if (options.reverse) "reverse" else "forward", legacyKeysSetting).foreach(out)
       report
     }
 

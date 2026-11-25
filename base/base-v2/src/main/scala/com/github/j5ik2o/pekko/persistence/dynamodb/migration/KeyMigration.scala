@@ -136,7 +136,9 @@ private[dynamodb] final case class UnmovableRow(
 private[dynamodb] final case class BlockedMove(
     candidate: Candidate,
     occupantPersistenceId: String,
-    occupantSequenceNr: Long
+    occupantSequenceNr: Long,
+    // the occupant belongs to a persistence id that --persistence-id left out, so it may move when it is selected
+    outsideSelection: Boolean = false
 )
 
 /** The rows of one persistence id in a group of ids that shared keys in 1.3.0. `missingSequenceNrs` counts the sequence
@@ -185,7 +187,13 @@ private[dynamodb] final case class MigrationReport(
     remaining: Seq[(Candidate, String)],
     usage: Usage,
     elapsedMillis: Long,
-    filtered: Boolean = false
+    filtered: Boolean = false,
+    // dry-run: copies of the same row whose other attributes differ, which the tool does not merge
+    conflictingCopies: Seq[(Candidate, String)] = Seq.empty,
+    // --execute: the rows whose copy under the old key was removed by a merge
+    mergedRows: Seq[(Candidate, String)] = Seq.empty,
+    // --execute: signs that another writer used the table during the run, which the contract rules out
+    writerSigns: Seq[String] = Seq.empty
 ) {
   def movesByPersistenceId: Seq[(String, Int)] =
     candidates.groupBy(_.persistenceId).map { case (id, rows) => id -> rows.size }.toSeq.sortBy(_._1)
@@ -193,7 +201,7 @@ private[dynamodb] final case class MigrationReport(
   /** An `--execute` run that left a selected row under a key it does not belong under: not moved, or not movable. It
     * says nothing about the rows of other persistence ids or about the index; `KeyVerification` does.
     */
-  def incomplete: Boolean = execute && (remaining.nonEmpty || unmovable.nonEmpty)
+  def incomplete: Boolean = execute && (remaining.nonEmpty || unmovable.nonEmpty || writerSigns.nonEmpty)
 }
 
 /** Moves journal or snapshot rows from the key that an earlier release gave them to the key they belong under (issue
@@ -245,13 +253,20 @@ private[dynamodb] object KeyMigration {
         s"copy of the same row, ${report.blocked.size} blocked, ${report.waiting.size} waiting for a blocked row"
       )
       list("rows whose target key holds a row of another persistence id that does not move:", report.blocked) { b =>
-        s"${b.candidate.describe} is blocked by ${b.occupantPersistenceId}@${b.occupantSequenceNr}"
+        val outside =
+          if (b.outsideSelection) " (outside --persistence-id; that row may move when its persistence id is selected)"
+          else ""
+        s"${b.candidate.describe} is blocked by ${b.occupantPersistenceId}@${b.occupantSequenceNr}$outside"
       }
       list("rows that hold each other's target keys (the tool does not swap them; move them by hand):", report.cycles) {
         cycle =>
           cycle.map(c => s"${c.persistenceId}@${c.sequenceNr}").mkString(" <-> ")
       }
       list("rows whose target key already holds a copy of the same row (merged):", report.duplicates)(_.describe)
+      list(
+        "rows whose target key holds a copy of the same row with other contents (not merged; choose one by hand):",
+        report.conflictingCopies
+      ) { case (c, diff) => s"${c.describe}: $diff" }
       list("rows that wait for a blocked row:", report.waiting)(_.describe)
     } else {
       line(
@@ -259,8 +274,18 @@ private[dynamodb] object KeyMigration {
         s"${report.alreadyGone} already moved or deleted by another writer, ${report.remaining.size} remaining"
       )
       list("remaining rows (not moved):", report.remaining) { case (c, reason) => s"${c.describe}: $reason" }
+      list("merged rows (the copy under the old key was removed):", report.mergedRows) { case (c, kept) =>
+        s"${c.describe}: $kept"
+      }
+      list(
+        "WARNING: signs that another writer used the table during the run; stop every writer, run again, and run --verify:",
+        report.writerSigns
+      )(identity)
       if (report.incomplete)
-        line(s"not finished: ${report.remaining.size} rows remaining, ${report.unmovable.size} rows not movable")
+        line(
+          s"not finished: ${report.remaining.size} rows remaining, ${report.unmovable.size} rows not movable, " +
+          s"${report.writerSigns.size} signs of another writer"
+        )
     }
     list("rows that are not moved:", report.unmovable) { u =>
       s"${u.persistenceId}@${u.sequenceNr} ${u.stored}: ${u.reason}"
@@ -371,6 +396,22 @@ private[dynamodb] object KeyMigration {
       }
       if (wait > 0) TimeUnit.NANOSECONDS.sleep(wait)
     }
+
+    /** Waits for the next slot, but not past `deadline` (System.nanoTime). False when the deadline came first. */
+    def acquireBefore(deadline: Long): Boolean = {
+      val slotAt = synchronized {
+        val now  = System.nanoTime()
+        val slot = math.max(now, next)
+        if (slot <= deadline) next = slot + intervalNanos
+        slot
+      }
+      if (slotAt > deadline) false
+      else {
+        val wait = slotAt - System.nanoTime()
+        if (wait > 0) TimeUnit.NANOSECONDS.sleep(wait)
+        true
+      }
+    }
   }
 
   private[migration] final class UsageCounter {
@@ -427,6 +468,7 @@ private[dynamodb] object KeyMigration {
   private case object Gone extends Outcome
   private final case class Blocked(persistenceId: String, sequenceNr: Long) extends Outcome
   private final case class Failed(reason: String) extends Outcome
+  private final case class Conflict(detail: String) extends Outcome
 
   private final case class ScanResult(
       rows: Long,
@@ -462,6 +504,17 @@ private[dynamodb] object KeyMigration {
       catch { case NonFatal(_) => () }
 
     private def selected(persistenceId: String): Boolean = settings.persistenceIds.forall(_.contains(persistenceId))
+
+    /** The highest sequence number that the scan saw for each persistence id. */
+    private var scannedHighest = Map.empty[String, Long]
+
+    /** Rows that the scan did not see, or a change of a row after it was read, mean that another writer used the table.
+      */
+    private val signs                    = new java.util.concurrent.ConcurrentLinkedQueue[String]()
+    private def sign(text: String): Unit = { signs.add(text); () }
+
+    private def unseenByScan(persistenceId: String, sequenceNr: Long): Boolean =
+      scannedHighest.get(persistenceId).forall(sequenceNr > _)
 
     def run(plan: KeyPlan): MigrationReport = {
       val started = System.nanoTime()
@@ -581,6 +634,7 @@ private[dynamodb] object KeyMigration {
         }
         .toVector
         .sortBy(_.ids.head.persistenceId)
+      scannedHighest = stats.map { case (id, s) => id -> s.highest }.toMap
       ScanResult(rows, inPlace, candidates.result(), unmovable.result(), groups)
     }
 
@@ -644,7 +698,7 @@ private[dynamodb] object KeyMigration {
                 case Right(Free)    => resolved.update(current, Direct); end = true
                 case Right(SameRow) => resolved.update(current, Duplicate); end = true
                 case Right(OtherRow(id, seq)) =>
-                  blocked += BlockedMove(current, id, seq)
+                  blocked += BlockedMove(current, id, seq, outsideSelection = !selected(id))
                   resolved.update(current, Stuck(s"blocked by $id@$seq"))
                   end = true
                 case Left(next) =>
@@ -664,11 +718,27 @@ private[dynamodb] object KeyMigration {
           resolved.update(c, resolution)
         }
       }
+      // A copy of the same row merges only when every other attribute is equal.
+      val duplicates = resolved.collect { case (c, Duplicate) => c }.toVector
+      val conflicting = duplicates.flatMap { c =>
+        val source = read(c.from, projected = false)
+        val target = read(c.to, projected = false)
+          .filter(isRowOf(_, c)).orElse(
+            base.candidates
+              .find(o => o != c && o.to == c.to && o.persistenceId == c.persistenceId && o.sequenceNr == c.sequenceNr)
+              .flatMap(o => read(o.from, projected = false))
+          )
+        (for {
+          s <- source
+          t <- target
+        } yield differences(s, t)).filter(_.nonEmpty).map(c -> _)
+      }
       base.copy(
         directMoves = resolved.values.count(_ == Direct),
         orderedMoves = resolved.values.count(_ == After),
         cycles = cycles.result(),
-        duplicates = resolved.collect { case (c, Duplicate) => c }.toVector,
+        duplicates = duplicates.filterNot(c => conflicting.exists(_._1 == c)),
+        conflictingCopies = conflicting,
         blocked = blocked.result(),
         waiting = resolved.collect { case (c, Stuck(reason)) if reason.startsWith("waits") => c }.toVector
       )
@@ -681,7 +751,8 @@ private[dynamodb] object KeyMigration {
     // --- execute -----------------------------------------------------------------------------------------------
 
     private def execute(base: MigrationReport): MigrationReport = {
-      val pending   = mutable.LinkedHashMap(base.candidates.map(c => c.from -> c): _*)
+      val pending = mutable.LinkedHashMap(base.candidates.map(c => c.from -> c): _*)
+      mergedRows.clear()
       val remaining = mutable.ArrayBuffer.empty[(Candidate, String)]
       val moved     = new AtomicLong()
       val merged    = new AtomicLong()
@@ -715,8 +786,10 @@ private[dynamodb] object KeyMigration {
                 outcome match {
                   case Moved  => moved.incrementAndGet()
                   case Merged => merged.incrementAndGet()
-                  case Gone   => gone.incrementAndGet()
-                  case _      =>
+                  case Gone =>
+                    gone.incrementAndGet()
+                    sign(s"${c.describe}: the row left its key, and is not under the target key")
+                  case _ =>
                 }
                 c -> outcome
               }
@@ -727,9 +800,16 @@ private[dynamodb] object KeyMigration {
             pending.remove(c.from)
             progressMade = true
             outcome match {
-              case Blocked(id, seq) => remaining += c -> s"the target key holds $id@$seq, which does not move"
-              case Failed(reason)   => remaining += c -> reason
-              case _                =>
+              case Blocked(id, seq) =>
+                remaining += c -> (if (!selected(id))
+                                     s"the target key holds $id@$seq, which is outside --persistence-id; it may move when its persistence id is selected"
+                                   else s"the target key holds $id@$seq, which does not move")
+                if (unseenByScan(id, seq))
+                  sign(s"${c.describe}: the target key holds $id@$seq, which the scan did not see")
+              case Failed(reason) => remaining += c -> reason
+              case Conflict(detail) =>
+                remaining += c -> s"the target key holds a copy of the same row with other contents ($detail); choose one by hand"
+              case _ =>
             }
           }
           report()
@@ -747,7 +827,9 @@ private[dynamodb] object KeyMigration {
         moved = moved.get(),
         merged = merged.get(),
         alreadyGone = gone.get(),
-        remaining = remaining.toVector
+        remaining = remaining.toVector,
+        mergedRows = mergedRows.asScala.toVector,
+        writerSigns = signs.asScala.toVector
       )
     }
 
@@ -921,10 +1003,30 @@ private[dynamodb] object KeyMigration {
     /** Moves one row. Every attempt reads the row again, so a row that another writer changed is moved as it is now,
       * and a transaction whose response was lost is found applied (the row is gone from the stored key).
       */
+    private val mergedRows = new java.util.concurrent.ConcurrentLinkedQueue[(Candidate, String)]()
+
+    /** The attributes, other than the keys and the attribute that the duplicate rule merges, whose values differ. */
+    private def differences(source: Item, target: Item): String = {
+      val ruleColumn = table.duplicates match {
+        case DuplicateRule.DeletedFlag(column)   => column
+        case DuplicateRule.LatestCreated(column) => column
+      }
+      val ignored = Set(table.partitionKeyColumn, table.sortKeyColumn, ruleColumn)
+      (source.keySet ++ target.keySet)
+        .diff(ignored).toSeq.sorted.filter(n => source.get(n) != target.get(n)).map { name =>
+          def show(v: Option[AttributeValue]): String = v.fold("absent") { value =>
+            if (value.b() != null) s"${value.b().asByteArray().length} bytes" else value.toString.take(80)
+          }
+          s"$name differs: old key ${show(source.get(name))}, target key ${show(target.get(name))}"
+        }.mkString("; ")
+    }
+
     private def moveOne(c: Candidate): Outcome = {
-      var attempt = 0
-      var result  = Option.empty[Outcome]
-      var last    = ""
+      var attempt    = 0
+      var result     = Option.empty[Outcome]
+      var last       = ""
+      var merging    = false
+      var lastSource = Option.empty[Item]
       while (result.isEmpty && attempt < settings.maxAttempts) {
         if (attempt > 0) backoff(attempt)
         attempt += 1
@@ -932,6 +1034,8 @@ private[dynamodb] object KeyMigration {
         try {
           read(c.from, projected = false) match {
             case Some(source) if isRowOf(source, c) =>
+              if (lastSource.exists(_ != source)) sign(s"${c.describe}: the row changed after the tool read it")
+              lastSource = Some(source)
               transact(
                 Seq(
                   put(source, c.to, e => s"attribute_not_exists(${e.name(table.partitionKeyColumn)})"),
@@ -946,11 +1050,20 @@ private[dynamodb] object KeyMigration {
                     case Some(target) if isRowOf(target, c) =>
                       read(c.from, projected = false) match {
                         case Some(again) if isRowOf(again, c) =>
-                          transact(merge(c, again, target)) match {
-                            case Right(())   => result = Some(Merged)
-                            case Left(cause) => last = cause
+                          val diff = differences(again, target)
+                          if (diff.nonEmpty) result = Some(Conflict(diff))
+                          else {
+                            merging = true
+                            transact(merge(c, again, target)) match {
+                              case Right(()) =>
+                                result = Some(Merged)
+                                mergedRows.add(c -> keptBy(again, target))
+                              case Left(cause) => last = cause
+                            }
                           }
-                        case _ => result = Some(Moved) // the lost transaction was applied, or a writer deleted it
+                        case _ =>
+                          // the lost transaction was applied, or a writer deleted the row
+                          result = Some(if (merging) Merged else Moved)
                       }
                     case Some(target) =>
                       identity(target).foreach { case (id, seq) => result = Some(Blocked(id, seq)) }
@@ -959,7 +1072,9 @@ private[dynamodb] object KeyMigration {
               }
             case _ =>
               // The row left its key: moved by an earlier attempt whose response was lost, or deleted.
-              result = Some(if (read(c.to, projected = true).exists(isRowOf(_, c))) Moved else Gone)
+              result =
+                if (read(c.to, projected = true).exists(isRowOf(_, c))) Some(if (merging) Merged else Moved)
+                else Some(Gone)
           }
         } catch {
           case e: DynamoDbException if Option(e.awsErrorDetails()).exists(_.errorCode() == "ValidationException") =>
@@ -968,6 +1083,16 @@ private[dynamodb] object KeyMigration {
         }
       }
       result.getOrElse(Failed(s"gave up after ${settings.maxAttempts} attempts ($last)"))
+    }
+
+    /** What a merge keeps, for the report. */
+    private def keptBy(source: Item, target: Item): String = table.duplicates match {
+      case DuplicateRule.DeletedFlag(column) =>
+        val deleted = Seq(source, target).exists(_.get(column).exists(v => Option(v.bool()).exists(_.booleanValue())))
+        s"kept the row under the target key, deleted = $deleted"
+      case DuplicateRule.LatestCreated(column) =>
+        def created(item: Item) = item.get(column).flatMap(v => Option(v.n())).getOrElse("?")
+        s"kept the snapshot with the larger $column (old key ${created(source)}, target key ${created(target)}); the other was removed"
     }
 
     /** The transaction that removes the copy under the stored key when the target key holds the same row. */

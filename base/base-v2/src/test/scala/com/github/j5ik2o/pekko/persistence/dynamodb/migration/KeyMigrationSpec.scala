@@ -407,6 +407,9 @@ final class KeyMigrationSpec extends AnyWordSpec with Matchers with DynamoDBCont
       report.moved shouldBe 1
       rowAt(table, k(2)).get("deleted") shouldBe b(true)
       rowAt(table, k(1)) shouldBe None
+      // another writer is outside the contract, so the run says so and fails (review of #1025, F6)
+      report.writerSigns.exists(_.contains("changed after the tool read it")) shouldBe true
+      report.incomplete shouldBe true
     }
 
     "count a row that another writer deleted before the move as gone" in {
@@ -422,6 +425,8 @@ final class KeyMigrationSpec extends AnyWordSpec with Matchers with DynamoDBCont
       report.alreadyGone shouldBe 1
       report.moved shouldBe 0
       allRows(table) shouldBe empty
+      report.writerSigns should have size 1
+      report.incomplete shouldBe true
     }
 
     "move rows whose keys are at the limits of DynamoDB (2,048 and 1,024 bytes of UTF-8)" in {
@@ -605,6 +610,69 @@ final class KeyMigrationSpec extends AnyWordSpec with Matchers with DynamoDBCont
       KeyMigration.render(report, "test").mkString("\n") should include("not finished")
     }
 
+    "not merge copies of the same row whose other attributes differ, and say how they differ (review of #1025, F2)" in {
+      val table = newTable()
+      putRow(table, k(1), "A", 1, "deleted" -> b(false), "tags" -> s("updated-in-place"))
+      putRow(table, k(2), "A", 1, "deleted" -> b(false), "tags" -> s("stale"))
+      val p     = plan(("A", 1L) -> k(2))
+      val dry   = run(journal(table), p, execute = false)
+      dry.duplicates shouldBe empty
+      dry.conflictingCopies.map(_._2).head should include("tags differs")
+      val report = run(journal(table), p, execute = true)
+      report.merged shouldBe 0
+      report.remaining.head._2 should include("tags differs")
+      report.incomplete shouldBe true
+      rowAt(table, k(1)).get("tags") shouldBe s("updated-in-place")
+      rowAt(table, k(2)).get("tags") shouldBe s("stale")
+    }
+
+    "list the snapshot copies that a merge removes" in {
+      val table  = newTable()
+      putRow(table, k(1), "A", 3, "created" -> n(200))
+      putRow(table, k(2), "A", 3, "created" -> n(100))
+      val report = run(snapshots(table), plan(("A", 3L) -> k(2)), execute = true)
+      report.merged shouldBe 1
+      report.mergedRows.map(_._1.persistenceId) shouldBe Seq("A")
+      report.mergedRows.head._2 should include("old key 200, target key 100")
+      KeyMigration.render(report, "test").mkString("\n") should include("merged rows")
+    }
+
+    "count a merge whose response was lost as merged" in {
+      val table = newTable()
+      putRow(table, k(1), "A", 1, "deleted" -> b(true))
+      putRow(table, k(2), "A", 1, "deleted" -> b(false))
+      // the first transaction (the move) is canceled; the second (the merge) is applied and its response lost
+      val c      = hooked(after = index => if (index == 2) throw SdkClientException.create("lost"))
+      val report = run(journal(table), plan(("A", 1L) -> k(2)), execute = true, c = c)
+      report.merged shouldBe 1
+      report.moved shouldBe 0
+      report.remaining shouldBe empty
+      allRows(table).map(r => (r("skey").s(), r("deleted").bool().booleanValue())) shouldBe Vector("s2" -> true)
+    }
+
+    "say that a blocking row is outside --persistence-id (review of #1025, F7)" in {
+      val table = newTable()
+      putRow(table, k(1), "A", 1)
+      putRow(table, k(2), "B", 1)
+      val p   = plan(("A", 1L) -> k(2), ("B", 1L) -> k(3))
+      val dry = run(journal(table), p, execute = false, settings = _.copy(persistenceIds = Some(Set("A"))))
+      dry.blocked.map(_.outsideSelection) shouldBe Seq(true)
+      KeyMigration.render(dry, "test").mkString("\n") should include("outside --persistence-id")
+      val report = run(journal(table), p, execute = true, settings = _.copy(persistenceIds = Some(Set("A"))))
+      report.remaining.head._2 should include("outside --persistence-id")
+      report.writerSigns shouldBe empty
+    }
+
+    "warn when the target key holds a row that the scan did not see (review of #1025, F6)" in {
+      val table = newTable()
+      putRow(table, k(1), "A", 1)
+      val c      = hooked(before = index => if (index == 1) putRow(table, k(2), "Z", 9))
+      val report = run(journal(table), plan(("A", 1L) -> k(2)), execute = true, c = c)
+      report.writerSigns.head should include("the scan did not see")
+      report.incomplete shouldBe true
+      KeyMigration.render(report, "test").mkString("\n") should include("WARNING")
+    }
+
     "move only the selected persistence ids" in {
       val table = newTable()
       putRow(table, k(1), "A", 1)
@@ -630,7 +698,10 @@ final class KeyMigrationSpec extends AnyWordSpec with Matchers with DynamoDBCont
         settings: VerifySettings = VerifySettings(timeout = 2.seconds)
     ): VerifyReport = {
       val report = KeyVerification.run(c, journal(table), "rows", p, settings)
-      KeyVerification.render(report, "test", legacyKeysLine = true).foreach(line => info(line))
+      KeyVerification
+        .render(report, "test", Some("j5ik2o.dynamo-db-journal.legacy-keys-enabled" -> "SnapshotKeyMigration")).foreach(
+          line => info(line)
+        )
       report
     }
 
@@ -641,8 +712,13 @@ final class KeyMigrationSpec extends AnyWordSpec with Matchers with DynamoDBCont
       val report = verify(table, plan())
       report.verified shouldBe true
       report.persistenceIds shouldBe 2
-      KeyVerification.render(report, "test", legacyKeysLine = true).mkString("\n") should include(
-        "legacy-keys-enabled = false is safe"
+      KeyVerification
+        .render(
+          report,
+          "test",
+          Some("j5ik2o.dynamo-db-journal.legacy-keys-enabled" -> "SnapshotKeyMigration")
+        ).mkString("\n") should include(
+        "j5ik2o.dynamo-db-journal.legacy-keys-enabled = false is safe for this table"
       )
     }
 
@@ -659,7 +735,12 @@ final class KeyMigrationSpec extends AnyWordSpec with Matchers with DynamoDBCont
       val report = verify(table, unmovable)
       report.notMovable shouldBe 1
       report.verified shouldBe false
-      KeyVerification.render(report, "test", legacyKeysLine = true).mkString("\n") should not include "is safe"
+      KeyVerification
+        .render(
+          report,
+          "test",
+          Some("j5ik2o.dynamo-db-journal.legacy-keys-enabled" -> "SnapshotKeyMigration")
+        ).mkString("\n") should not include "is safe"
     }
 
     "fail while the index shows a merged row with its old value of deleted (review of #1025, round 4)" in {
@@ -758,16 +839,49 @@ final class KeyMigrationSpec extends AnyWordSpec with Matchers with DynamoDBCont
       report.indexMismatch should have size 30
     }
 
-    "refuse a negative --verify-timeout, --persistence-id, and --execute" in {
+    "report an error of the index as an error, not as a lag (review of #1025, F4)" in {
+      val table = newTable(index = true)
+      putRow(table, k(1), "A", 1)
+      val c = hooked(
+        indexScan = r => r.toBuilder.items(Seq.empty[java.util.Map[String, AttributeValue]].asJava).build(),
+        query = _ => throw DynamoDbException.builder().message("not authorized to perform dynamodb:Query").build()
+      )
+      val report = verify(table, plan(), c)
+      report.indexErrors.map(_._1) shouldBe Seq("A")
+      report.indexErrors.head._2 should include("not authorized")
+      report.indexMismatch shouldBe empty
+      report.verified shouldBe false
+      KeyVerification.render(report, "test", None).mkString("\n") should include("could not be queried")
+    }
+
+    "stop the scans at --verify-timeout (review of #1025, F4 and Codex)" in {
+      val table = newTable(index = true)
+      (1 to 20).foreach(i => putRow(table, k(i), s"P$i", 1))
+      val c = hooked(before = _ => ())
+      val report = verify(
+        table,
+        plan(),
+        c,
+        VerifySettings(timeout = 1.second, maxRate = Some(2.0), scanPageSize = Some(1))
+      )
+      report.stoppedBy.get should include("scan")
+      report.verified shouldBe false
+      report.elapsedMillis should be < 3000L
+      // a wait for --max-rate that would end after the deadline is not taken
+      val slow = verify(table, plan(), c, VerifySettings(timeout = 1.second, maxRate = Some(0.1)))
+      slow.stoppedBy should not be empty
+      slow.elapsedMillis should be < 3000L
+    }
+
+    "refuse a --verify-timeout below 1 second, --persistence-id, and --execute" in {
       an[IllegalArgumentException] should be thrownBy MigrationOptions.parse(Seq("--verify", "--verify-timeout", "-1"))
       an[IllegalArgumentException] should be thrownBy MigrationOptions.parse(Seq("--verify", "--persistence-id", "A"))
       an[IllegalArgumentException] should be thrownBy MigrationOptions.parse(
         Seq("--verify", "--execute", "--writers-stopped")
       )
       an[IllegalArgumentException] should be thrownBy MigrationOptions.parse(Seq("--verify-timeout", "1"))
-      MigrationOptions.parse(Seq("--verify", "--verify-timeout", "0")).verify.map(_.timeout) shouldBe Some(
-        Duration.Zero
-      )
+      an[IllegalArgumentException] should be thrownBy MigrationOptions.parse(Seq("--verify", "--verify-timeout", "0"))
+      MigrationOptions.parse(Seq("--verify", "--verify-timeout", "1")).verify.map(_.timeout) shouldBe Some(1.second)
     }
   }
 

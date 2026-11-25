@@ -196,7 +196,7 @@ final class KeyMigrationPlanSpec extends AnyWordSpec with Matchers with BeforeAn
       stores("-").foreach { store =>
         val plain = store.plainText("Plain123").get
         store.release130("Plain123") shouldBe Some(plain)
-        val issue831 = StoredKey(plain.partitionKey, "1")
+        val issue831 = StoredKey(plain.partitionKey, "%019d".format(1L)) // as 1.0.59 wrote it
         store.forward.placement("Plain123", 1, issue831) shouldBe Placement.Move(plain, KeyForm.Issue831)
         store.reverse.placement("Plain123", 1, issue831) shouldBe Placement.Move(plain, KeyForm.Issue831)
         store.forward.placement("Plain123", 1, StoredKey("x", "y")) shouldBe a[Placement.Unmovable]
@@ -220,7 +220,7 @@ final class KeyMigrationPlanSpec extends AnyWordSpec with Matchers with BeforeAn
       forward.placement(id, 1, store.release130(id).get) shouldBe Placement.InPlace
       forward.placement(id, 1, store.plainText(id).get) shouldBe a[Placement.Unmovable]
       val plain = store.plainText("Plain1").get
-      forward.placement("Plain1", 1, StoredKey(plain.partitionKey, "1")) shouldBe Placement.Move(
+      forward.placement("Plain1", 1, StoredKey(plain.partitionKey, "%019d".format(1L))) shouldBe Placement.Move(
         plain,
         KeyForm.Issue831
       )
