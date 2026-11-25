@@ -96,7 +96,9 @@ private[dynamodb] final case class MigrationTable(
     sequenceNrColumn: String,
     optionalColumns: Seq[String],
     duplicates: DuplicateRule,
-    sequential: Boolean = true
+    sequential: Boolean = true,
+    // the attributes, other than the keys, that a replay or a snapshot load reads from the persistence-id index
+    indexAttributes: Seq[String] = Seq.empty
 )
 
 private[dynamodb] final case class MigrationSettings(
@@ -1050,6 +1052,7 @@ private[dynamodb] object KeyMigration {
                     case Some(target) if isRowOf(target, c) =>
                       read(c.from, projected = false) match {
                         case Some(again) if isRowOf(again, c) =>
+                          if (again != source) sign(s"${c.describe}: the row changed after the tool read it")
                           val diff = differences(again, target)
                           if (diff.nonEmpty) result = Some(Conflict(diff))
                           else {
@@ -1063,7 +1066,7 @@ private[dynamodb] object KeyMigration {
                           }
                         case _ =>
                           // the lost transaction was applied, or a writer deleted the row
-                          result = Some(if (merging) Merged else Moved)
+                          result = Some(if (merging) mergedAfterLostResponse(c) else Moved)
                       }
                     case Some(target) =>
                       identity(target).foreach { case (id, seq) => result = Some(Blocked(id, seq)) }
@@ -1073,7 +1076,8 @@ private[dynamodb] object KeyMigration {
             case _ =>
               // The row left its key: moved by an earlier attempt whose response was lost, or deleted.
               result =
-                if (read(c.to, projected = true).exists(isRowOf(_, c))) Some(if (merging) Merged else Moved)
+                if (read(c.to, projected = true).exists(isRowOf(_, c)))
+                  Some(if (merging) mergedAfterLostResponse(c) else Moved)
                 else Some(Gone)
           }
         } catch {
@@ -1082,8 +1086,28 @@ private[dynamodb] object KeyMigration {
           case NonFatal(e) => last = s"failed: ${e.getMessage}"
         }
       }
-      result.getOrElse(Failed(s"gave up after ${settings.maxAttempts} attempts ($last)"))
+      result.getOrElse(settle(c, merging, last))
     }
+
+    private def mergedAfterLostResponse(c: Candidate): Outcome = {
+      mergedRows.add(c -> "kept the row under the target key (the response of the merge was lost; the keys were read)")
+      Merged
+    }
+
+    /** After the last attempt, when the outcome of the last transaction is not known: read both keys to settle it. */
+    private def settle(c: Candidate, merging: Boolean, last: String): Outcome =
+      try {
+        val source = read(c.from, projected = true).exists(isRowOf(_, c))
+        val target = read(c.to, projected = true).exists(isRowOf(_, c))
+        if (!source && target) { if (merging) mergedAfterLostResponse(c) else Moved }
+        else if (source) Failed(s"gave up after ${settings.maxAttempts} attempts ($last)")
+        else Failed(s"outcome unknown after ${settings.maxAttempts} attempts: the row is under neither key ($last)")
+      } catch {
+        case NonFatal(e) =>
+          Failed(
+            s"outcome unknown after ${settings.maxAttempts} attempts ($last); the keys could not be read: ${e.getMessage}"
+          )
+      }
 
     /** What a merge keeps, for the report. */
     private def keptBy(source: Item, target: Item): String = table.duplicates match {

@@ -49,7 +49,7 @@ final class KeyMigrationSpec extends AnyWordSpec with Matchers with DynamoDBCont
 
   private val tableCounter = new AtomicInteger()
 
-  private def newTable(index: Boolean = false): String = {
+  private def newTable(index: Boolean = false, projection: ProjectionType = ProjectionType.ALL): String = {
     val name = s"keys-${tableCounter.incrementAndGet()}"
     val builder = CreateTableRequest
       .builder()
@@ -81,7 +81,7 @@ final class KeyMigrationSpec extends AnyWordSpec with Matchers with DynamoDBCont
             KeySchemaElement.builder().attributeName("persistence-id").keyType(KeyType.HASH).build(),
             KeySchemaElement.builder().attributeName("sequence-nr").keyType(KeyType.RANGE).build()
           )
-          .projection(Projection.builder().projectionType(ProjectionType.ALL).build())
+          .projection(Projection.builder().projectionType(projection).build())
           .build()
       )
     client.createTable(builder.build())
@@ -96,7 +96,8 @@ final class KeyMigrationSpec extends AnyWordSpec with Matchers with DynamoDBCont
       "persistence-id",
       "sequence-nr",
       Seq("deleted", "tags", "ordering"),
-      DuplicateRule.DeletedFlag("deleted")
+      DuplicateRule.DeletedFlag("deleted"),
+      indexAttributes = Seq("message", "deleted")
     )
 
   private def snapshots(name: String): MigrationTable =
@@ -637,6 +638,19 @@ final class KeyMigrationSpec extends AnyWordSpec with Matchers with DynamoDBCont
       KeyMigration.render(report, "test").mkString("\n") should include("merged rows")
     }
 
+    "list a merge whose response was lost on the last attempt as merged (review of #1025, G5)" in {
+      val table = newTable()
+      putRow(table, k(1), "A", 1, "deleted" -> b(true))
+      putRow(table, k(2), "A", 1, "deleted" -> b(false))
+      val c     = hooked(after = index => if (index == 2) throw SdkClientException.create("lost"))
+      val report =
+        run(journal(table), plan(("A", 1L) -> k(2)), execute = true, c = c, settings = _.copy(maxAttempts = 1))
+      report.remaining shouldBe empty
+      report.merged shouldBe 1
+      report.mergedRows.map(_._1.persistenceId) shouldBe Seq("A")
+      allRows(table).map(r => (r("skey").s(), r("deleted").bool().booleanValue())) shouldBe Vector("s2" -> true)
+    }
+
     "count a merge whose response was lost as merged" in {
       val table = newTable()
       putRow(table, k(1), "A", 1, "deleted" -> b(true))
@@ -691,6 +705,9 @@ final class KeyMigrationSpec extends AnyWordSpec with Matchers with DynamoDBCont
 
   "--verify" should {
 
+    def verifyReverse(table: String, p: KeyPlan): VerifyReport =
+      KeyVerification.run(client, journal(table), "rows", p, VerifySettings(timeout = 2.seconds), reverse = true)
+
     def verify(
         table: String,
         p: KeyPlan,
@@ -703,6 +720,55 @@ final class KeyMigrationSpec extends AnyWordSpec with Matchers with DynamoDBCont
           line => info(line)
         )
       report
+    }
+
+    "not pass when a string set in the index reads like another one (review of #1025, G3)" in {
+      val table = newTable(index = true)
+      putRow(table, k(1), "A", 1, "tags" -> AttributeValue.builder().ss("a", "b").build())
+      val c = hooked(
+        indexScan = r =>
+          r.toBuilder
+            .items(
+              r.items().asScala.map { i =>
+                  val m = new java.util.HashMap[String, AttributeValue](i);
+                  m.put("tags", AttributeValue.builder().ss("a,b").build()); m
+                }.asJava
+            )
+            .build(),
+        query = r => {
+          val m = new java.util.HashMap[String, AttributeValue](rowAt(table, k(1)).get.asJava)
+          m.put("tags", AttributeValue.builder().ss("a,b").build())
+          Some(QueryResponse.builder().items(m).build())
+        }
+      )
+      val report = verify(table, plan(), c)
+      report.indexMismatch shouldBe Seq("A")
+      report.verified shouldBe false
+    }
+
+    "not pass with an index that does not project the attributes that a replay reads (review of #1025, G3)" in {
+      val table = newTable(index = true, projection = ProjectionType.KEYS_ONLY)
+      putRow(table, k(1), "A", 1, "deleted" -> b(false), "ordering" -> n(1))
+      verify(table, plan()).verified shouldBe false
+    }
+
+    "not pass when the last response came after the timeout (review of #1025, G4)" in {
+      val table = newTable(index = true)
+      putRow(table, k(1), "A", 1)
+      val c = hooked(indexScan = r => { Thread.sleep(1500); r })
+      verify(table, plan(), c, VerifySettings(timeout = 1.second)).verified shouldBe false
+    }
+
+    "not pass --reverse while two persistence ids share their keys of 1.3.0, at different sequence numbers (review of #1025, G2)" in {
+      val table = newTable(index = true)
+      putRow(table, k(1), "A", 1)
+      putRow(table, k(2), "B", 2) // B@1 was hard deleted; A@2 would get the key of B@2 in 1.3.0
+      val shared = new KeyPlan {
+        override def placement(persistenceId: String, sequenceNr: Long, stored: StoredKey): Placement =
+          Placement.InPlace
+        override def sharedKeyGroup(persistenceId: String): Option[String] = Some("g")
+      }
+      verifyReverse(table, shared).verified shouldBe false
     }
 
     "pass when every row is under its key and the index matches the table" in {
@@ -718,7 +784,7 @@ final class KeyMigrationSpec extends AnyWordSpec with Matchers with DynamoDBCont
           "test",
           Some("j5ik2o.dynamo-db-journal.legacy-keys-enabled" -> "SnapshotKeyMigration")
         ).mkString("\n") should include(
-        "j5ik2o.dynamo-db-journal.legacy-keys-enabled = false is safe for this table"
+        "j5ik2o.dynamo-db-journal.legacy-keys-enabled = false: no row of this table was left under an old key"
       )
     }
 
@@ -740,7 +806,7 @@ final class KeyMigrationSpec extends AnyWordSpec with Matchers with DynamoDBCont
           report,
           "test",
           Some("j5ik2o.dynamo-db-journal.legacy-keys-enabled" -> "SnapshotKeyMigration")
-        ).mkString("\n") should not include "is safe"
+        ).mkString("\n") should not include "no row of this table was left"
     }
 
     "fail while the index shows a merged row with its old value of deleted (review of #1025, round 4)" in {

@@ -802,6 +802,11 @@ final class JournalKeyMigrationSpec extends AnyWordSpec with Matchers with Dynam
       // the rows that 1.3.0 cannot hold make the run incomplete (review of #1025, round 3)
       j.unmovable.map(_.persistenceId) shouldBe Seq(trailing)
       j.incomplete shouldBe true
+      // the pair shares its keys of 1.3.0, so --reverse --verify does not match (review of #1025, G2)
+      val reversed =
+        JournalKeyMigration.verify(Seq("--verify", "--reverse", "--verify-timeout", "5"), config(plain), _ => ())
+      reversed.sharedKeyGroups.exists(group => pair.forall(group.contains)) shouldBe true
+      reversed.verified shouldBe false
       ids.foreach { id =>
         rows(journalTableName, id).foreach(r => (r.pkey, r.skey) shouldBe journalKey(v130, id, r.sequenceNr))
       }
@@ -851,7 +856,8 @@ final class JournalKeyMigrationSpec extends AnyWordSpec with Matchers with Dynam
       val verified = JournalKeyMigration.verify(Seq("--verify", "--verify-timeout", "5"), config(plain), lines += _)
       verified.toMove should be >= 3L
       verified.verified shouldBe false
-      lines.exists(_.contains("[verify] not verified")) shouldBe true
+      lines.exists(_.contains("[verify] not matched")) shouldBe true
+      lines.exists(_.contains("default format locale")) shouldBe true
       lines.exists(_.contains("is safe")) shouldBe false
       an[IllegalArgumentException] should be thrownBy JournalKeyMigration.verify(
         Seq("--verify", "--persistence-id", id),

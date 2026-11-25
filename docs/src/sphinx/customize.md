@@ -289,6 +289,15 @@ two partitions until the old rows are migrated.
 
 #### Moving the old rows: `JournalKeyMigration` and `SnapshotKeyMigration` (issue #1014)
 
+```{admonition} Experimental
+:class: warning
+
+The key migration tools are experimental. They were measured on DynamoDB Local only, not on DynamoDB or with DAX, and
+what `--verify` reports is what it observed when it ran (see {ref}`before you start the application
+<key-migration-restart>`). Take a backup of the tables, for example with point-in-time recovery, before you run
+`--execute`.
+```
+
 `JournalKeyMigration` (in `journal-v2`) and `SnapshotKeyMigration` (in `snapshot-v2`) move the rows that 1.3.0 wrote
 to the keys of the resolvers that the configuration selects. You need them only after you select
 `PlainTextPersistenceIdBased` and `PlainTextPersistenceIdWithSeqNr`, and only for the `persistenceId`s in the table
@@ -314,13 +323,14 @@ application runs meanwhile:
   snapshot stays;
 - a node of 1.3.0 keeps writing under the old keys.
 
-The tool cannot prevent these, so the migration is offline. A soft delete is not on this list: when neither key holds
-the event at the moment of its update, the plugin writes the deleted event under the current key again
-(`JournalRowStore.write`), so a row that moved in between ends up deleted. `--execute` looks for signs of another
-writer: a row that left its key without reaching the target key, a row that changed after the tool read it, or a
-target key that holds a row the scan did not see (a sequence number above the highest one of its `persistenceId`).
-It prints a warning for each and exits with 1; stop every writer, run it again, and run `--verify`. These signs do not
-catch every path above: an overwrite after a recovery, for example, leaves a table that `--verify` accepts. These paths were reasoned from how DynamoDB updates an
+- a soft delete can miss the event: it deletes the events that a query of the index returns with `deleted = false`
+  (`WriteJournalDaoImpl.deleteMessages`), so an event that the index does not show at that moment stays undeleted.
+
+The tool cannot prevent these, so the migration is offline. `--execute` looks for some signs of another writer: a row
+that left its key without reaching the target key, a row that changed after the tool read it, or a target key that
+holds a row the scan did not see (a sequence number above the highest one of its `persistenceId`). It prints a warning
+for each and exits with 1. A run without a warning does not show that the writers were stopped: most of the paths above
+leave no sign, and an overwrite after a recovery leaves a table that `--verify` matches. These paths were reasoned from how DynamoDB updates an
 index; DynamoDB Local updates its index at once, so they were not reproduced.
 ```
 
@@ -354,18 +364,30 @@ $ sbt -batch "snapshot-v2/runMain com.github.j5ik2o.pekko.persistence.dynamodb.s
 with `--reverse`, a row of `order-`, which 1.3.0 cannot hold), or sees a sign of another writer, and with 0 otherwise. A dry-run exits with 0. Neither
 says that the table or the index is ready: they cover the selected rows only and do not read the index.
 
-`--verify` is the one check that says the application can start. It takes no `--persistence-id`: it scans the whole
-table, places every row, and scans the whole `persistence-id` index. It passes, and exits with 0, only when every row
-is under the key it belongs under (none to move, none blocked, none under an unknown key, none that cannot move), and
-when, for every `persistenceId`, the index shows the same rows as the table: the same keys and the same values of the
-attributes that the index projects, such as `deleted`, and no row that the table no longer holds. The index is updated
+`--verify` is the check that the migration ends with. It takes no `--persistence-id`: it scans the whole table, places
+every row, and scans the whole `persistence-id` index. It first checks the index itself: its partition key is the
+`persistenceId` column (S) and its sort key the sequence number column (N), it is ACTIVE, and it projects what a replay
+and a snapshot load read (`deleted`, `message`, `ordering`, and `tags` for the journal; `snapshot` and `created` for the
+snapshot store). It matches, and exits with 0, only when every row is under the key it belongs under (none to move,
+none blocked, none under an unknown key, none that cannot move), and when, for every `persistenceId`, the index shows
+the same rows as the table: the same keys and the same values of the attributes that the index projects, such as
+`deleted`, and no row that the table no longer holds. The rows are compared as SHA-256 digests of an encoding that
+gives each value its type and length; two different rows give the same digest only by a collision of SHA-256. With
+`--reverse`, it also does not match while two `persistenceId`s that the table holds share their keys of 1.3.0, at any
+sequence numbers: after the rollback, a write of one of them collides with a row of the other. The index is updated
 asynchronously, so the `persistenceId`s that differ are queried again until they match or `--verify-timeout` passes;
-the timeout bounds the whole check, the scans of the table and the index and the waits for `--max-rate` included; a
-check that the timeout stops does not pass. A query of the index that fails (no permission, throttling) is reported
+the timeout bounds the whole check, each request, the scans of the table and the index, and the waits for `--max-rate`
+included; a check that the timeout stops, or that ends after it, does not match. A query of the index that fails (no permission, throttling) is reported
 with its error, apart from an index that does not match yet. With the PlainText resolvers, a forward `--verify` that
-passes also says that `legacy-keys-enabled = false` is safe for its own table: the journal tool for
-`j5ik2o.dynamo-db-journal`, the snapshot tool for `j5ik2o.dynamo-db-snapshot`. Set each only after its own tool passes.
-Otherwise it lists what does not match and exits with 1.
+matches also says that no row of its own table was left under an old key: the journal tool for
+`j5ik2o.dynamo-db-journal.legacy-keys-enabled`, the snapshot tool for `j5ik2o.dynamo-db-snapshot.legacy-keys-enabled`.
+Set each only after its own tool matched. Otherwise it lists what does not match and exits with 1.
+
+The tools print the default format locale of their JVM when they start. The keys hold numbers in the digits of that
+locale, as the plugin writes them, so run the tools in a JVM with the locale of the application that wrote the rows;
+in a JVM whose digits differ (for example `ar-EG` and `en-US`), the tools list the rows as not movable. Rows that the
+published JARs wrote were not used in the tests; the keys of the releases are checked as fixed values
+([#1027](https://github.com/j5ik2o/pekko-persistence-dynamodb/issues/1027)).
 
 The IAM policy of the tools needs, on the journal or the snapshot table: `dynamodb:Scan` and `dynamodb:GetItem` for a
 dry-run; for `--execute` also `dynamodb:PutItem`, `dynamodb:DeleteItem`, `dynamodb:UpdateItem`, and
@@ -423,20 +445,43 @@ The steps:
 3. Stop every application that writes to or recovers from the tables.
 4. Run both tools with `--execute --writers-stopped`, with or without `--persistence-id`. Set `--max-rate` to what the
    table can take. If a run stops, run it again.
-5. Run both tools with `--verify`. Start the application only when both pass. If one does not, keep the application
-   stopped: run `--execute` again for the rows to move, resolve the blocked rows, the cycles, and the rows that are not
-   movable, or run `--verify` again later when only the index does not match yet.
-6. Start the application.
-7. Set `legacy-keys-enabled = false` only after a forward `--verify` of both tools passed. A blocked row or a row that is
+5. Run both tools with `--verify`. If one does not match, keep the application stopped: run `--execute` again for the
+   rows to move, resolve the blocked rows, the cycles, and the rows that are not movable, or run `--verify` again later
+   when only the index does not match yet.
+6. When both match, follow {ref}`before you start the application <key-migration-restart>`, and start it.
+7. Set `legacy-keys-enabled = false` only after a forward `--verify` of both tools matched. A blocked row or a row that is
    not movable stays under an old key, and with `false` deletes and updates do not reach it.
 
 To go back to 1.3.0: stop the application, run both tools with `--reverse --execute --writers-stopped`, and then with
-`--reverse --verify`. Only when both pass, switch the nodes to the resolvers of 1.3.0 (or to 1.3.0 itself) and start
-them. A row cannot go back when 1.3.0 cannot build a key for its `persistenceId` (such as `order-`, or `.` as the
-separator), or when two `persistenceId`s share the key of 1.3.0; then `--reverse --verify` does not pass. In that case
-stay with the new key format: start the nodes again with the PlainText resolvers and `legacy-keys-enabled = true`
-(the default), which handle the rows under both keys, and run the forward `--execute` and `--verify` before you set
-`legacy-keys-enabled = false` again.
+`--reverse --verify`. Only when both match, follow {ref}`before you start the application <key-migration-restart>`,
+switch the nodes to the resolvers of 1.3.0 (or to 1.3.0 itself), and start them. A row cannot go back when 1.3.0
+cannot build a key for its `persistenceId` (such as `order-`, or `.` as the separator), and two `persistenceId`s that
+share their keys of 1.3.0 collide after the rollback even at different sequence numbers; then `--reverse --verify` does
+not match. In that case stay with the new key format, and keep the application stopped: run both tools with the
+forward `--execute --writers-stopped` and then the forward `--verify` until both match, and only then start the nodes
+with the PlainText resolvers and `legacy-keys-enabled = true` (the default).
+
+(key-migration-restart)=
+
+##### Before you start the application
+
+`--verify` reports what it observed while it ran. The `persistence-id` index is eventually consistent, so a read that
+the application sends after the check is not proven to see the same rows, and the tools cannot prove that it will.
+What they leave open, and what to do:
+
+- An actor that recovers reads its highest sequence number and its events through the index. With the JournalHead
+  disabled, a read that misses a moved event takes a lower highest sequence number, and the next write replaces the
+  moved event under the same key. With the JournalHead enabled, the highest sequence number comes from the JournalHead
+  item, read with strong consistency (`JournalAggregateStore`), and the write of the head is refused for a sequence
+  number that it already holds (`sequence-nr < :first`), so this replacement does not happen; replays and snapshot loads
+  still read the index. Enabling the JournalHead needs its own table and migration ({doc}`journal-head`), so it is not a
+  step of this migration. A guard on the write side for the disabled JournalHead is tracked in [#1026](https://github.com/j5ik2o/pekko-persistence-dynamodb/issues/1026).
+- Leave time between the end of the moves and the start, and run `--verify` of both tools a second time, some minutes
+  after the first, before you start. Two checks that match, apart in time, make an index that still lags less likely;
+  they do not prove the absence of a lag. How long DynamoDB takes to update the index was not measured.
+- With DAX, a query or an item read through DAX can return what was cached before the migration. Drop both caches
+  before you start: restart the DAX cluster, or wait for both the item cache TTL and the query cache TTL to pass.
+
 
 The rows of issue #831 (`skey` is the sequence number alone in 19 digits, `"%019d"`, written by releases up to 1.0.59
 for a `persistenceId` without the separator) move to `${persistenceId}-${sequenceNumber}` in both directions, the key that both formats give
@@ -466,9 +511,10 @@ insert and a remove.
 ```{admonition} DAX (not measured)
 :class: warning
 
-The DAX item cache was not measured with this change. A delete or an update under an old key goes through DAX like any
-other write, but a read through the cache can return a row that was changed by another client until the cache entry
-expires. When you migrate the old rows, wait for the DAX item cache TTL before you rely on the result.
+DAX was not measured with this change. A delete or an update under an old key goes through DAX like any other write,
+but a read through the item cache or the query cache can return a row or a result that was cached before another client
+changed the table, until the cache entry expires. The migration tools do not go through DAX; before you start the
+application after a migration, drop both caches (see {ref}`before you start the application <key-migration-restart>`).
 ```
 
 ```{admonition} Writes never replace a row of another persistence id (issue #1009)

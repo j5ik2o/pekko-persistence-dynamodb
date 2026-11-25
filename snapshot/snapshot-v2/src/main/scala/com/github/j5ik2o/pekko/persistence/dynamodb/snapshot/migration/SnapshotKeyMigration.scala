@@ -130,6 +130,7 @@ object SnapshotKeyMigration {
       persistenceIdColumn = columns.persistenceIdColumnName,
       sequenceNrColumn = columns.sequenceNrColumnName,
       optionalColumns = Seq.empty,
+      indexAttributes = Seq(columns.snapshotColumnName, columns.createdColumnName),
       sequential = false,
       duplicates = DuplicateRule.LatestCreated(columns.createdColumnName)
     )
@@ -147,6 +148,7 @@ object SnapshotKeyMigration {
   private[dynamodb] def run(args: Seq[String], config: Config, out: String => Unit): MigrationReport =
     withClient(args, config) { (options, pluginConfig, client) =>
       require(options.verify.isEmpty, "use verify for --verify")
+      out(localeLine)
       val prefix = if (options.settings.execute) "" else "[dry-run] "
       val report = KeyMigration.run(
         client,
@@ -164,14 +166,17 @@ object SnapshotKeyMigration {
   private[dynamodb] def verify(args: Seq[String], config: Config, out: String => Unit): VerifyReport =
     withClient(args, config) { (options, pluginConfig, client) =>
       val settings = options.verify.getOrElse(throw new IllegalArgumentException("verify needs --verify"))
+      out(s"[verify] $localeLine")
       val report = KeyVerification.run(
         client,
         table(pluginConfig),
         pluginConfig.getSnapshotRowsIndexName,
         plan(pluginConfig, options.reverse),
         settings,
-        if (options.progress) text => Console.err.println(s"[verify] snapshot key migration progress $text")
-        else _ => ()
+        progress =
+          if (options.progress) text => Console.err.println(s"[verify] snapshot key migration progress $text")
+          else _ => (),
+        reverse = options.reverse
       )
       val legacyKeysSetting =
         if (!options.reverse && configuredForm(pluginConfig) == KeyForm.PlainText)
@@ -180,6 +185,13 @@ object SnapshotKeyMigration {
       KeyVerification.render(report, if (options.reverse) "reverse" else "forward", legacyKeysSetting).foreach(out)
       report
     }
+
+  /** The keys hold numbers formatted with the default format locale, as the plugin writes them, so the tool must run
+    * with the locale of the application that wrote the rows.
+    */
+  private def localeLine: String =
+    s"default format locale: ${java.util.Locale.getDefault(java.util.Locale.Category.FORMAT)} (the keys hold numbers " +
+    "in its digits; run the tool with the locale of the application that wrote the rows)"
 
   private def withClient[T](args: Seq[String], config: Config)(
       f: (MigrationOptions, SnapshotPluginConfig, software.amazon.awssdk.services.dynamodb.DynamoDbClient) => T
