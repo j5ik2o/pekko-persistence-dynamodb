@@ -471,8 +471,9 @@ What they leave open, and what to do:
 
 - An actor that recovers reads its highest sequence number and its events through the index. With the JournalHead
   disabled, a read that misses a moved event takes a lower highest sequence number, and the next write replaces the
-  moved event under the same key. With the JournalHead enabled, the highest sequence number comes from the JournalHead
-  item, read with strong consistency (`JournalAggregateStore`), and the write of the head is refused for a sequence
+  moved event under the same key. With the JournalHead enabled, the highest sequence number is the larger of the one
+  that the index gives and the one of the JournalHead item, which is read with strong consistency
+  (`JournalAggregateStore`), and the write of the head is refused for a sequence
   number that it already holds (`sequence-nr < :first`), so this replacement does not happen; replays and snapshot loads
   still read the index. Enabling the JournalHead needs its own table and migration ({doc}`journal-head`), so it is not a
   step of this migration. A guard on the write side for the disabled JournalHead is tracked in [#1026](https://github.com/j5ik2o/pekko-persistence-dynamodb/issues/1026).

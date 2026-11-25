@@ -52,7 +52,8 @@ because the `persistence-id` index is updated asynchronously. Both tools run as 
 row in one `TransactWriteItems` (a conditional `Put` under the new key and a conditional `Delete` under the old key),
 and can be run again after a stop. `--reverse` moves the rows back to the keys of 1.3.0 before a rollback, and lists the
 rows that cannot go back. `--max-rate`, `--parallelism`, `--segments`, and `--persistence-id` limit the run. `--execute` exits with 1 when a
-selected row is left. `--verify` checks the whole table and its `persistence-id` index, attribute for attribute, and is
+selected row is left. `--verify` checks the whole table and its `persistence-id` index, comparing the rows of each persistence id as
+SHA-256 digests (a probabilistic comparison), and is
 the check that the migration ends with; what it reports is what it observed, because the index is eventually
 consistent, and the documentation says what to do before the application starts (#1026 tracks a guard on the write
 side). The
