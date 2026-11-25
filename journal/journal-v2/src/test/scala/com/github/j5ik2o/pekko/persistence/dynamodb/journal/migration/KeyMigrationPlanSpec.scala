@@ -173,8 +173,10 @@ final class KeyMigrationPlanSpec extends AnyWordSpec with Matchers with BeforeAn
                 store.reverse.placement(id, 1, key) shouldBe Placement.InPlace
               }
               store.reverse.placement(id, 1, plain) match {
-                case Placement.Move(target, KeyForm.PlainText) => old shouldBe Some(target)
-                case Placement.InPlace                         => old shouldBe Some(plain)
+                case Placement.Move(target, KeyForm.PlainText) =>
+                  old shouldBe Some(target)
+                  target should not be plain // a row whose key does not change never moves onto itself
+                case Placement.InPlace => old shouldBe Some(plain)
                 case Placement.Unmovable(reason) =>
                   old shouldBe None
                   reason should include("1.3.0 cannot build a key")

@@ -26,7 +26,7 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.{
 import com.github.j5ik2o.pekko.persistence.dynamodb.migration._
 import com.github.j5ik2o.pekko.persistence.dynamodb.model.{ PersistenceId, PersistenceIdKeyParts, SequenceNumber }
 import com.github.j5ik2o.pekko.persistence.dynamodb.utils.V2SyncClientFactory
-import com.typesafe.config.{ Config, ConfigFactory }
+import com.typesafe.config.{ Config, ConfigFactory, ConfigValueFactory }
 import org.apache.pekko.actor.ActorSystem
 
 import scala.util.Try
@@ -130,19 +130,28 @@ object SnapshotKeyMigration {
       persistenceIdColumn = columns.persistenceIdColumnName,
       sequenceNrColumn = columns.sequenceNrColumnName,
       optionalColumns = Seq.empty,
+      readIndex = Some(pluginConfig.getSnapshotRowsIndexName),
+      sequential = false,
       duplicates = DuplicateRule.LatestCreated(columns.createdColumnName)
     )
   }
 
   def main(args: Array[String]): Unit = {
-    run(args.toSeq, ConfigFactory.load(), println)
-    ()
+    val report = run(args.toSeq, ConfigFactory.load(), println)
+    // A run that left rows behind or did not see them in the index is not a success for a script that checks it.
+    if (report.incomplete) sys.exit(1)
   }
 
   /** Runs the tool with the given configuration and prints the report with `out`. */
   private[dynamodb] def run(args: Seq[String], config: Config, out: String => Unit): MigrationReport = {
     val options = MigrationOptions.parse(args)
-    val system  = ActorSystem("snapshot-key-migration", config)
+    // The tool connects with the plain v2 client whatever client-version the plugin uses: the moves bypass DAX, and
+    // the v2 client builders accept only a v2 client-version.
+    val toolConfig = config.withValue(
+      "j5ik2o.dynamo-db-snapshot.dynamo-db-client.client-version",
+      ConfigValueFactory.fromAnyRef("v2")
+    )
+    val system = ActorSystem("snapshot-key-migration", toolConfig)
     try {
       val pluginConfig  = SnapshotPluginConfig.fromConfig(system.settings.config.getConfig("j5ik2o.dynamo-db-snapshot"))
       val keyPlan       = plan(pluginConfig, options.reverse)
@@ -162,7 +171,8 @@ object SnapshotKeyMigration {
           if (options.progress) text => Console.err.println(s"${prefix}snapshot key migration progress $text")
           else _ => ()
         )
-        KeyMigration.render(report, if (options.reverse) "reverse" else "forward").foreach(out)
+        val legacyKeysCheck = !options.reverse && configuredForm(pluginConfig) == KeyForm.PlainText
+        KeyMigration.render(report, if (options.reverse) "reverse" else "forward", legacyKeysCheck).foreach(out)
         report
       } finally client.close()
     } finally {

@@ -76,19 +76,28 @@ private[dynamodb] final class ResolverKeyPlan(
     release130(persistenceId, 1L).map(key => s"${key.partitionKey} ${key.sortKey.dropRight(20)}")
 }
 
+import scala.concurrent.duration._
+
 /** The command line options of the key migration tools. */
 private[dynamodb] final case class MigrationOptions(settings: MigrationSettings, reverse: Boolean, progress: Boolean)
 
 private[dynamodb] object MigrationOptions {
 
   val usage: String =
-    "options: [--execute] [--reverse] [--progress] [--persistence-id <id>]... [--segments <n>] " +
-    "[--parallelism <n>] [--max-rate <rows per second>] [--scan-page-size <items>]"
+    "options: [--execute --writers-stopped] [--reverse] [--progress] [--persistence-id <id>]... [--segments <n>] " +
+    "[--parallelism <n>] [--max-rate <rows per second>] [--scan-page-size <items>] [--index-wait <seconds>]"
+
+  /** The tool moves rows only while nothing else writes to or recovers from the table (issue #1014). */
+  val writersStoppedRequired: String =
+    "--execute requires --writers-stopped: stop every application that writes to or recovers from the journal and " +
+    "snapshot tables before you move the rows, because a replay, a recovery, or a delete that runs during the moves " +
+    "can read the persistence-id index before DynamoDB has updated it"
 
   def parse(args: Seq[String]): MigrationOptions = {
     var settings = MigrationSettings(execute = false)
     var reverse  = false
     var progress = false
+    var stopped  = false
     var ids      = Set.empty[String]
     var rest     = args.toList
     def value(name: String, tail: List[String]): (String, List[String]) = tail match {
@@ -100,9 +109,13 @@ private[dynamodb] object MigrationOptions {
       catch { case _: NumberFormatException => throw new IllegalArgumentException(s"$name requires a number: $text") }
     while (rest.nonEmpty) {
       rest match {
-        case "--execute" :: tail  => settings = settings.copy(execute = true); rest = tail
-        case "--reverse" :: tail  => reverse = true; rest = tail
-        case "--progress" :: tail => progress = true; rest = tail
+        case "--execute" :: tail         => settings = settings.copy(execute = true); rest = tail
+        case "--reverse" :: tail         => reverse = true; rest = tail
+        case "--progress" :: tail        => progress = true; rest = tail
+        case "--writers-stopped" :: tail => stopped = true; rest = tail
+        case (name @ "--index-wait") :: tail =>
+          val (v, more) = value(name, tail)
+          settings = settings.copy(indexWait = number(name, v)(_.toInt).seconds); rest = more
         case (name @ "--persistence-id") :: tail =>
           val (v, more) = value(name, tail); ids += v; rest = more
         case (name @ "--segments") :: tail =>
@@ -120,6 +133,7 @@ private[dynamodb] object MigrationOptions {
         case Nil        =>
       }
     }
+    if (settings.execute && !stopped) throw new IllegalArgumentException(writersStoppedRequired)
     MigrationOptions(
       settings.copy(persistenceIds = if (ids.isEmpty) None else Some(ids)),
       reverse,

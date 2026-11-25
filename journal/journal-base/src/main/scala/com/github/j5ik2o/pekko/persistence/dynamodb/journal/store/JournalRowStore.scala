@@ -284,14 +284,9 @@ final class JournalRowStore(
   /** Deletes the rows, each with its own conditional DeleteItem, at most `batchWriteLimit` at a time. A key that holds
     * the row of another persistence id is left as it is, because that row is not the event to delete. The copies that
     * releases up to 1.3.0 stored under another key are deleted too (see `deleteLegacyRows`).
-    *
-    * The old key is deleted first. The key migration tool moves a row from the old key to the current one in one
-    * transaction, so a row that it moves while the delete runs is either gone from the old key before the delete
-    * reaches it, and then deleted under the current key, or deleted under the old key and never moved (issue #1014).
-    * Deleting the current key first would leave a row that moved between the two deletes.
     */
   def delete(keys: Seq[PersistenceIdWithSeqNr]): Source[Long, NotUsed] =
-    deleteLegacyRows(keys).flatMapConcat(_ => deleteRows(keys))
+    deleteRows(keys).flatMapConcat(count => deleteLegacyRows(keys).map(_ => count))
 
   private def deleteRows(keys: Seq[PersistenceIdWithSeqNr]): Source[Long, NotUsed] = {
     if (keys.isEmpty) {

@@ -27,6 +27,7 @@ import software.amazon.awssdk.services.dynamodb.model._
 import java.lang.reflect.{ InvocationHandler, InvocationTargetException, Method, Proxy }
 import java.net.URI
 import java.util.concurrent.atomic.{ AtomicBoolean, AtomicInteger }
+import scala.concurrent.duration._
 import scala.jdk.CollectionConverters._
 
 object KeyMigrationSpec extends DockerAssignedPort
@@ -48,23 +49,42 @@ final class KeyMigrationSpec extends AnyWordSpec with Matchers with DynamoDBCont
 
   private val tableCounter = new AtomicInteger()
 
-  private def newTable(): String = {
+  private def newTable(index: Boolean = false): String = {
     val name = s"keys-${tableCounter.incrementAndGet()}"
-    client.createTable(
-      CreateTableRequest
-        .builder()
-        .tableName(name)
-        .attributeDefinitions(
+    val builder = CreateTableRequest
+      .builder()
+      .tableName(name)
+      .attributeDefinitions(
+        (Seq(
           AttributeDefinition.builder().attributeName("pkey").attributeType(ScalarAttributeType.S).build(),
           AttributeDefinition.builder().attributeName("skey").attributeType(ScalarAttributeType.S).build()
-        )
-        .keySchema(
-          KeySchemaElement.builder().attributeName("pkey").keyType(KeyType.HASH).build(),
-          KeySchemaElement.builder().attributeName("skey").keyType(KeyType.RANGE).build()
-        )
-        .billingMode(BillingMode.PAY_PER_REQUEST)
-        .build()
-    )
+        ) ++ (if (index)
+                Seq(
+                  AttributeDefinition
+                    .builder().attributeName("persistence-id").attributeType(ScalarAttributeType.S).build(),
+                  AttributeDefinition
+                    .builder().attributeName("sequence-nr").attributeType(ScalarAttributeType.N).build()
+                )
+              else Seq.empty)).asJava
+      )
+      .keySchema(
+        KeySchemaElement.builder().attributeName("pkey").keyType(KeyType.HASH).build(),
+        KeySchemaElement.builder().attributeName("skey").keyType(KeyType.RANGE).build()
+      )
+      .billingMode(BillingMode.PAY_PER_REQUEST)
+    if (index)
+      builder.globalSecondaryIndexes(
+        GlobalSecondaryIndex
+          .builder()
+          .indexName("rows")
+          .keySchema(
+            KeySchemaElement.builder().attributeName("persistence-id").keyType(KeyType.HASH).build(),
+            KeySchemaElement.builder().attributeName("sequence-nr").keyType(KeyType.RANGE).build()
+          )
+          .projection(Projection.builder().projectionType(ProjectionType.ALL).build())
+          .build()
+      )
+    client.createTable(builder.build())
     name
   }
 
@@ -166,7 +186,11 @@ final class KeyMigrationSpec extends AnyWordSpec with Matchers with DynamoDBCont
   private def hooked(
       before: Int => Unit = _ => (),
       after: Int => Unit = _ => (),
-      down: AtomicBoolean = new AtomicBoolean(false)
+      down: AtomicBoolean = new AtomicBoolean(false),
+      query: QueryRequest => Option[QueryResponse] = _ => None,
+      concurrent: AtomicInteger = new AtomicInteger(),
+      maxConcurrent: AtomicInteger = new AtomicInteger(),
+      scans: java.util.concurrent.ConcurrentLinkedQueue[ScanRequest] = new java.util.concurrent.ConcurrentLinkedQueue()
   ): DynamoDbClient = {
     val count = new AtomicInteger()
     Proxy
@@ -179,9 +203,16 @@ final class KeyMigrationSpec extends AnyWordSpec with Matchers with DynamoDBCont
             val transaction = method.getName == "transactWriteItems"
             val index       = if (transaction) count.incrementAndGet() else 0
             if (transaction) before(index)
+            args.headOption.foreach {
+              case r: ScanRequest => scans.add(r)
+              case _              =>
+            }
+            val faked = args.headOption.collect { case r: QueryRequest => query(r) }.flatten
+            if (transaction) maxConcurrent.accumulateAndGet(concurrent.incrementAndGet(), math.max)
             val result =
-              try method.invoke(client, Option(args).getOrElse(Array.empty[AnyRef]): _*)
+              try faked.getOrElse(method.invoke(client, Option(args).getOrElse(Array.empty[AnyRef]): _*))
               catch { case e: InvocationTargetException => throw e.getCause }
+              finally if (transaction) concurrent.decrementAndGet()
             if (transaction) after(index)
             result
           }
@@ -382,7 +413,8 @@ final class KeyMigrationSpec extends AnyWordSpec with Matchers with DynamoDBCont
           )
       )
       val report = run(journal(table), plan(("A", 1L) -> k(2)), execute = true, c = c)
-      report.alreadyGone + report.moved shouldBe 1
+      report.alreadyGone shouldBe 1
+      report.moved shouldBe 0
       allRows(table) shouldBe empty
     }
 
@@ -405,16 +437,235 @@ final class KeyMigrationSpec extends AnyWordSpec with Matchers with DynamoDBCont
       owner(table, k(2)) shouldBe Some("B" -> 1L)
     }
 
-    "keep to --max-rate and scan in parallel segments" in {
+    "keep to --max-rate" in {
       val table = newTable()
       (1 to 30).foreach(i => putRow(table, k(i), "A", i.toLong))
       val p       = plan((1 to 30).map(i => ("A", i.toLong) -> k(100 + i)): _*)
       val started = System.nanoTime()
-      val report =
-        run(journal(table), p, execute = true, settings = _.copy(maxRate = Some(20.0), segments = 3, parallelism = 8))
+      val report  = run(journal(table), p, execute = true, settings = _.copy(maxRate = Some(20.0), parallelism = 8))
       val seconds = (System.nanoTime() - started) / 1e9
       report.moved shouldBe 30
       seconds should be >= 1.3
+    }
+
+    "scan in the given segments, page by page" in {
+      val table = newTable()
+      (1 to 30).foreach(i => putRow(table, k(i), "A", i.toLong))
+      val scans = new java.util.concurrent.ConcurrentLinkedQueue[ScanRequest]()
+      val c     = hooked(scans = scans)
+      val report = run(
+        journal(table),
+        plan((1 to 30).map(i => ("A", i.toLong) -> k(100 + i)): _*),
+        execute = false,
+        c = c,
+        settings = _.copy(segments = 3, scanPageSize = Some(4))
+      )
+      report.scannedRows shouldBe 30
+      report.candidates.map(_.sequenceNr).sorted shouldBe (1L to 30L)
+      val requests = scans.asScala.toVector
+      requests.map(_.segment().intValue()).distinct.sorted shouldBe Seq(0, 1, 2)
+      requests.foreach(_.totalSegments().intValue() shouldBe 3)
+      requests.count(_.exclusiveStartKey().isEmpty) shouldBe 3 // each segment starts once, the rest continue
+      requests.size should be > 3
+    }
+
+    "move at most --parallelism rows at a time, whatever --segments is" in {
+      val table = newTable()
+      (1 to 20).foreach(i => putRow(table, k(i), "A", i.toLong))
+      val maxConcurrent = new AtomicInteger()
+      val c             = hooked(before = _ => Thread.sleep(20), maxConcurrent = maxConcurrent)
+      val report = run(
+        journal(table),
+        plan((1 to 20).map(i => ("A", i.toLong) -> k(100 + i)): _*),
+        execute = true,
+        c = c,
+        settings = _.copy(segments = 8, parallelism = 1)
+      )
+      report.moved shouldBe 20
+      maxConcurrent.get() shouldBe 1
+    }
+
+    "give a shared target key to the row that the dry-run names, and block the other" in {
+      val table = newTable()
+      putRow(table, k(1), "A", 1)
+      putRow(table, k(2), "B", 1)
+      putRow(table, k(3), "C", 1)
+      // A and B need key 9. The move of A is slow, so B would win a race for the key.
+      val p   = plan(("A", 1L) -> k(9), ("B", 1L) -> k(9), ("C", 1L) -> k(4))
+      val dry = run(journal(table), p, execute = false)
+      dry.blocked.map(b => (b.candidate.persistenceId, b.occupantPersistenceId)) shouldBe Seq("B" -> "A")
+      val slowA = Proxy
+        .newProxyInstance(
+          classOf[DynamoDbClient].getClassLoader,
+          Array(classOf[DynamoDbClient]),
+          new InvocationHandler {
+            override def invoke(proxy: Any, method: Method, args: Array[AnyRef]): AnyRef = {
+              args.headOption.foreach {
+                case r: TransactWriteItemsRequest
+                    if r
+                      .transactItems().asScala.exists(i =>
+                        Option(i.put()).exists(_.item().get("persistence-id").s() == "A")
+                      ) =>
+                  Thread.sleep(300)
+                case _ =>
+              }
+              try method.invoke(client, Option(args).getOrElse(Array.empty[AnyRef]): _*)
+              catch { case e: InvocationTargetException => throw e.getCause }
+            }
+          }
+        )
+        .asInstanceOf[DynamoDbClient]
+      val report = run(journal(table), p, execute = true, c = slowA)
+      report.moved shouldBe 2
+      report.remaining.map(_._1.persistenceId) shouldBe Seq("B")
+      owner(table, k(9)) shouldBe Some("A" -> 1L)
+      owner(table, k(2)) shouldBe Some("B" -> 1L)
+    }
+
+    "find a shared target key also when another move frees it" in {
+      val table = newTable()
+      putRow(table, k(1), "A", 1)
+      putRow(table, k(2), "B", 1)
+      putRow(table, k(3), "C", 1)
+      val p   = plan(("A", 1L) -> k(3), ("B", 1L) -> k(3), ("C", 1L) -> k(4))
+      val dry = run(journal(table), p, execute = false)
+      dry.orderedMoves shouldBe 1
+      dry.blocked.map(b => (b.candidate.persistenceId, b.occupantPersistenceId)) shouldBe Seq("B" -> "A")
+      val report = run(journal(table), p, execute = true)
+      report.moved shouldBe 2
+      report.remaining.map(_._1.persistenceId) shouldBe Seq("B")
+      owner(table, k(3)) shouldBe Some("A" -> 1L)
+    }
+
+    "list a row whose target key a swap fills as blocked" in {
+      val table = newTable()
+      putRow(table, k(1), "A", 1)
+      putRow(table, k(2), "B", 1)
+      putRow(table, k(3), "C", 1)
+      val p   = plan(("A", 1L) -> k(2), ("B", 1L) -> k(1), ("C", 1L) -> k(1))
+      val dry = run(journal(table), p, execute = false)
+      dry.cycles.map(_.map(_.persistenceId).sorted) shouldBe Seq(Seq("A", "B"))
+      dry.orderedMoves shouldBe 0
+      dry.blocked.map(b => (b.candidate.persistenceId, b.occupantPersistenceId)) shouldBe Seq("C" -> "B")
+      val report = run(journal(table), p, execute = true)
+      report.swapped shouldBe 2
+      report.remaining.map(_._1.persistenceId) shouldBe Seq("C")
+    }
+
+    "count a swap whose response was lost as swapped" in {
+      val table = newTable()
+      putRow(table, k(1), "A", 1)
+      putRow(table, k(2), "B", 1)
+      val lost   = new AtomicBoolean(false)
+      val c      = hooked(after = _ => if (lost.compareAndSet(false, true)) throw SdkClientException.create("lost"))
+      val report = run(journal(table), plan(("A", 1L) -> k(2), ("B", 1L) -> k(1)), execute = true, c = c)
+      report.swapped shouldBe 2
+      report.remaining shouldBe empty
+      owner(table, k(1)) shouldBe Some("B" -> 1L)
+      owner(table, k(2)) shouldBe Some("A" -> 1L)
+    }
+
+    "move the rest of a cycle that another writer broke" in {
+      val table = newTable()
+      putRow(table, k(1), "A", 1)
+      putRow(table, k(2), "B", 1)
+      val c = hooked(before =
+        index =>
+          if (index == 1)
+            client.deleteItem(
+              DeleteItemRequest.builder().tableName(table).key(Map("pkey" -> s("p2"), "skey" -> s("s2")).asJava).build()
+            )
+      )
+      val report = run(journal(table), plan(("A", 1L) -> k(2), ("B", 1L) -> k(1)), execute = true, c = c)
+      report.moved shouldBe 1
+      report.alreadyGone shouldBe 1
+      report.remaining shouldBe empty
+      allRows(table).map(r => (r("skey").s(), r("persistence-id").s())) shouldBe Vector("s2" -> "A")
+    }
+
+    "not swap rows that do not fit in one transaction" in {
+      val table = newTable()
+      val big = AttributeValue
+        .builder().b(software.amazon.awssdk.core.SdkBytes.fromByteArray(Array.fill(390 * 1024)(1.toByte))).build()
+      (1 to 11).foreach(i => putRow(table, k(i), s"P$i", 1, "message" -> big))
+      val p      = plan((1 to 11).map(i => (s"P$i", 1L) -> k(i % 11 + 1)): _*)
+      val report = run(journal(table), p, execute = true)
+      report.swapped shouldBe 0
+      report.remaining should have size 11
+      report.remaining.head._2 should include("more than")
+      (1 to 11).foreach(i => owner(table, k(i)) shouldBe Some(s"P$i" -> 1L))
+    }
+
+    "list a row that would exceed the item size of DynamoDB under its new key" in {
+      val table = newTable()
+      // 400 KB minus a little: the long target key makes the item too large.
+      val message = AttributeValue
+        .builder().b(software.amazon.awssdk.core.SdkBytes.fromByteArray(Array.fill(409000)(1.toByte))).build()
+      putRow(table, k(1), "A", 1, "message" -> message)
+      val target = StoredKey("p" * 2048, "s" * 1024)
+      val report = run(journal(table), plan(("A", 1L) -> target), execute = true)
+      report.moved shouldBe 0
+      report.remaining should have size 1
+      report.remaining.head._2 should include("rejected")
+      owner(table, k(1)) shouldBe Some("A" -> 1L)
+    }
+
+    "wait until the index shows the moved rows, and report the ids that it does not show" in {
+      val table   = newTable(index = true)
+      val indexed = journal(table).copy(readIndex = Some("rows"))
+      putRow(table, k(1), "A", 1)
+      putRow(table, k(2), "B", 1)
+      val p     = plan(("A", 1L) -> k(11), ("B", 1L) -> k(12))
+      val stale = new AtomicInteger()
+      // The index first returns the old keys, as DynamoDB does until it has applied the moves.
+      def staleRow(id: String, key: StoredKey) =
+        QueryResponse.builder().items(Map("pkey" -> s(key.partitionKey), "skey" -> s(key.sortKey)).asJava).build()
+      val c = hooked(query = r => {
+        val id = r.expressionAttributeValues().values().asScala.head.s()
+        if (id == "B" || stale.incrementAndGet() <= 2) Some(staleRow(id, if (id == "A") k(1) else k(2))) else None
+      })
+      val report = run(indexed, p, execute = true, c = c, settings = _.copy(indexWait = 3.seconds))
+      report.moved shouldBe 2
+      report.indexLagging shouldBe Seq("B")
+      report.incomplete shouldBe true
+      report.usage.requests("Query") should be > 3L
+      val clean = newTable(index = true)
+      putRow(clean, k(1), "A", 1)
+      val ok = run(journal(clean).copy(readIndex = Some("rows")), plan(("A", 1L) -> k(11)), execute = true)
+      ok.indexLagging shouldBe empty
+      ok.incomplete shouldBe false
+    }
+
+    "report the shared-key groups of snapshots without counting the sequence numbers between them as missing" in {
+      val table = newTable()
+      putRow(table, k(1), "A", 100)
+      putRow(table, k(2), "B", 100)
+      val grouped = new KeyPlan {
+        override def placement(persistenceId: String, sequenceNr: Long, stored: StoredKey): Placement =
+          Placement.InPlace
+        override def sharedKeyGroup(persistenceId: String): Option[String] = Some("g")
+      }
+      val report = run(snapshots(table).copy(sequential = false), grouped, execute = false)
+      val lines  = KeyMigration.render(report, "test")
+      lines.mkString("\n") should include("A (snapshots=1, highest=100)")
+      lines.mkString("\n") should not include "missing"
+      val journalLines = KeyMigration.render(run(journal(table), grouped, execute = false), "test").mkString("\n")
+      journalLines should include("99 missing")
+    }
+
+    "say whether legacy-keys-enabled = false is safe" in {
+      val table = newTable()
+      putRow(table, k(1), "A", 1)
+      putRow(table, k(2), "C", 1)
+      def line(p: KeyPlan) =
+        KeyMigration
+          .render(run(journal(table), p, execute = false), "test", legacyKeysCheck = true).filter(
+            _.contains("legacy-keys-enabled")
+          )
+      line(plan()) shouldBe Seq(
+        "[dry-run] legacy-keys-enabled = false: safe; no row is left under an old key (0 to move, 0 blocked, 0 not movable)"
+      )
+      line(plan(("A", 1L) -> k(2))).head should include("not safe; 1 rows to move (1 of them blocked)")
     }
 
     "move only the selected persistence ids" in {

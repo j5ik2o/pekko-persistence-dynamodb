@@ -46,20 +46,18 @@ These resolvers are experimental. {ref}`The new key format <key-format-change>` 
 
 `JournalKeyMigration` (`journal-v2`) and `SnapshotKeyMigration` (`snapshot-v2`) move the journal and snapshot rows
 that 1.3.0 wrote to the keys of the PlainText resolvers (#1014). You need them only after you select those resolvers;
-with the default resolvers the keys do not change. Both tools run as a dry-run unless you pass `--execute`, move each
+with the default resolvers the keys do not change. The migration is offline: `--execute` requires
+`--writers-stopped`, and every application that writes to or recovers from the tables must be stopped while it runs,
+because the `persistence-id` index is updated asynchronously. Both tools run as a dry-run unless you pass `--execute`, move each
 row in one `TransactWriteItems` (a conditional `Put` under the new key and a conditional `Delete` under the old key),
 and can be run again after a stop. `--reverse` moves the rows back to the keys of 1.3.0 before a rollback, and lists the
-rows that cannot go back. `--max-rate`, `--parallelism`, `--segments`, and `--persistence-id` limit the run. The rows
+rows that cannot go back. `--max-rate`, `--parallelism`, `--segments`, and `--persistence-id` limit the run. After the moves, the tools wait for
+the index to show the moved rows, and exit with 1 when a row is left or the index does not catch up. The dry-run says
+when `legacy-keys-enabled = false` is safe. The rows
 of issue #831 (`skey` is the sequence number alone) move too, also with the default resolvers. The dry-run lists the
 `persistenceId`s that shared keys in 1.3.0 with the sequence numbers that have no row, which may be events that were
 replaced up to 1.2.0; the tools cannot restore them. {ref}`Moving the old rows <key-migration>` gives the steps and the
 cost measured on DynamoDB Local. DynamoDB and DAX were not measured.
-
-With the PlainText resolvers selected, a hard delete now deletes the copy under the key of 1.3.0 before the row under
-the current key, and a snapshot delete that finds a snapshot under the key of 1.3.0 deletes it under the current key
-too, while it is the same snapshot (the same `created`). This keeps a row that the tool moves during the delete from
-being left behind. The snapshot delete sends one more conditional `DeleteItem` for each snapshot still under the key of
-1.3.0. Nothing changes with the default resolvers.
 
 ## 1.3.0
 

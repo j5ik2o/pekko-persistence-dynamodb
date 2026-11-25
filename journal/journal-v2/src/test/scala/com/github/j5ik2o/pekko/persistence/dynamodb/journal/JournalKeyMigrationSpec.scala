@@ -23,7 +23,12 @@ import com.github.j5ik2o.pekko.persistence.dynamodb.config.client.{ ClientType, 
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.config.JournalPluginConfig
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.migration.JournalKeyMigration
 import com.github.j5ik2o.pekko.persistence.dynamodb.journal.store.JournalRowStoreException
-import com.github.j5ik2o.pekko.persistence.dynamodb.migration.{ KeyMigration, MigrationReport, MigrationSettings }
+import com.github.j5ik2o.pekko.persistence.dynamodb.migration.{
+  KeyMigration,
+  MigrationOptions,
+  MigrationReport,
+  MigrationSettings
+}
 import com.github.j5ik2o.pekko.persistence.dynamodb.model.{ PersistenceId, SequenceNumber }
 import com.github.j5ik2o.pekko.persistence.dynamodb.snapshot
 import com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.SnapshotPluginContext
@@ -68,7 +73,7 @@ object JournalKeyMigrationSpec extends DockerAssignedPort {
       softDelete: Boolean = true,
       separator: Option[String] = None,
       legacyKeys: Boolean = true,
-      hooked: Boolean = false
+      clientVersion: String = ClientVersion.V2.toString
   )
 }
 
@@ -102,19 +107,23 @@ final class JournalKeyMigrationSpec extends AnyWordSpec with Matchers with Dynam
 
   private var systems: Map[Mode, ActorSystem] = Map.empty
 
-  private lazy val v2Client: V2DynamoDbClient = V2DynamoDbClient
-    .builder()
-    .endpointOverride(URI.create(s"http://$dockerHost:$dynamoDBPort"))
-    .region(Region.AP_NORTHEAST_1)
-    .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create("x", "x")))
-    .build()
+  // Created with the tables and closed with them.
+  private var v2Client: V2DynamoDbClient = _
 
   override def afterStartContainers(): Unit = {
     super.afterStartContainers()
     createTable()
+    v2Client = V2DynamoDbClient
+      .builder()
+      .endpointOverride(URI.create(s"http://$dockerHost:$dynamoDBPort"))
+      .region(Region.AP_NORTHEAST_1)
+      .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create("x", "x")))
+      .build()
   }
 
   override def beforeStopContainers(): Unit = {
+    Option(v2Client).foreach(_.close())
+    v2Client = null
     systems.values.foreach(s => Await.result(s.terminate(), timeout))
     systems = Map.empty
     deleteTable()
@@ -166,18 +175,8 @@ final class JournalKeyMigrationSpec extends AnyWordSpec with Matchers with Dynam
              |j5ik2o.dynamo-db-journal.legacy-keys-enabled = false
              |j5ik2o.dynamo-db-snapshot.legacy-keys-enabled = false
              |""".stripMargin
-    val hook =
-      if (!mode.hooked) ""
-      else
-        Seq("journal", "snapshot")
-          .map(p =>
-            s"""\nj5ik2o.dynamo-db-$p.dynamo-db-client.v2.execution-interceptor-class-names = ["${classOf[
-                RequestHook
-              ].getName}"]"""
-          )
-          .mkString
     ConfigFactory
-      .parseString(separator + resolvers + legacyKeys + hook)
+      .parseString(separator + resolvers + legacyKeys)
       .withFallback(
         ConfigHelper.config(
           Some("journal-reference"),
@@ -185,7 +184,7 @@ final class JournalKeyMigrationSpec extends AnyWordSpec with Matchers with Dynam
           legacyJournalMode = false,
           dynamoDBHost = "localhost",
           dynamoDBPort = dynamoDBPort,
-          clientVersion = ClientVersion.V2.toString,
+          clientVersion = mode.clientVersion,
           clientType = ClientType.Sync.toString,
           softDelete = mode.softDelete,
           headEnabled = mode.headEnabled
@@ -203,7 +202,7 @@ final class JournalKeyMigrationSpec extends AnyWordSpec with Matchers with Dynam
           if (mode.softDelete) "soft" else "hard",
           mode.separator.fold("dash")(s => s"sep${s.map(_.toInt).mkString("x")}"),
           if (mode.legacyKeys) "legacy" else "nolegacy",
-          if (mode.hooked) "hooked" else "plain"
+          mode.clientVersion.replace("-", "")
         ).mkString("-")
         val created = ActorSystem(name, config(mode))
         systems += mode -> created
@@ -263,22 +262,24 @@ final class JournalKeyMigrationSpec extends AnyWordSpec with Matchers with Dynam
       ids: Set[String],
       execute: Boolean,
       reverse: Boolean = false,
-      client: V2DynamoDbClient = v2Client,
+      client: V2DynamoDbClient = null,
       settings: MigrationSettings => MigrationSettings = identity,
       snapshots: Boolean = true
   ): (MigrationReport, MigrationReport) = {
     val base = settings(MigrationSettings(execute = execute, persistenceIds = Some(ids)))
+    val c    = Option(client).getOrElse(v2Client)
     val j = KeyMigration.run(
-      client,
+      c,
       JournalKeyMigration.table(journalConfig(mode)),
       JournalKeyMigration.plan(journalConfig(mode), reverse),
       base
     )
+    // Without snapshots, the snapshot tool scans and moves no row.
     val s = KeyMigration.run(
-      if (snapshots) client else v2Client,
+      if (snapshots) c else v2Client,
       SnapshotKeyMigration.table(snapshotConfig(mode)),
       SnapshotKeyMigration.plan(snapshotConfig(mode), reverse),
-      base
+      if (snapshots) base else base.copy(persistenceIds = Some(Set.empty))
     )
     (KeyMigration.render(j, "journal") ++ KeyMigration.render(s, "snapshot")).foreach(line => info(line))
     (j, s)
@@ -356,31 +357,40 @@ final class JournalKeyMigrationSpec extends AnyWordSpec with Matchers with Dynam
 
   // --- the tables --------------------------------------------------------------------------------------------------
 
-  final case class Row(pkey: String, skey: String, sequenceNr: Long, deleted: Option[Boolean])
+  final case class Row(pkey: String, skey: String, sequenceNr: Long, deleted: Option[Boolean], created: Option[Long])
 
-  private def rows(table: String, id: String): Vector[Row] =
-    dynamoDBClient
-      .scan(
-        new ScanRequest()
-          .withTableName(table)
-          .withConsistentRead(true)
-          .withFilterExpression("#pid = :pid")
-          .withExpressionAttributeNames(Map("#pid" -> "persistence-id").asJava)
-          .withExpressionAttributeValues(Map(":pid" -> new AttributeValue().withS(id)).asJava)
-      )
-      .getItems
-      .asScala
-      .toVector
+  private def rows(table: String, id: String): Vector[Row] = {
+    // The filter is applied to each page of the scan, so every page is read.
+    val items = Vector.newBuilder[java.util.Map[String, AttributeValue]]
+    var start = Option.empty[java.util.Map[String, AttributeValue]]
+    var more  = true
+    while (more) {
+      val request = new ScanRequest()
+        .withTableName(table)
+        .withConsistentRead(true)
+        .withFilterExpression("#pid = :pid")
+        .withExpressionAttributeNames(Map("#pid" -> "persistence-id").asJava)
+        .withExpressionAttributeValues(Map(":pid" -> new AttributeValue().withS(id)).asJava)
+      start.foreach(request.setExclusiveStartKey)
+      val result = dynamoDBClient.scan(request)
+      items ++= result.getItems.asScala
+      start = Option(result.getLastEvaluatedKey).filterNot(_.isEmpty)
+      more = start.nonEmpty
+    }
+    items
+      .result()
       .map(_.asScala)
       .map(item =>
         Row(
           item("pkey").getS,
           item("skey").getS,
           item("sequence-nr").getN.toLong,
-          item.get("deleted").map(_.getBOOL.booleanValue())
+          item.get("deleted").map(_.getBOOL.booleanValue()),
+          item.get("created").map(_.getN.toLong)
         )
       )
       .sortBy(r => (r.sequenceNr, r.skey))
+  }
 
   /** Copies the row under `from` to `to`, with `change` applied, and deletes it under `from` unless `keep`. */
   private def copyRow(
@@ -572,6 +582,8 @@ final class JournalKeyMigrationSpec extends AnyWordSpec with Matchers with Dynam
       val id = changedId("Both")
       writtenBy130(id)
       // The event 1 under both keys, deleted only under the old key; the snapshot under both keys, newer under the old.
+      val created = rows(snapshotTableName, id).flatMap(_.created)
+      created should have size 1
       copyRow(journalTableName, journalKey(v130, id, 1), journalKey(plain, id, 1), keep = true)
       copyRow(
         journalTableName,
@@ -598,7 +610,7 @@ final class JournalKeyMigrationSpec extends AnyWordSpec with Matchers with Dynam
         2L -> Some(false),
         3L -> Some(false)
       )
-      rows(snapshotTableName, id) should have size 1
+      rows(snapshotTableName, id).map(_.created) shouldBe created.map(Some(_)) // the later save is kept
       underNewKeys(plain, id)
       events(plain, id) shouldBe Vector.empty
       recover(plain, id).snapshot shouldBe Some(3L -> "s3")
@@ -667,7 +679,8 @@ final class JournalKeyMigrationSpec extends AnyWordSpec with Matchers with Dynam
       // the application works in between
       events(plain, ids(0)) shouldBe Vector.empty
       recover(plain, ids(0)).lastSequenceNr shouldBe 3L
-      val lost = new AtomicInteger()
+      val lost       = new AtomicInteger()
+      val lostTables = java.util.concurrent.ConcurrentHashMap.newKeySet[String]()
       val lossy = Proxy
         .newProxyInstance(
           classOf[V2DynamoDbClient].getClassLoader,
@@ -677,8 +690,15 @@ final class JournalKeyMigrationSpec extends AnyWordSpec with Matchers with Dynam
               val result =
                 try method.invoke(v2Client, Option(args).getOrElse(Array.empty[AnyRef]): _*)
                 catch { case e: InvocationTargetException => throw e.getCause }
-              if (method.getName == "transactWriteItems" && lost.incrementAndGet() % 2 == 1)
-                throw SdkClientException.create("the response was lost")
+              args.headOption.foreach {
+                case r: software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsRequest
+                    if lost.incrementAndGet() % 2 == 1 =>
+                  r.transactItems().asScala.flatMap(i => Option(i.put())).foreach(put =>
+                      lostTables.add(put.tableName())
+                    )
+                  throw SdkClientException.create("the response was lost")
+                case _ =>
+              }
               result
             }
           }
@@ -687,6 +707,7 @@ final class JournalKeyMigrationSpec extends AnyWordSpec with Matchers with Dynam
       val (j, s) = migrate(plain, ids.toSet, execute = true, client = lossy)
       j.remaining shouldBe empty
       s.remaining shouldBe empty
+      lostTables.asScala shouldBe Set(journalTableName, snapshotTableName)
       ids.foreach { id =>
         rows(journalTableName, id).map(_.sequenceNr) shouldBe Vector(1L, 2L, 3L)
         rows(snapshotTableName, id).map(_.sequenceNr) shouldBe Vector(3L)
@@ -695,7 +716,7 @@ final class JournalKeyMigrationSpec extends AnyWordSpec with Matchers with Dynam
       worksWith(plain, ids(1))
     }
 
-    "move the rows as the application left them while it writes to the same ids" in {
+    "move the rows as another writer left them (the tool's conditions; the contract is that writers are stopped)" in {
       val id = changedId("Concurrent")
       writtenBy130(id)
       val done = new AtomicBoolean(false)
@@ -721,45 +742,10 @@ final class JournalKeyMigrationSpec extends AnyWordSpec with Matchers with Dynam
       val recovered = recover(plain, id)
       recovered.lastSequenceNr shouldBe 4L
       events(plain, id) shouldBe Vector(4L -> "e4")
-      recover(plain.copy(), id).snapshot shouldBe Some(3L -> "s3")
-    }
-  }
-
-  "a delete that runs while the rows move" should {
-
-    "delete the events that move between its requests" in {
-      val mode = plain.copy(softDelete = false, hooked = true)
-      val id   = changedId("DeleteRace")
-      writtenBy130(id)
-      recover(mode, id)
-      // After the first DeleteItem of the hard delete, every row of the id moves to its new key.
-      RequestHook.arm {
-        case r: software.amazon.awssdk.services.dynamodb.model.DeleteItemRequest => r.tableName() == journalTableName
-        case _                                                                   => false
-      }(migrate(plain, Set(id), execute = true))
-      try command(mode, id, DeleteTo(2))
-      finally RequestHook.disarm()
-      rows(journalTableName, id).map(_.sequenceNr) shouldBe Vector(3L)
-      events(plain, id) shouldBe Vector.empty
-      recover(plain, id).lastSequenceNr shouldBe 3L
-    }
-
-    "delete a snapshot that moves after the query that found it" in {
-      val mode = plain.copy(hooked = true)
-      val id   = changedId("SnapshotRace")
-      writtenBy130(id)
-      withActor(mode, id) { (actor, probe, _) =>
-        RequestHook.arm {
-          case r: software.amazon.awssdk.services.dynamodb.model.QueryRequest => r.tableName() == snapshotTableName
-          case _                                                              => false
-        }(migrate(plain, Set(id), execute = true))
-        try {
-          actor ! DeleteSnapshotAt(3)
-          probe.expectMsgType[Completed](timeout)
-        } finally RequestHook.disarm()
-      }
-      rows(snapshotTableName, id) shouldBe empty
-      recover(plain, id).snapshot shouldBe None
+      recover(plain, id).snapshot shouldBe Some(3L -> "s3")
+      // without the snapshot, the replay shows that the update of event 2 moved with the row
+      command(plain, id, DeleteSnapshotsTo(3))
+      events(plain, id) shouldBe Vector(2L -> "e2-updated", 3L -> "e3", 4L -> "e4")
     }
   }
 
@@ -843,10 +829,19 @@ final class JournalKeyMigrationSpec extends AnyWordSpec with Matchers with Dynam
       SnapshotKeyMigration.run(args, config(plain), lines += _).candidates should have size 1
       lines.filter(_.contains("key migration (forward)")).foreach(_ should startWith("[dry-run] "))
       rows(journalTableName, id).map(r => (r.pkey, r.skey)) shouldBe (1L to 3L).map(journalKey(v130, id, _))
-      JournalKeyMigration.run("--execute" +: args, config(plain), lines += _).moved shouldBe 3
-      SnapshotKeyMigration.run("--execute" +: args, config(plain), lines += _).moved shouldBe 1
+      lines.exists(_.contains("legacy-keys-enabled = false: not safe")) shouldBe true
+      the[IllegalArgumentException] thrownBy JournalKeyMigration.run(
+        "--execute" +: args,
+        config(plain),
+        _ => ()
+      ) should have message MigrationOptions.writersStoppedRequired
+      val execute = Seq("--execute", "--writers-stopped") ++ args
+      JournalKeyMigration.run(execute, config(plain), lines += _).moved shouldBe 3
+      SnapshotKeyMigration.run(execute, config(plain), lines += _).moved shouldBe 1
+      lines.count(_.contains("the persistence-id index shows every moved row under its new key")) shouldBe 2
       underNewKeys(plain, id)
       JournalKeyMigration.run(args, config(plain), lines += _).candidates shouldBe empty
+      lines.exists(_.contains("legacy-keys-enabled = false: safe")) shouldBe true
       lines.foreach(line => info(line))
       an[IllegalArgumentException] should be thrownBy JournalKeyMigration.run(Seq("--bogus"), config(plain), _ => ())
       an[IllegalArgumentException] should be thrownBy JournalKeyMigration.run(Seq("--max-rate"), config(plain), _ => ())
@@ -855,6 +850,21 @@ final class JournalKeyMigrationSpec extends AnyWordSpec with Matchers with Dynam
         config(plain),
         _ => ()
       )
+    }
+  }
+
+  "the command line with a v1, v1-dax, or v2-dax configuration" should {
+
+    "connect with the plain v2 client" in {
+      val id = changedId("Clients")
+      writtenBy130(id)
+      Seq(ClientVersion.V1, ClientVersion.V1Dax, ClientVersion.V2Dax).foreach { version =>
+        val mode = plain.copy(clientVersion = version.toString)
+        withClue(s"client-version $version: ") {
+          JournalKeyMigration.run(Seq("--persistence-id", id), config(mode), _ => ()).candidates should have size 3
+          SnapshotKeyMigration.run(Seq("--persistence-id", id), config(mode), _ => ()).candidates should have size 1
+        }
+      }
     }
   }
 
@@ -883,23 +893,27 @@ final class JournalKeyMigrationSpec extends AnyWordSpec with Matchers with Dynam
       Await.result(
         Future.traverse(items.grouped(25).toVector) { batch =>
           Future {
-            v2Client.batchWriteItem(
-              BatchWriteItemRequest
-                .builder()
-                .requestItems(
-                  Map(
-                    jc.tableName -> batch
-                      .map(i => WriteRequest.builder().putRequest(PutRequest.builder().item(i).build()).build()).asJava
-                  ).asJava
-                )
-                .build()
-            )
+            var pending: java.util.Map[String, java.util.List[WriteRequest]] = Map(
+              jc.tableName -> batch
+                .map(i => WriteRequest.builder().putRequest(PutRequest.builder().item(i).build()).build()).asJava
+            ).asJava
+            var attempts = 0
+            while (!pending.isEmpty) {
+              attempts += 1
+              if (attempts > 20) throw new IllegalStateException(s"the rows were not written: $pending")
+              pending = v2Client
+                .batchWriteItem(BatchWriteItemRequest.builder().requestItems(pending).build()).unprocessedItems()
+              if (!pending.isEmpty) Thread.sleep(50L * attempts)
+            }
           }
         },
         30.minutes
       )
       ids.toSet
     }
+
+    /** The ids that `load` wrote whose key changes: they have two separators. */
+    def changed(ids: Set[String]): Set[String] = ids.filter(_.count(_ == '-') == 2)
 
     "be measured for a table of KEY_MIGRATION_ROWS rows (200 by default)" in {
       val count  = sys.env.get("KEY_MIGRATION_ROWS").map(_.toInt).getOrElse(200)
@@ -925,8 +939,9 @@ final class JournalKeyMigrationSpec extends AnyWordSpec with Matchers with Dynam
           s"elapsed=${r.elapsedMillis}ms requests=${r.usage.requests} capacity=${r.usage.capacityUnits}"
         )
       }
-      dry.candidates should have size (count / 2)
-      exec.moved shouldBe (count / 2)
+      val expected = changed(ids).size * 10
+      dry.candidates should have size expected.toLong
+      exec.moved shouldBe expected.toLong
       done.candidates shouldBe empty
     }
   }

@@ -260,7 +260,7 @@ The extra requests for the old keys, measured on DynamoDB Local with the AWS SDK
 | In-place update, the row is under the old key | one refused `UpdateItem` and two `GetItem`; with the JournalHead, one refused `TransactWriteItems` and three `GetItem` | none |
 | Snapshot save | one conditional `DeleteItem` | none |
 | Snapshot load | none; the query for the latest snapshot reads up to two items instead of one | none |
-| Snapshot delete | none; one conditional `DeleteItem` for each snapshot still under the old key | none |
+| Snapshot delete | none | none |
 
 The extra requests continue after the migration, because a key alone does not tell whether an old row exists. After
 every old row is migrated, set `legacy-keys-enabled = false` for both plugins to stop them. With `false`, rows under an
@@ -295,11 +295,33 @@ to the keys of the resolvers that the configuration selects. You need them only 
 above. With the default resolvers, the keys do not change and there is nothing to move, except the rows of issue #831
 (see below).
 
+```{admonition} Stop the application before you move the rows
+:class: warning
+
+Run `--execute`, forward or with `--reverse`, only while every application that writes to or recovers from the journal
+and snapshot tables is stopped. `--execute` refuses to run without `--writers-stopped`, which states that they are.
+
+Each move changes the table in one transaction, but the `persistence-id` index, which a replay and the highest sequence
+number read, is updated asynchronously. While a row moves, the index can show it twice or not at all. If an
+application runs meanwhile:
+
+- an actor that recovers can miss its latest event, take a lower highest sequence number, and then write that sequence
+  number again, which replaces the moved event (with the JournalHead disabled);
+- a replay can return an event twice or miss it;
+- a hard delete or a snapshot delete can miss the row that moves between its requests, and the deleted event or
+  snapshot stays;
+- a node of 1.3.0 keeps writing under the old keys.
+
+The tool cannot prevent these, so the migration is offline. These paths were reasoned from how DynamoDB updates an
+index; DynamoDB Local updates its index at once, so they were not reproduced.
+```
+
 Each tool reads its plugin configuration (`j5ik2o.dynamo-db-journal` or `j5ik2o.dynamo-db-snapshot`): the table, the
-column names, `shard-count`, `persistence-id-separator`, and the key resolvers. It refuses key resolvers other than
-those of 1.3.0 and the PlainText ones, and a table whose keys are the `persistenceId` and the sequence number. It
-connects with the AWS SDK v2 client of the configuration (`dynamo-db-client`, without DAX), whatever `client-version`
-the plugin uses. Nothing is written unless you pass `--execute`.
+column names, the `persistence-id` index, `shard-count`, `persistence-id-separator`, and the key resolvers. It refuses
+key resolvers other than those of 1.3.0 and the PlainText ones, and a table whose keys are the `persistenceId` and the
+sequence number. It connects with a plain AWS SDK v2 client built from `dynamo-db-client` (the endpoint, the region,
+and the credentials), whatever `client-version` the plugin uses: with `v1`, `v1-dax`, or `v2-dax`, it builds the v2
+client from the same settings and does not go through DAX. Nothing is written unless you pass `--execute`.
 
 ```
 $ sbt -batch "journal-v2/runMain com.github.j5ik2o.pekko.persistence.dynamodb.journal.migration.JournalKeyMigration"
@@ -309,41 +331,61 @@ $ sbt -batch "snapshot-v2/runMain com.github.j5ik2o.pekko.persistence.dynamodb.s
 | Option | Meaning |
 | :-- | :-- |
 | `--execute` | Move the rows. Without it, the tool reports what it would do (dry-run). |
+| `--writers-stopped` | Required with `--execute`: every application that writes to or recovers from the tables is stopped. |
 | `--reverse` | Move the rows under the new keys back to the keys of 1.3.0. |
 | `--persistence-id <id>` | Move only the rows of these `persistenceId`s. Repeat it for more. |
-| `--max-rate <n>` | Move at most `n` rows a second (in a dry-run, check at most `n` target keys a second). |
-| `--parallelism <n>` | Move up to `n` rows at the same time (default 4). |
+| `--max-rate <n>` | Move at most `n` rows a second, also within a swap (in a dry-run, check at most `n` target keys a second). |
+| `--parallelism <n>` | Move up to `n` rows at the same time (default 4). `--segments` does not change it. |
 | `--segments <n>` | Scan the table in `n` parallel segments (default 1). |
 | `--scan-page-size <n>` | Read at most `n` items per scan request. |
+| `--index-wait <seconds>` | After the moves, wait at most this long for the `persistence-id` index (default 120). |
 | `--progress` | Print the progress to the standard error. |
+
+The tools exit with 1 when `--execute` leaves a row unmoved or the index does not show every moved row in time, and with
+0 otherwise. A dry-run exits with 0.
+
+The IAM policy of the tools needs, on the journal or the snapshot table: `dynamodb:Scan`, `dynamodb:GetItem`, and
+`dynamodb:Query` (on the table and its `persistence-id` index) for a dry-run; and for `--execute` also
+`dynamodb:PutItem`, `dynamodb:DeleteItem`, `dynamodb:UpdateItem`, and `dynamodb:ConditionCheckItem`, which the actions
+of `TransactWriteItems` need.
 
 How a row moves: the tool scans the table with consistent reads and compares the stored key of each row with the key
 that the resolvers give its `persistenceId` and sequence number. A row under the key of 1.3.0 moves to the new key.
 For each row, the tool reads it again and sends one `TransactWriteItems`: a `Put` under the new key on the condition
 that the key holds no row, and a `Delete` under the old key on the condition that the row still has every attribute
 that was read. Both happen or neither does, so a run that stops leaves each row once, under its old key or its new
-key, and the next run continues. A row that the application changed in between is read again and moved as it is
-now. When a response is lost, the tool reads both keys and counts a row that has left the old key as moved. Running the
-tool again after it finished moves nothing.
+key, and the next run continues. When a response is lost, the tool reads the keys again and counts a row that has left
+the old key as moved, and a swap whose rows are under their new keys as swapped. Running the tool again after it
+finished moves nothing.
 
 - When the new key already holds the same event (the same `persistenceId` and sequence number), the tool keeps the row
   under the new key and deletes the old copy, in one transaction. The kept event is deleted when either copy was. For a
   snapshot, the copy with the larger `created` is kept.
 - When the new key holds the old row of another `persistenceId` that moves too, the tool moves that row first. Rows that
-  hold each other's new keys are swapped in one transaction (up to 100 rows).
-- When the new key holds a row of another `persistenceId` that does not move, the row stays and is listed. The
-  dry-run lists it as blocked.
+  hold each other's new keys are swapped in one transaction, up to 100 rows and 4 MB; a larger cycle is listed and not
+  moved.
+- When the new key holds a row of another `persistenceId` that does not move, or a swap moves another row into it, the
+  row stays and is listed. When two rows need the same new key, the one with the smaller stored key gets it, in the
+  dry-run and in `--execute` alike, and the other is listed. The dry-run lists such rows as blocked.
 - A row under a key that is neither the key of 1.3.0, of issue #831, nor of the new format (for example a row written
-  with another `shard-count`) is listed and not moved.
+  with another `shard-count`) is listed as not movable and not moved.
+- The dry-run does not read the items, so it cannot tell whether an item exceeds the 400 KB of DynamoDB under its
+  longer new key. `--execute` lists such a row as remaining with the error of DynamoDB, and leaves it under the old key.
 - The JournalHead table is keyed by the `persistenceId` alone, so its items do not move and do not change.
+- After the moves, the tool queries the `persistence-id` index for each moved `persistenceId` until it shows every moved
+  row under its new key and none under its old key, for at most `--index-wait`. It lists the `persistenceId`s for which
+  it did not.
 
 The dry-run prints the rows to move per `persistenceId`, the blocked rows, the swaps, the copies to merge, the rows that
-are not moved, and the requests and the capacity units that DynamoDB reported. It also lists the `persistenceId`s that
-shared their keys in 1.3.0 (the same `prefix`, second part, and shard), each with its highest sequence number and the
-sequence numbers below it that have no row. A missing number in such a group can be an event that the other
-`persistenceId` replaced up to 1.2.0, or one that a hard delete removed; the table cannot tell them apart, so check the
-missing numbers against your own records. Events and snapshots that were replaced are not in the table, and the tool
-cannot bring them back.
+are not moved, and the requests and the capacity units that DynamoDB reported. With the PlainText resolvers it ends with
+one line that says whether `legacy-keys-enabled = false` is safe: only when no row is to move, none is blocked, and
+none is under an unknown key. It also lists the `persistenceId`s that shared their keys in 1.3.0 (the same `prefix`,
+second part, and shard). For the journal, each comes with its highest sequence number and the sequence numbers below it
+that have no row. A missing number in such a group can be an event that the other `persistenceId` replaced up to 1.2.0,
+or one that a hard delete removed; the table cannot tell them apart, so check the missing numbers against your own
+records. For the snapshot store, which does not save every sequence number, the tool lists the group with the number of
+snapshots of each `persistenceId`. Events and snapshots that were replaced are not in the table, and the tool cannot
+bring them back.
 
 The steps:
 
@@ -352,17 +394,20 @@ The steps:
    leaves those events in the replay), and a `persistenceId` whose new key holds an old row of another `persistenceId`
    fails with `KeyConflict`. Replays read every row on both kinds of node.
 2. Run both tools without `--execute`, and read the blocked rows and the shared-key groups.
-3. Run both tools with `--execute`. Set `--max-rate` to what the table can take next to the application.
-4. Run both tools without `--execute` again and check that they move nothing. A row that a node of 1.3.0 wrote after
-   step 3 appears here; run step 3 again.
-5. Optionally set `legacy-keys-enabled = false` to stop the extra requests for the old keys.
+3. Stop every application that writes to or recovers from the tables.
+4. Run both tools with `--execute --writers-stopped`. Set `--max-rate` to what the table can take.
+5. Check that both tools exit with 0 and report that the index shows every moved row. Run both tools without
+   `--execute` again and check that they report nothing to move.
+6. Start the application.
+7. Set `legacy-keys-enabled = false` only when the dry-run of both tools says that it is safe. A blocked row or a row
+   that is not movable stays under an old key, and with `false` deletes and updates do not reach it.
 
-If the tool stops, run the same command again. To go back to 1.3.0, run both tools with `--reverse --execute` while the
-nodes still select the PlainText resolvers, then switch the nodes to the resolvers of 1.3.0 (or to 1.3.0 itself), and
-run `--reverse --execute` once more for the rows that the nodes wrote during the switch. A row cannot go back when 1.3.0
-cannot build a key for its `persistenceId` (such as `order-`, or `.` as the separator), or when two `persistenceId`s
-share the key of 1.3.0; such rows are listed and stay under the new key, where 1.3.0 replays them but does not delete or
-update them.
+If the tool stops, run the same command again. To go back to 1.3.0, stop the application, run both tools with
+`--reverse --execute --writers-stopped`, switch the nodes to the resolvers of 1.3.0 (or to 1.3.0 itself), and start
+them. After `--reverse`, do not start nodes with the PlainText resolvers and `legacy-keys-enabled = false`: the rows are
+then under the old keys, which those nodes do not delete or update. A row cannot go back when 1.3.0 cannot build a key
+for its `persistenceId` (such as `order-`, or `.` as the separator), or when two `persistenceId`s share the key of
+1.3.0; such rows are listed and stay under the new key, where 1.3.0 replays them but does not delete or update them.
 
 The rows of issue #831 (`skey` is the sequence number alone, written by releases before #831 for a `persistenceId`
 without the separator) move to `${persistenceId}-${sequenceNumber}` in both directions, the key that both formats give
@@ -378,18 +423,15 @@ numbers vary with the load of the machine):
 | 100,000 (50,000) | 18.1 s | 421 s | 8.0 s | 33 `Scan`, 50,000 `GetItem`, 50,000 `TransactWriteItems` | 8,371 read by the scan, 50,000 read, 200,000 written |
 | 100,000 (50,000), `--parallelism 16` | 18.4 s | 950 s | 7.9 s | the same | the same |
 
-The dry-run reads the table once and checks each target key with one `GetItem`. DynamoDB Local was the limit: 16 moves
-at a time were slower than 4. On DynamoDB, the time depends on the capacity of the table and on `--max-rate`.
+The dry-run reads the table once and checks each target key with one `GetItem`. These runs were measured before the
+check of the index was added; it adds one `Query` of the index for each moved `persistenceId`. DynamoDB Local was the
+limit: 16 moves at a time were slower than 4. On DynamoDB, the time depends on the capacity of the table and on `--max-rate`.
 
 On DynamoDB, a scan with consistent reads consumes one read capacity unit per 4 KB read, so it reads the whole table
 once. Each move consumes one consistent read of the row and a transactional write of two items, which DynamoDB counts
 twice: 4 write capacity units for a row up to 1 KB, which is also what DynamoDB Local reported. The time on
 DynamoDB, with DAX, and under load was not measured. A move goes through DynamoDB Streams and Kinesis Data Streams as an
 insert and a remove.
-
-While a row moves, a replay that runs at the same moment reads it through the `persistence-id` index, which DynamoDB
-updates asynchronously, so for a short time the replay can see the event twice or not at all. This is the same window
-as for a replay right after a write, and it was not measured on DynamoDB.
 
 ```{admonition} DAX (not measured)
 :class: warning
