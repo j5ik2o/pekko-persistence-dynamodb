@@ -119,15 +119,15 @@ violation keyMigrationWriters.qnt --main keyMigrationWriters --init initGStale -
 
 | # | 期待 | モデル | 不変条件 | 回数 × 手数 | 確かめる witness | 手元の所要 |
 | :-- | :-- | :-- | :-- | :-- | :-- | :-- |
-| 1 | pass | `keyMigration`、`init` | `safety` | 400 × 120 | `wMoved` `wMerged` `wBlocked` `wConflict` `wRejected` `wProgress` `wFinishedAfterStop` `wRoundTrip` `wVerifyForward` `wVerifyReverse` `wIndexLag` `wMergedAfterLost` `wCycleRemaining` `wFinishedForward` `wConflictExtraJournal` `wConflictExtraSnapshot` | 43秒（直しの後 50秒） |
-| 2 | pass | `keyMigration`、`initSharedPair` | `safety` | 2,000 × 60 | `wGaveUpShared` `wRejectedShared` `wFinishedAfterStop` `wGaveUp` | 34秒（直しの後 36秒） |
+| 1 | pass | `keyMigration`、`init` | `safety` | 400 × 120 | `wMoved` `wMerged` `wBlocked` `wConflict` `wRejected` `wProgress` `wFinishedAfterStop` `wRoundTrip` `wVerifyForward` `wVerifyReverse` `wIndexLag` `wMergedAfterLost` `wCycleRemaining` `wFinishedForward` `wConflictExtraJournal` `wConflictExtraSnapshot` | 43秒（直しの後 57秒） |
+| 2 | pass | `keyMigration`、`initSharedPair` | `safety` | 2,000 × 60 | `wGaveUpShared` `wRejectedShared` `wFinishedAfterStop` `wGaveUp` | 34秒（直しの後 38秒） |
 | 3 | pass | `keyMigration`、`init` | `idempotent` | 300 × 60 | なし | 12秒 |
 | 4 | pass | `keyMigration`、`initSharedPair` | `idempotent` | 500 × 60 | なし | 11秒 |
 | 5 | pass | `keyMigrationWriters`、`initG` / `stepG` | `noLossW` `noDuplicateW` `deletedStayGone` `verifySoundW` | 2,000 × 80 | `wAppStarted` | 7秒 |
 | 6 | pass | `keyMigrationWriters`、`initGStaleHead` / `stepGForward` | 同じ4つ | 5,000 × 80 | `wAppStarted` | 15秒 |
 | 7 | violation | `keyMigrationWriters`、`initGStale` / `stepG` | `noLossW` | 2,000 × 80 | なし | 3秒 |
-| 8 | pass | `keyMigrationWriters`、`initW` / `stepD` | `noLossW` `noDuplicate` `outcomesTruthful` `reservedRespected` `keysKnown` `unknownStays` `contentsKept` `finishedReported` `unreversibleStays` `verifyReverseShared` `verifySoundW` `progress` | 400 × 120 | `wGone` | 20秒 |
-| 9 | pass | `keyMigrationWriters`、`initD` / `stepD` | 8 と同じ12個 | 2,000 × 60 | `wGone` `wGoneShared` `wOutcomeUnknown` | 11秒 |
+| 8 | pass | `keyMigrationWriters`、`initW` / `stepD` | `noLossW` `noDuplicate` `outcomesTruthful` `reservedRespected` `keysKnown` `unknownStays` `contentsKept` `finishedReported` `unreversibleStays` `verifyReverseShared` `verifySoundW` `progress` | 400 × 120 | `wGone` | 19秒 |
+| 9 | pass | `keyMigrationWriters`、`initD` / `stepD` | 8 と同じ12個 | 2,000 × 60 | `wGone` `wGoneShared` `wOutcomeUnknown` | 12秒 |
 
 - 1 で通った witness の回数（400 のうち）：`wMoved` 400、`wMerged` 259、`wBlocked` 346、`wConflict` 138、`wRejected` 292、`wGaveUp` 5、`wProgress` 189、`wFinishedAfterStop` 78、`wRoundTrip` 177、`wVerifyForward` 11、`wVerifyReverse` 159、`wIndexLag` 400、`wMergedAfterLost` 21、`wCycleRemaining` 239、`wFinishedForward` 385。`wGaveUpShared` と `wRejectedShared` は 0 で、結果の文書の 1,000 回と同じく `init` では通らないので、2 で確かめる
 - 2 で通った回数（2,000 のうち）：`wGaveUpShared` 10、`wRejectedShared` 489、`wFinishedAfterStop` 382。1,000 回では `wGaveUpShared` が 4 だったので、2,000 回に増やした（R-8）
@@ -138,7 +138,7 @@ violation keyMigrationWriters.qnt --main keyMigrationWriters --init initGStale -
 - 5 と 6 の `wAppWrote` は 0 で、一覧に入れない。手順を守るアプリのモデルでは、`recoverAndWrite` はインデックスが行を示していないときだけ起き、それが起きないことがこのモデルの結論だから
 - 7 は負の対照。古い値を返す読み取りで JournalHead が無効なら、手順を守っても上書きが起きる（結果の文書の A1）。この run が違反を見つけなくなったら、書き手のモデルが何も確かめなくなった兆しなので、落とす
 - 結果の文書の run（`safety` の 1,000 × 120 で 123秒、不変条件ごとの 500 × 120 など）より回数を減らした。CI の run は、仕様の変更で反例が出ないこと、経路が通ることの回帰の検査で、広い探索は結果の文書の run が受け持つ
-- 合計は手元で約125秒（直しの後、ほかの作業で負荷の平均 30 前後の手元で約173秒）。`--seed` を付けると評価器は1スレッドで動く（レビューの実測で CPU 約 102%）ので、`ubuntu-latest` の1コアの速さで決まる。手元の2〜3倍の4〜6分と見る。実装の後、CI の実測で回数を見直す
+- 合計は手元で約125秒（直しの後、ほかの作業で負荷の平均 30 前後の手元で約178秒）。`--seed` を付けると評価器は1スレッドで動く（レビューの実測で CPU 約 102%）ので、`ubuntu-latest` の1コアの速さで決まる。手元の2〜3倍の4〜6分と見る。実装の後、CI の実測で回数を見直す
 
 ### 種を固定する
 
@@ -185,7 +185,7 @@ Quint 0.32.0 の既定の評価器（Rust、v0.6.0）は npm の包みに入っ�
 | 評価器（キャッシュあり／なし） | 数秒／20秒 |
 | typecheck（5本） | 7秒前後（手元で各1.3秒） |
 | test（3本） | 20〜40秒（手元で 1.7、10.5、2.0秒） |
-| run（9本） | 5〜7分（手元で約125秒、届かない分岐の直しの後は約173秒） |
+| run（9本） | 5〜7分（手元で約125秒、届かない分岐の直しの後は約178秒） |
 | 合計 | 4〜6分（キャッシュが無く、取得を再試行したときは7〜8分） |
 
 上限に当たるのは、評価器が返ってこない、仕様の変更で状態が増えて run が極端に遅くなった、のどちらか。スクリプトは段ごとに所要時間を出すので、遅くなった段がログで分かる。

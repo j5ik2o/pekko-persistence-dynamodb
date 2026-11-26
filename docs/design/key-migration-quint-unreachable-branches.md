@@ -268,16 +268,16 @@ D がランダムな run でも落ちるのは、`reservedRespected` が予約�
 
 | 行 | 変更 | 回数 × 手数 | witness（直した後の回数） | 手元の所要 |
 | :-- | :-- | :-- | :-- | :-- |
-| 1 | `wConflictExtraJournal`、`wConflictExtraSnapshot` を足し、`wGaveUp` を外す | 400 × 120（今のまま） | 33、28 / 400 | 43秒 → 50秒 |
-| 2 | `wGaveUp` を足す | 2,000 × 60（今のまま） | `wGaveUp` 23 / 2,000 | 35秒 → 36秒 |
-| 8（新規） | `keyMigrationWriters`、`--init initW --step stepD`、4.2 の12個 | 400 × 120 | `wGone` 39 / 400 | 20秒 |
-| 9（新規） | `keyMigrationWriters`、`--init initD --step stepD`、4.2 の12個 | 2,000 × 60 | `wGone` 344、`wGoneShared` 77、`wOutcomeUnknown` 9 / 2,000 | 11秒 |
+| 1 | `wConflictExtraJournal`、`wConflictExtraSnapshot` を足し、`wGaveUp` を外す | 400 × 120（今のまま） | 33、28 / 400 | 43秒 → 57秒 |
+| 2 | `wGaveUp` を足す | 2,000 × 60（今のまま） | `wGaveUp` 23 / 2,000 | 35秒 → 38秒 |
+| 8（新規） | `keyMigrationWriters`、`--init initW --step stepD`、4.2 の12個 | 400 × 120 | `wGone` 39 / 400 | 19秒 |
+| 9（新規） | `keyMigrationWriters`、`--init initD --step stepD`、4.2 の12個 | 2,000 × 60 | `wGone` 344、`wGoneShared` 77、`wOutcomeUnknown` 9 / 2,000 | 12秒 |
 
 8 では `wGoneShared` が 400 のうち 1 本、`wOutcomeUnknown` が 0 本なので、一覧の「4回以上」の決まりに合わず、witness に入れない。共有の行き先の `Gone` と「outcome unknown」は 9 と決まった筋書きで確かめる。
 
 `wGaveUp` を 1 から 2 へ移した（レビュー R-4）。宇宙を広げると、同じ種でも乱数の列が変わる。1 の `wGaveUp` は 5 から 4 になり、決まり（4回以上）の境目に来た。レビューの実測では、種 `0x7` で 500 回にしても 4 のままだった。2 では 2,000 のうち 23 通る。
 
-時間：run の合計は、直す前が手元で約125秒、直した後が約173秒（ほかの作業で負荷の平均 30 前後のとき）。`quint test` の増え方は1秒未満。CI のジョブは今5分22秒で、run の増え方を同じ割合と見て6分半〜7分、上限 15分に収まる。PR の CI で実測を確かめる。
+時間：run の合計は、直す前が手元で約125秒、直した後が約178秒（ほかの作業で負荷の平均 30 前後のとき）。`quint test` の増え方は1秒未満。CI のジョブは今5分22秒で、run の増え方を同じ割合と見て6分半〜7分、上限 15分に収まる。PR の CI で実測を確かめる。
 
 ## 7. 壊しうる入力
 
