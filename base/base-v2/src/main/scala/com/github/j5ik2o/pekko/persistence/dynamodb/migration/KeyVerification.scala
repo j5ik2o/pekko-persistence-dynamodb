@@ -44,6 +44,8 @@ private[dynamodb] final case class VerifyReport(
     tableName: String,
     indexName: String,
     scannedRows: Long,
+    // items that are not rows: no persistence-id string, or no sequence-nr that is a whole number from 0 (#1035)
+    notRows: Long,
     persistenceIds: Int,
     // rows that are not under the key they belong under, in the whole table
     toMove: Long,
@@ -63,12 +65,12 @@ private[dynamodb] final case class VerifyReport(
     elapsedMillis: Long
 ) {
 
-  /** When it was checked, every row of the table was under the key it belongs under and the index showed the rows of
-    * the table; with --reverse, no two persistence ids share their keys of 1.3.0. It is an observation of that moment:
-    * the index is eventually consistent, and a later read is not proven to see the same.
+  /** When it was checked, the table held rows only, every row was under the key it belongs under, and the index showed
+    * the rows of the table; with --reverse, no two persistence ids share their keys of 1.3.0. It is an observation of
+    * that moment: the index is eventually consistent, and a later read is not proven to see the same.
     */
   def verified: Boolean =
-    toMove == 0 && notMovable == 0 && indexProblems.isEmpty && indexMismatch.isEmpty && indexErrors.isEmpty &&
+    notRows == 0 && toMove == 0 && notMovable == 0 && indexProblems.isEmpty && indexMismatch.isEmpty && indexErrors.isEmpty &&
     stoppedBy.isEmpty && sharedKeyGroups.isEmpty
 }
 
@@ -109,27 +111,35 @@ private[dynamodb] object KeyVerification {
 
     // The table: the placement of every row, and the projected rows of each persistence id.
     var rows       = 0L
+    var notRows    = 0L
     var toMove     = 0L
     var notMovable = 0L
     val examples   = mutable.ArrayBuffer.empty[String]
     val expected   = mutable.HashMap.empty[String, Digest]
     val tableDone = scan(client, table.tableName, None, settings, deadline, usage, limiter) { item =>
-      val id     = item(table.persistenceIdColumn).s()
-      val seq    = item(table.sequenceNrColumn).n().toLong
       val stored = StoredKey(item(table.partitionKeyColumn).s(), item(table.sortKeyColumn).s())
-      rows += 1
-      plan.placement(id, seq, stored) match {
-        case Placement.InPlace => ()
-        case Placement.Move(target, _) =>
-          toMove += 1
-          if (examples.size < 20) examples += s"$id@$seq $stored should be under $target"
-        case Placement.Unmovable(reason) =>
-          notMovable += 1
-          if (examples.size < 20) examples += s"$id@$seq $stored: $reason"
+      table.rowIdentity(item) match {
+        case None =>
+          // An item that no plugin wrote is not checked, so the check does not pass while the table holds it.
+          notRows += 1
+          if (examples.size < 20)
+            examples += s"an item that is not a row $stored: it has no ${table.persistenceIdColumn} string or no " +
+            s"${table.sequenceNrColumn} that is a whole number from 0; move or remove it by hand"
+        case Some((id, seq)) =>
+          rows += 1
+          plan.placement(id, seq, stored) match {
+            case Placement.InPlace => ()
+            case Placement.Move(target, _) =>
+              toMove += 1
+              if (examples.size < 20) examples += s"$id@$seq $stored should be under $target"
+            case Placement.Unmovable(reason) =>
+              notMovable += 1
+              if (examples.size < 20) examples += s"$id@$seq $stored: $reason"
+          }
+          expected.update(id, expected.getOrElse(id, Digest.empty) + projected(item))
       }
-      expected.update(id, expected.getOrElse(id, Digest.empty) + projected(item))
     }
-    emit(s"phase=verify table rows=$rows ids=${expected.size}")
+    emit(s"phase=verify table rows=$rows not-rows=$notRows ids=${expected.size}")
 
     // With --reverse, ids that share their keys of 1.3.0 collide when one of them writes after the rollback, whatever
     // their sequence numbers are now.
@@ -149,8 +159,11 @@ private[dynamodb] object KeyVerification {
     val indexDone =
       tableDone && indexProblems.isEmpty &&
       scan(client, table.tableName, Some(indexName), settings, deadline, usage, limiter) { item =>
-        val id = item(table.persistenceIdColumn).s()
-        observed.update(id, observed.getOrElse(id, Digest.empty) + projected(item))
+        // The index holds the items that are not rows but have its keys, such as a fractional sequence-nr; the table
+        // side counts them, so neither side adds them to the rows of a persistence id.
+        table.rowIdentity(item).foreach { case (id, _) =>
+          observed.update(id, observed.getOrElse(id, Digest.empty) + projected(item))
+        }
       }
     def differs(id: String, digest: Option[Digest]): Boolean =
       digest.getOrElse(Digest.empty) != expected.getOrElse(id, Digest.empty)
@@ -190,6 +203,7 @@ private[dynamodb] object KeyVerification {
       tableName = table.tableName,
       indexName = indexName,
       scannedRows = rows,
+      notRows = notRows,
       persistenceIds = (expected.keySet ++ observed.keySet).size,
       toMove = toMove,
       notMovable = notMovable,
@@ -210,7 +224,7 @@ private[dynamodb] object KeyVerification {
   def render(report: VerifyReport, direction: String, legacyKeysSetting: Option[(String, String)]): Seq[String] = {
     val lines = mutable.ArrayBuffer.empty[String]
     lines += s"[verify] key migration ($direction) of ${report.tableName}: scanned ${report.scannedRows} rows of " +
-    s"${report.persistenceIds} persistence ids; ${report.toMove} rows to move, ${report.notMovable} rows not movable; " +
+    s"${report.persistenceIds} persistence ids and ${report.notRows} items that are not rows; ${report.toMove} rows to move, ${report.notMovable} rows not movable; " +
     s"${report.indexMismatch.size} persistence ids whose index ${report.indexName} does not match the table"
     report.examples.foreach(e => lines += s"[verify]   - $e")
     report.indexProblems.foreach(p => lines += s"[verify] the index ${report.indexName} cannot serve the plugin: $p")
@@ -236,7 +250,7 @@ private[dynamodb] object KeyVerification {
       }
     } else
       lines += "[verify] not matched: do not start the application; run --execute for the rows to move, resolve the " +
-      "rows that are not movable, fix the index, or run --verify again later"
+      "rows that are not movable, move or remove the items that are not rows, fix the index, or run --verify again later"
     lines += s"[verify] requests: ${report.usage.totalRequests}, consumed capacity units: " +
     f"${report.usage.totalCapacityUnits}%.1f, elapsed: ${report.elapsedMillis} ms"
     report.usage.describe.foreach(text => lines += s"[verify]   $text")
@@ -417,7 +431,9 @@ private[dynamodb] object KeyVerification {
         startKey.foreach(builder.exclusiveStartKey)
         val response = client.query(builder.build())
         usage.record("Query", Option(response.consumedCapacity()).toList)
-        response.items().asScala.foreach(item => digest = digest + projected(item.asScala.toMap))
+        response.items().asScala.map(_.asScala.toMap).filter(table.rowIdentity(_).nonEmpty).foreach { item =>
+          digest = digest + projected(item)
+        }
         startKey = Option(response.lastEvaluatedKey()).filterNot(_.isEmpty)
         more = startKey.nonEmpty
         if (System.nanoTime() >= deadline) return Right(None)

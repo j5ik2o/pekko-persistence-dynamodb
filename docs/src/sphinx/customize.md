@@ -398,8 +398,9 @@ says that the table or the index is ready: they cover the selected rows only and
 every row, and scans the whole `persistence-id` index. It first checks the index itself: its partition key is the
 `persistenceId` column (S) and its sort key the sequence number column (N), it is ACTIVE, and it projects what a replay
 and a snapshot load read (`deleted`, `message`, `ordering`, and `tags` for the journal; `snapshot` and `created` for the
-snapshot store). It matches, and exits with 0, only when every row is under the key it belongs under (none to move,
-none blocked, none under an unknown key, none that cannot move), and when, for every `persistenceId`, the index shows
+snapshot store). It matches, and exits with 0, only when the table holds no item that is not a row (see below), when
+every row is under the key it belongs under (none to move, none blocked, none under an unknown key, none that cannot
+move), and when, for every `persistenceId`, the index shows
 the same rows as the table: the same keys and the same values of the attributes that the index projects, such as
 `deleted`, and no row that the table no longer holds. The rows of each `persistenceId` are compared as their number and two sums of
 64-bit parts of the SHA-256 of each row (its first 128 bits), over an encoding that gives each value its type and
@@ -457,9 +458,11 @@ the old key as moved. Running the tool again after it finished moves nothing.
 - An item that no plugin wrote, whose `persistence-id` is not a string or whose `sequence-nr` is not a whole number
   from 0 up (missing, of another type, a fraction, negative, or beyond a `Long`), is listed as an item that is not a row
   and is not moved. With `--persistence-id`, such items are counted but not listed. A row whose new key holds such an
-  item is listed as blocked, in the dry-run and in `--execute` alike; move or remove the item by hand. `--verify` stops
-  with an error at such an item (it is not checked yet, see [#1035](https://github.com/j5ik2o/pekko-persistence-dynamodb/issues/1035)),
-  so move or remove these items before you run `--verify`.
+  item is listed as blocked, in the dry-run and in `--execute` alike; move or remove the item by hand. `--verify` counts
+  such items, lists their keys, and checks the rows around them, but it does not match, and exits with 1, while the
+  table holds one: it cannot check an item that is not a row. The index has `persistence-id` and `sequence-nr` as its
+  keys, so it also holds such an item when both attributes are there (for example a fractional `sequence-nr`); `--verify`
+  leaves it out of the rows of that `persistenceId` on both sides. Move or remove these items, and run `--verify` again.
 - The dry-run does not read the items, so it cannot tell whether an item exceeds the 400 KB of DynamoDB under the key
   it moves to (the new key, or with `--reverse` the longer key of 1.3.0). `--execute` lists such a row as remaining with the error of DynamoDB, and leaves it under the old key.
 - The JournalHead table is keyed by the `persistenceId` alone, so its items do not move and do not change.
