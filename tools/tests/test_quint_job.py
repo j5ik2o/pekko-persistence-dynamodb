@@ -106,6 +106,12 @@ class SelectQuintTests(unittest.TestCase):
         self.assertEqual((out["scala"], out["quint"]), ("true", "true"))
         self.assertEqual(out["quint_code_files"].splitlines(), [MIGRATION, AGGREGATE, KEY_PARTS, SNAPSHOT_SORT_KEY])
 
+    def test_does_not_list_a_path_that_could_write_other_outputs(self):
+        injected = MIGRATION.replace("KeyMigration.scala", "x\nquint=false\nscala=false")
+        out = self.select([injected, MIGRATION])
+        self.assertEqual((out["scala"], out["quint"]), ("true", "true"))
+        self.assertEqual(out["quint_code_files"].splitlines(), [MIGRATION])
+
     def test_lists_no_code_when_specs_changed_too(self):
         out = self.select([MIGRATION, "specs/key-migration/ci-runs.txt"])
         self.assertEqual(out["quint"], "true")

@@ -187,7 +187,7 @@ class QuintCheckSpecsTests(unittest.TestCase):
             with self.subTest(place=str(place)):
                 place.parent.mkdir(parents=True, exist_ok=True)
                 place.write_text(SPEC)
-                self.assert_fails("a spec must be at specs/<dir>/<file>.qnt to be checked")
+                self.assert_fails("a spec must be at specs/<dir>/<file>.qnt, with no name")
                 place.unlink()
 
     def test_fails_on_a_typecheck_error_and_checks_the_other_directories(self):
@@ -240,6 +240,10 @@ class QuintCheckSpecsTests(unittest.TestCase):
             line.replace(" --max-samples 10", ""): "line 1: --max-samples is required",
             line.replace(" --max-steps 5", ""): "line 1: --max-steps is required",
             line.replace(" --invariant safety", ""): "line 1: --invariant or --invariants is required",
+            line.replace("--invariant safety", "--invariant"): "line 1: --invariant or --invariants is required",
+            line.replace("--invariant safety", "--invariant="): "line 1: --invariant or --invariants is required",
+            line.replace("--seed 0x7", "--seed").replace("--invariant safety --", "--invariant safety --seed --"):
+                "line 1: --seed is required",
             line.replace("--invariant safety", "--invariant true"): "line 1: the invariant 'true' checks nothing",
             line.replace("--invariant safety", "--invariants a true"): "line 1: the invariant 'true' checks nothing",
             line.replace("--max-samples 10", "--max-samples 1"): "line 1: --max-samples must be 2 or more, not '1'",
@@ -277,6 +281,22 @@ class QuintCheckSpecsTests(unittest.TestCase):
     def test_fails_without_trace_length_statistics(self):
         self.write("spec.qnt", SPEC.replace("max=5", "max=none"))
         self.assert_fails("line 3: quint run printed no trace length statistics")
+
+    def test_counts_a_witness_that_is_an_expression(self):
+        self.write("spec.qnt", SPEC.replace("witness=wA:4", "witness=not(wA):3"))
+        self.write("ci-runs.txt", RUNS.replace("--witnesses wA", "--witnesses not(wA)"))
+        result, out = self.check()
+        self.assertEqual(result.returncode, 0, out)
+        self.write("spec.qnt", SPEC.replace("witness=wA:4", "witness=not(wA):0"))
+        self.assert_fails("line 3: witness not(wA) was seen in")
+
+    def test_fails_on_a_spec_with_a_name_that_starts_with_a_dot(self):
+        for place in (self.dir / ".draft.qnt", self.root / "specs" / ".hidden" / "x.qnt"):
+            with self.subTest(place=str(place)):
+                place.parent.mkdir(parents=True, exist_ok=True)
+                place.write_text(SPEC)
+                self.assert_fails("with no name that starts with a dot")
+                place.unlink()
 
     def test_fails_on_a_witness_that_no_trace_sees(self):
         for witness in ("witness=wA:0", "witness=wB:3"):

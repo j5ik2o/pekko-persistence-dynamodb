@@ -71,14 +71,25 @@ check_test() {
 }
 
 # value_of <flag> <args...>: the value of --flag, written as `--flag v` or `--flag=v`.
+# A flag followed by another option or by nothing has no value: quint then
+# uses its default, so `--invariant --max-samples 9` checks `true`.
 value_of() {
   local flag=$1 i
   shift
   local args=("$@")
   for ((i = 0; i < ${#args[@]}; i++)); do
     case ${args[i]} in
-      "$flag") echo "${args[i + 1]:-}"; return 0 ;;
-      "$flag"=*) echo "${args[i]#*=}"; return 0 ;;
+      "$flag")
+        local value=${args[i + 1]:-}
+        [[ -n $value && $value != --* ]] || return 1
+        echo "$value"
+        return 0
+        ;;
+      "$flag"=*)
+        [ -n "${args[i]#*=}" ] || return 1
+        echo "${args[i]#*=}"
+        return 0
+        ;;
     esac
   done
   return 1
@@ -155,14 +166,16 @@ check_run() {
   status=$?
   echo "$where: $expect, exit $status, $((SECONDS - start))s: quint run $(basename "$spec") ${args[*]}"
   # The full output (every trace with --verbosity=2) is too long for the log.
-  grep -oE '\[ok\] No violation found.*|\[violation\].*|Trace length statistics:.*|[A-Za-z0-9_]+ was witnessed in .*|Use --seed=.*|error: .*' "$out"
+  grep -oE '\[ok\] No violation found.*|\[violation\].*|Trace length statistics:.*|.* was witnessed in .*|Use --seed=.*|error: .*' "$out"
 
   if ! check_outcome; then
     tail -n 40 "$out"
     return 1
   fi
   for w in "${witnesses[@]}"; do
-    count=$(sed -nE "s/^$w was witnessed in ([0-9]+) trace.*/\\1/p" "$out" | tail -n 1)
+    # A witness can be an expression such as not(wA), so match it as text, not as a pattern.
+    count=$(awk -v prefix="$w was witnessed in " 'index($0, prefix) == 1 { rest = substr($0, length(prefix) + 1); sub(/ .*/, "", rest); n = rest } END { print n }' "$out")
+    [[ $count =~ ^[0-9]+$ ]] || count=
     [ -n "$count" ] && [ "$count" -ge 1 ] ||
       fail "$list" "line $n: witness $w was seen in ${count:-no} trace(s); see the comment at the top of ci-runs.txt" || return 1
   done
@@ -220,10 +233,11 @@ check_dir() {
 check_version || exit 1
 
 # Only specs/<dir>/<file>.qnt is checked, so a spec anywhere else would be left out.
+# The globs below skip names that start with a dot, so such a spec fails here too.
 misplaced=0
 while IFS= read -r -d '' spec; do
-  if [[ ! $spec =~ ^$specs/[^/]+/[^/]+\.qnt$ ]]; then
-    echo "::error file=$spec::a spec must be at $specs/<dir>/<file>.qnt to be checked"
+  if [[ ! $spec =~ ^$specs/[^/.][^/]*/[^/.][^/]*\.qnt$ ]]; then
+    echo "::error file=$spec::a spec must be at $specs/<dir>/<file>.qnt, with no name that starts with a dot, to be checked"
     misplaced=1
   fi
 done < <(find "$specs" -name '*.qnt' -type f -print0 2>/dev/null)

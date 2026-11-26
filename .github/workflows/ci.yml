@@ -118,17 +118,21 @@ jobs:
                 journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/SortKeyResolver.scala|\
                 snapshot/snapshot-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/snapshot/PartitionKeyResolver.scala|\
                 snapshot/snapshot-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/snapshot/SortKeyResolver.scala)
-                  quint=true; quint_code+=("$path") ;;
+                  quint=true
+                  # A path is one line of a multiline output, so a path with a line break
+                  # could write other outputs; such a path is not listed.
+                  if [[ "$path" != *$'\n'* && "$path" != *$'\r'* ]]; then quint_code+=("$path"); fi ;;
               esac
             done < "$paths"
           fi
           printf 'scala=%s\ntools=%s\nquint=%s\n' "$scala" "$tools" "$quint" | tee -a "$GITHUB_OUTPUT"
           # The quint job points out code that the specs describe when specs/ did not change.
           if [[ ${#quint_code[@]} -gt 0 && "$specs_changed" == false ]]; then
+            delimiter="QUINT_CODE_FILES_$(openssl rand -hex 16)"
             {
-              echo 'quint_code_files<<QUINT_CODE_FILES'
+              echo "quint_code_files<<$delimiter"
               printf '%s\n' "${quint_code[@]}"
-              echo 'QUINT_CODE_FILES'
+              echo "$delimiter"
             } | tee -a "$GITHUB_OUTPUT"
           fi
   lint:
