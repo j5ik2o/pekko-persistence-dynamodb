@@ -524,8 +524,8 @@ The steps:
 4. Run both tools with `--execute --writers-stopped`, with or without `--persistence-id`. Set `--max-rate` to what the
    table can take. If a run stops, run it again.
 5. Run both tools with `--verify`. If one does not match, keep the application stopped: run `--execute` again for the
-   rows to move, resolve the blocked rows, the cycles, and the rows that are not movable, or run `--verify` again later
-   when only the index does not match yet.
+   rows to move, resolve the blocked rows, the cycles, and the rows that are not movable, move or remove the items that
+   are not rows, or run `--verify` again later when only the index does not match yet.
 6. When both match, follow {ref}`before you start the application <key-migration-restart>`, and start it. If you run
    a tool after that `--verify`, run `--verify` again: a table that a run changed and changed back can look the same
    while its index still lags.
