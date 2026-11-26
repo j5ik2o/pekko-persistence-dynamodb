@@ -165,6 +165,65 @@ module keyMigrationWriters {
     }
   }
 
+  // ---- The Gone branch: the application deletes events while the tool runs (no write, no recovery)
+
+  /**
+   * The events the application may delete in `stepD`: b (moves directly) and the pair h, i that shares h130 in
+   * --reverse, so that a winner whose row a delete removed (Gone) reserves the key against the other.
+   */
+  pure val DELETE_ROWS: Set[LRow] = Set(("b", 1), ("h", 1), ("i", 1))
+
+  action appDeleteStep = {
+    nondet l = DELETE_ROWS.oneOf()
+    any { hardDeleteCurrent(l), hardDeleteLegacy(l) }
+  }
+
+  /** A step of keyMigration.qnt or a hard delete of the application (the deletes the docs tell the user to stop). */
+  action stepD = {
+    nondet st = STORES.oneOf()
+    nondet dir = DIRS.oneOf()
+    nondet form = FORMS.oneOf()
+    any {
+      all { toolStep(st), keepApp },
+      all { toolStep(st), keepApp },
+      all { toolStep(st), keepApp },
+      all { propagate(st), keepApp },
+      verifyW(st, dir, form, toolsSinceVerify),
+      appDeleteStep,
+    }
+  }
+
+  /** The start of `stepD`: the pair h, i under their new keys (so that --reverse makes them share h130), and b. */
+  pure val START_D: Table = Map(
+    "hP" -> { id: "h", seq: 1, payload: 1, deleted: false, created: 0 },
+    "iP" -> { id: "i", seq: 1, payload: 1, deleted: false, created: 0 },
+    "b130" -> { id: "b", seq: 1, payload: 1, deleted: false, created: 0 },
+  )
+  action initD = all {
+    initWith(START_D, false),
+    appDeleted' = Set(), appDeleting' = Set(), appWritten' = Set(),
+    appStarted' = false, appNode' = Forward, headEnabled' = false, staleReads' = false, idxHist' = Set(),
+    toolsSinceVerify' = STORES.mapBy(_ => false), verifyDeleting' = Set(),
+  }
+
+  /** An attempt found the row under neither key (a delete removed it after the scan). */
+  val wGone: bool = STORES.exists(st => outcomeSeen(tools.get(st), o => o == Gone))
+  /**
+   * The reservation stopped another candidate: a run finished in which the winner of a target (the candidate with the
+   * smallest stored key that the scan found for it) was Gone, and another candidate for the same target was left
+   * remaining without an attempt. A Gone of the loser (after the winner moved) does not count.
+   */
+  val wGoneShared: bool = STORES.exists(st => {
+    val tool = tools.get(st)
+    tool.phase == Finished and tool.outcomes.exists(co => and {
+      co._2 == Gone,
+      co._1 == winnerOf(scanCandidates(tool.startTable, tool.params).filter(c => c.dst == co._1.dst)),
+      tool.remaining.exists(d => d.dst == co._1.dst and d != co._1 and not(tool.outcomes.exists(o => o._1 == d))),
+    })
+  })
+  /** `settle` found the row under neither key (a delete during the transient failures). */
+  val wOutcomeUnknown: bool = STORES.exists(st => outcomeSeen(tools.get(st), o => o == Failed("outcome unknown")))
+
   // ---- O-F3: the application that follows the documentation
 
   /**

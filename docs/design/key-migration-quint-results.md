@@ -18,9 +18,9 @@ Quint 0.32.0、2026-11-26、Apple Silicon の手元の機械（ほかの作業�
 
 | コマンド | 結果 |
 | :-- | :-- |
-| `quint test keyMigration_test.qnt --main keyMigration_test` | 12件とも通った（0.4秒） |
+| `quint test keyMigration_test.qnt --main keyMigration_test` | 12件とも通った（0.4秒）。届かない分岐の直しの後は20件（下の「届かない分岐の直し」） |
 | `quint test keyMigrationGaveUp_test.qnt --main keyMigrationGaveUp_test` | 4件とも通った（7.4秒）。`finishThenRerunTest`、`stopThenRerunTest`、`rejectedOnSharedTargetTest` は各 10,000 回、`cleanRunTest` は1回 |
-| `quint test keyMigrationWriters_test.qnt --main keyMigrationWriters_test` | 10件とも通った（0.6秒）。このうち6件は、契約を外すか読み取りが古い値を返すと不変条件が破れることを示すテストで、通ることは「破れた」を意味する |
+| `quint test keyMigrationWriters_test.qnt --main keyMigrationWriters_test` | 10件とも通った（0.6秒）。届かない分岐の直しの後は12件。このうち6件は、契約を外すか読み取りが古い値を返すと不変条件が破れることを示すテストで、通ることは「破れた」を意味する |
 
 決まった筋書き（`keyMigrationGaveUp_test.qnt`）は、逆向き、共有の行き先（h と i が h130 を求める）、勝者 h が行き先に着かない、流し直し、を必ず通る。
 
@@ -131,3 +131,13 @@ JournalHead が有効なときのモデルは、PlainText のノードの復旧�
 ### 起動の条件の「その後にツールが走っていない」
 
 最初に書いた条件は「最後の `--verify` の表と今の表が同じ」だけで、`initG` の run が `noLossW` の違反を見つけた（2,000 のうち早い段階）。ツールが行を順方向に移して逆向きに戻すと、表は `--verify` のときと同じ値に戻るが、インデックスはまだ遅れている。条件に「最後の `--verify` の後にツールが一歩も走っていない」（`toolsSinceVerify`）を足すと、違反は消えた（上の表）。この条件を外した写しでは、同じ run が再び違反を見つける。文書の手順は「`--execute` の後に `--verify`」の順で書いてあり、この条件を満たす。手順の最後に、ツールを流したら `--verify` をやり直すことを1文足した（`customize.md` の手順 6）。
+
+## 届かない分岐の直し（2026-11-27）
+
+設計は [key-migration-quint-unreachable-branches.md](key-migration-quint-unreachable-branches.md)。仕様の中で届かなかった分岐（`differ` の journal の `created` と snapshot の `deleted`、`attempt` の `Gone`、`settle` の「outcome unknown」）に届くよう、行の作り方を広げ、書き手のモデルに `stepD` を足した。あわせて次を変えた。
+
+- `versionsKept` は、`payload` だけでなく `differences` が比べる属性すべて（`compared`）で比べる。強めたので、上の表の「違反なし」は直す前の弱い定義での結果である。
+- `contentsKept` は、snapshot の `deleted`（プラグインが書かない属性の有無）を「初めの写しのどれかの値」で比べる。
+- `outcomesTruthful` と `reservedRespected` を足し、`safety` に入れた（19個）。
+
+直した後の CI の run（`ci-runs.txt` の9本）の回数と所要は `docs/design/quint-in-ci.md` の「key-migration の run」に、変異ごとの結果は設計の 5.1 に書いた。上の不変条件ごとの表と witness の表は、直す前の仕様での結果のまま残す。

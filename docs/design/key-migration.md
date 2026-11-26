@@ -234,10 +234,10 @@ Quint のキーは文字列の名前で、リゾルバの計算はしない。�
 | ファイル | 中身 |
 | :-- | :-- |
 | `specs/key-migration/keyMigration.qnt` | 本体。表、インデックス、ツールの実行、停止、`--verify`。書き手はいない |
-| `specs/key-migration/keyMigration_test.qnt` | 純粋な関数のテスト（判定、ラウンド、まとめ、往復） |
+| `specs/key-migration/keyMigration_test.qnt` | 純粋な関数のテスト（判定、ラウンド、まとめ、往復、プラグインが書かない属性による `Conflict`、`Gone` と予約、`settle` の「outcome unknown」、`truthful`） |
 | `specs/key-migration/keyMigrationGaveUp_test.qnt` | 決まった筋書き：逆向き＋共有の行き先＋勝者があきらめる・拒否される＋流し直し（レビュー C-F1、O-F6、R3） |
-| `specs/key-migration/keyMigrationWriters.qnt` | 契約を外したモデル。アプリが書き込み・復旧・削除をする |
-| `specs/key-migration/keyMigrationWriters_test.qnt` | 契約を外したときの反例を、固定のトレースで示すテスト |
+| `specs/key-migration/keyMigrationWriters.qnt` | 契約を外したモデル。アプリが書き込み・復旧・削除をする。`stepD` はツールが走る間にアプリが削除だけをする |
+| `specs/key-migration/keyMigrationWriters_test.qnt` | 契約を外したときの反例を、固定のトレースで示すテスト。`deleteBeforeAttemptGoneTest` は削除の下で不変条件が成り立つことを示す |
 | `specs/key-migration/ci-runs.txt` | CI の `quint` ジョブが流す `quint run` の一覧（`docs/design/quint-in-ci.md`） |
 
 不変条件を足すときは、`safety` に入れるか、`ci-runs.txt` に行を足す。どちらにも無い不変条件は、CI で流れない。
@@ -245,7 +245,7 @@ Quint のキーは文字列の名前で、リゾルバの計算はしない。�
 ### 8.2 状態と遷移
 
 - 状態：`tables`（journal と snapshot、キー → 行）、`idx`（それぞれのインデックスの写し、遅れる）、`tools`（ツールの実行の状態：保留、今のラウンド、試みの回数、まとめ中の候補、結果、残り、動かせない行）。検査のための履歴として、初めの表、収束の比較の起点、最後に終わった実行、最後の `--verify`。
-- 初めの表は3種類から選ぶ：何でもありの表、1.3.0 だけが書いた表、全行が動ける表。各論理的な行の置き場所（無し、1.3.0 のキー、新しいキー、両方、#831 か不明のキー）、写しの中身、`deleted`、`created` を非決定的に選ぶ。
+- 初めの表は3種類から選ぶ：何でもありの表、1.3.0 だけが書いた表、全行が動ける表。各論理的な行の置き場所（無し、1.3.0 のキー、新しいキー、両方、#831 か不明のキー）、写しの中身、`deleted`、`created`、プラグインが書かない属性の有無（`extra`）を非決定的に選ぶ。journal の `created` と snapshot の `deleted` は、もう一方の規則の列ではなく、プラグインが書かず一部の項目だけが持つ属性を表す（`docs/design/key-migration-quint-unreachable-branches.md` 3.1）。
 - 遷移：`startRun`（向き・設定・選択を選んで走査）、`nextRound`（`ready` を作るか、終える）、`attemptOk`（試みの応答が届く）、`attemptLost`（反映されたが応答が失われる）、`attemptTransient`（書かずに失敗）、`settle`、`stop`（プロセスが止まる）、`propagate`（インデックスが1つのキーで追いつく）、`verify`。
 - 停止・応答の消失・一時的な失敗の合計は、1つのトレースで6回まで（`budget`）。
 - `rejectShared`（トレースごとに固定）：DynamoDB が h の `--reverse` の h130 への移動を拒否する（1.3.0 の長いキーで 400 KB を超える場合、レビュー R3）。`init` では偽、`initSharedPair` では4回に1回だけ真。`init` で偽にしたのは、`progress` と `roundTrip` の前提が「h は 1.3.0 のキーへ戻れる」だから。
@@ -265,16 +265,20 @@ Quint のキーは文字列の名前で、リゾルバの計算はしない。�
 | `nextRound` | `execute` のループと、残りを予約待ち・循環・待ちとする部分（:850-944） |
 | `attempt` | `moveOne` の1回の試み（:1134-1200）と、`put`・`delete` の条件 |
 | `mergeTx` | `merge`（:1233-）、`markDeleted`（:1064-） |
-| `differ` | `differences`（:1119-） |
+| `differ` | `differences`（:1119-）。属性名の和から、キーと規則の列を除いて比べる |
+| `compared`、`versionsKept` | `differences` が比べる属性（`ignored` の外）。まとめで消える写しの値は、残る写しが持つ |
 | `tooBig` | `ValidationException` の `Failed`（:1194-1195）。`BIG_SHARED` は `--reverse` の 1.3.0 のキーへの超過 |
 | `attemptLost` | `transact` の `Left`（応答が無い、:1104-1106）と、次の試みで元が無いときの分岐（:1186-1191）。Quint は、元のキーに行があり、試みが書いたときだけ応答を失わせる |
 | `settleOutcome` | `settle`（:1208-1220） |
+| `truthful`、`outcomesTruthful` | `moveOne` の結果と報告の数え方（:886-893、:912-916、:1134-1203）。結果は、その試みか `settle` が読んだキーと合う |
+| `reservedRespected` | `execute` の `reserved`（:854、:912-916）。予約した行き先は、同じ実行のほかの候補に渡らない |
 | `MAX_ATTEMPTS` | `MigrationSettings.maxAttempts`（:125）。Quint は 2、コードは 10 |
 | `verifyPass` | `KeyVerification.run` と `VerifyReport.verified`（KeyVerification.scala:72-74、:93-230） |
 | `propagate` | DynamoDB の GSI の非同期の更新（コードには無い） |
 | `recoverAndWrite` | `JournalRowStore.writeRows` の条件 `sameRowOrNone`（JournalRowStore.scala:222-223、:347-348）と、`highestSequenceNr` がインデックスを読むこと（:118-140） |
 | `headEnabled` | `JournalAggregateStore.highestSequenceNr`（JournalAggregateStore.scala:35-48）。JournalHead が有効なら、journal と head の番号の大きい方を取る |
 | `hardDeleteCurrent`、`hardDeleteLegacy` | `JournalRowStore.delete` = `deleteRows` の後に `deleteLegacyRows`（:288-340） |
+| `stepD` | ツールが走る間の hard delete。`moveOne` の `Gone`（KeyMigration.scala:1186-1191）と、`settle` の「outcome unknown」（:1214）に届く |
 
 ### 8.4 実物と合わない点（抽象にしたところ）
 
@@ -289,6 +293,7 @@ Quint のキーは文字列の名前で、リゾルバの計算はしない。�
 9. 400 KB の超過は、新しいキーへの `Put`（f）と、`rejectShared` のときの h の h130 への `Put` だけ。snapshot のまとめで行き先へ `Put` するときの超過は入れていない。
 13. 行でない項目（C-F4）は入れていない。項目の分類は純粋な関数で、`BlockedByItem` は `Blocked` と同じく残りになり、予約もしないので、Quint の `Blocked` と同じ扱いになる。`--verify` は行でない項目が1つでもあれば一致としない（#1035）。これは `verifyPass` に条件を1つ足すだけで、行だけの表では `verifyPass` と同じなので、「`verifyPass` なら〜」の形の不変条件はそのまま成り立つ。
 10. ほかの書き手の兆候（`writerSigns`）は入れていない。書き手のいないモデルでは出ない。
+14. `settle` のキーの読み取りそのものが失敗して「outcome unknown」になる経路（KeyMigration.scala:1216-1219）は入れていない。このときは行が元のキーか行き先に残っていることがあり、`truthful` の「どちらのキーにも無い」とは合わない。
 11. journal と snapshot の実行は互いに独立で、`legacy-keys-enabled` の設定とアプリの読み取りは、書き手のモデルの `recoverAndWrite` 以外では入れていない。
 12. 収束と冪等の基準 `fullRun` は、ツールと同じ `readyOf` と `attempt` で書いた。比べているのは「止まらない1回の実行」と「止まり、応答を失い、失敗する実行」の違いで、ラウンドの規則そのものの正しさではない。ラウンドの規則は、ほかの不変条件（消えない、増えない、一覧に出る、往復）で確かめている。
 
@@ -306,6 +311,8 @@ Quint のキーは文字列の名前で、リゾルバの計算はしない。�
 `--reverse` の後に 1.3.0 のアプリがインデックスの遅れの間に起動しても、同じ形で上書きが起きる（ランダムな実行で見つかった反例）。
 
 書き手のいない同じ手順（`withoutTheApplicationTest`）では、本体の不変条件はすべて成り立つ。
+
+ツールが走る間にアプリが削除だけをするモデル（`stepD`）：アプリは b@1、h@1、i@1 を hard delete する。書き込みと復旧はしない。走査の後で行が消えると、`moveOne` の `Gone` と `settle` の「outcome unknown」に届く。削除の下でも成り立つ12の不変条件（`noLossW`、`noDuplicate`、`outcomesTruthful`、`reservedRespected` など）を確かめる。削除そのものが破る不変条件と、それをどこで確かめるかは `docs/design/key-migration-quint-unreachable-branches.md` 4.2 に書いた。
 
 文書の手順を守るアプリ（レビュー O-F3）：アプリが起動するのは、両方の表で最後の `--verify` が一致し、その後に表が変わっておらず、ツールが走っていないときだけ。起動の後はツールを流さない（`stepG`）。書き手がいるのは journal だけで、snapshot の書き手は入れていない（C-F8、別件）。そのため、確かめられるのは journal の表の側だけ。
 

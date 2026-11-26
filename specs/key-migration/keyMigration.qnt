@@ -36,9 +36,12 @@ module keyMigration {
   /** A logical row: the persistence id and the sequence number (the identity that `isRowOf` reads). */
   type LRow = (Id, int)
   /**
-   * A stored row. `payload` stands for every attribute that `differences` compares (message, tags,
-   * ordering, snapshot); `deleted` is the duplicate-rule column of the journal; `created` that of the
-   * snapshot store.
+   * A stored row. `payload` stands for the attributes that the plugin writes and `differences` compares (message,
+   * tags, ordering, snapshot); `deleted` is the duplicate-rule column of the journal; `created` that of the snapshot
+   * store. On the other store, the column of the other rule stands for an attribute that the plugin does not write
+   * and that only some items carry (an attribute that an operator or another tool added): `differences` compares the
+   * union of the attribute names, so a copy that carries it and a copy that does not differ. Journal `created`: 0 =
+   * absent, 1 = present; snapshot `deleted`: false = absent, true = present.
    */
   type Row = { id: Id, seq: int, payload: int, deleted: bool, created: int }
   type Table = Key -> Row
@@ -75,6 +78,7 @@ module keyMigration {
     epochGaveUp: bool,         // an earlier run of the same epoch gave up (history, read by the witnesses only)
     epochStopped: bool,        // an earlier run of the same epoch stopped (history, read by the witnesses only)
     reserved: Set[Key],        // KeyMigration.execute: `reserved`, the targets whose winner ended without the row there
+    misreported: bool,         // an outcome was recorded that the table did not show at that step (history, `outcomesTruthful`)
     startTable: Table,         // the table when this run started (for the selection invariant)
   }
 
@@ -382,7 +386,16 @@ module keyMigration {
     else keysOf(l, n)
 
   /** Rows are put in a fixed order; a key that already holds a row keeps it (the overwrite of <= 1.2.0 lost the other). */
-  pure def buildTable(st: Store, keyChoice: LRow -> Set[Key], second: LRow -> int, del: LRow -> bool, cre: LRow -> int): Table =
+  /**
+   * Whether a copy carries the attribute that the plugin does not write, by choice `n`: 0 no copy, 1 only the copy
+   * under the new key when there are two (the copies differ in it), 2 every copy.
+   */
+  pure def carriesExtra(isSecond: bool, n: int): bool = if (isSecond) n >= 1 else n == 2
+
+  /** The choice of `carriesExtra` with no copies that differ in it. */
+  pure def sameExtra(ex: LRow -> int): LRow -> int = LROWS.mapBy(l => if (ex.get(l) == 1) 2 else ex.get(l))
+
+  pure def buildTable(st: Store, keyChoice: LRow -> Set[Key], second: LRow -> int, del: LRow -> bool, cre: LRow -> int, extra: LRow -> int): Table =
     LROWS.fold(Map(), (t, l) => {
       val ks = keyChoice.get(l)
       ks.fold(t, (acc, k) => {
@@ -393,8 +406,8 @@ module keyMigration {
           val row = {
             id: l._1, seq: l._2,
             payload: if (isSecond) second.get(l) else 1,
-            deleted: if (st == Journal) (if (isSecond) del.get(l) else not(del.get(l))) else false,
-            created: if (st == Snapshot) (if (isSecond) cre.get(l) else 3 - cre.get(l)) else 0,
+            deleted: if (st == Journal) (if (isSecond) del.get(l) else not(del.get(l))) else carriesExtra(isSecond, extra.get(l)),
+            created: if (st == Snapshot) (if (isSecond) cre.get(l) else 3 - cre.get(l)) else (if (carriesExtra(isSecond, extra.get(l))) 1 else 0),
           }
           acc.put(k, row)
         }
@@ -427,7 +440,7 @@ module keyMigration {
   pure val IDLE_TOOL: Tool = {
     phase: Idle, params: { dir: Forward, form: FPlain, sel: IDS }, pending: Set(), round: Set(),
     attempts: Map(), merging: Set(), outcomes: Set(), remaining: Set(), unmovable: Set(),
-    gaveUp: false, epochGaveUp: false, epochStopped: false, reserved: Set(), startTable: Map(),
+    gaveUp: false, epochGaveUp: false, epochStopped: false, reserved: Set(), misreported: false, startTable: Map(),
   }
 
   action init: bool = {
@@ -442,10 +455,13 @@ module keyMigration {
     nondet secondS = LROWS.setOfMaps(Set(1, 2)).oneOf()
     nondet delJ = LROWS.setOfMaps(Set(true, false)).oneOf()
     nondet creS = LROWS.setOfMaps(Set(1, 2)).oneOf()
+    nondet exJ = LROWS.setOfMaps(0.to(2)).oneOf()
+    nondet exS = LROWS.setOfMaps(0.to(2)).oneOf()
     val keysJ = LROWS.mapBy(l => keysFor(modeJ, l, chJ.get(l)))
     val keysS = LROWS.mapBy(l => keysFor(modeS, l, chS.get(l)))
-    val tj = buildTable(Journal, keysJ, if (modeJ == 2) LROWS.mapBy(_ => 1) else secondJ, delJ, creS)
-    val ts = buildTable(Snapshot, keysS, if (modeS == 2) LROWS.mapBy(_ => 1) else secondS, delJ, creS)
+    // a table whose every row can move has copies that do not differ: the attribute is on every copy or on none
+    val tj = buildTable(Journal, keysJ, if (modeJ == 2) LROWS.mapBy(_ => 1) else secondJ, delJ, creS, if (modeJ == 2) sameExtra(exJ) else exJ)
+    val ts = buildTable(Snapshot, keysS, if (modeS == 2) LROWS.mapBy(_ => 1) else secondS, delJ, creS, if (modeS == 2) sameExtra(exS) else exS)
     val t0 = Map(Journal -> tj, Snapshot -> ts)
     all {
       tables' = t0,
@@ -540,8 +556,48 @@ module keyMigration {
     }
   }
 
-  pure def record(tool: Tool, c: Cand, o: Outcome): Tool = {
+  /**
+   * The step that records an outcome: the table before and after it, whether an earlier attempt of the candidate
+   * sent a merge (`merging`), and whether the step is `settle` (after the last attempt) or an attempt.
+   */
+  type Seen = { before: Table, after: Table, merging: bool, settled: bool }
+
+  /**
+   * Whether outcome `o` of `c` is what the step `s` saw (`outcomesTruthful`). The report tells these apart, so the
+   * outcomes that leave the same keys are told apart by the step too:
+   *  - Moved: the row is under the target key and not under the stored key, and the run never saw a copy under both
+   *    keys (no merge was sent before, and the table before the step did not hold both);
+   *  - Merged: the same keys, and the run saw a copy under both (a merge was sent before, or the table held both);
+   *  - Gone: an attempt found the row under neither key; "outcome unknown": `settle` found it under neither;
+   *  - Blocked(l): an attempt found the row under the stored key and the row l under the target key;
+   *  - Conflict: an attempt found the row under both keys;
+   *  - "rejected by DynamoDB": an attempt found the row under the stored key and the target key free;
+   *  - "gave up": `settle` found the row under the stored key.
+   */
+  pure def truthful(s: Seen, c: Cand, o: Outcome): bool = {
+    val t = s.after
+    val source = t.has(c.src) and isRowOf(t.get(c.src), c)
+    val target = t.has(c.dst) and isRowOf(t.get(c.dst), c)
+    val bothBefore = and {
+      s.before.has(c.src), isRowOf(s.before.get(c.src), c), s.before.has(c.dst), isRowOf(s.before.get(c.dst), c),
+    }
+    val sawBoth = s.merging or bothBefore
+    match o {
+      | Moved => not(source) and target and not(sawBoth)
+      | Merged => not(source) and target and sawBoth
+      | Gone => not(source) and not(target) and not(s.settled)
+      | Blocked(l) => source and t.has(c.dst) and lrow(t.get(c.dst)) == l and l != candRow(c) and not(s.settled)
+      | Conflict => source and target and not(s.settled)
+      | Failed(reason) =>
+        if (reason == "outcome unknown") not(source) and not(target) and s.settled
+        else if (reason == "gave up") source and s.settled
+        else source and not(t.has(c.dst)) and not(s.settled)
+    }
+  }
+
+  pure def record(tool: Tool, c: Cand, o: Outcome, s: Seen): Tool = {
     ...tool,
+    misreported: tool.misreported or not(truthful(s, c, o)),
     round: tool.round.exclude(Set(c)),
     outcomes: tool.outcomes.union(Set((c, o))),
     remaining: if (isRemaining(o)) tool.remaining.union(Set(c)) else tool.remaining,
@@ -557,7 +613,7 @@ module keyMigration {
       tool.phase == Running,
       tool.round.contains(c),
       tables' = tables.set(st, e.table),
-      tools' = tools.set(st, record(tool, c, e.outcome)),
+      tools' = tools.set(st, record(tool, c, e.outcome, { before: tables.get(st), after: e.table, merging: tool.merging.contains(c), settled: false })),
       idx' = idx, init130' = init130, initTables' = initTables,
       epochStart' = epochStart, lastFinished' = lastFinished, lastVerify' = lastVerify, budget' = budget, rejectShared' = rejectShared,
     }
@@ -614,7 +670,8 @@ module keyMigration {
       tool.phase == Running,
       tool.round.contains(c),
       tool.attempts.has(c) and tool.attempts.get(c) >= MAX_ATTEMPTS,
-      tools' = tools.set(st, record(tool, c, settleOutcome(tables.get(st), c, tool.merging.contains(c)))),
+      tools' = tools.set(st, record(tool, c, settleOutcome(tables.get(st), c, tool.merging.contains(c)),
+        { before: tables.get(st), after: tables.get(st), merging: tool.merging.contains(c), settled: true })),
       tables' = tables, idx' = idx, init130' = init130, initTables' = initTables,
       epochStart' = epochStart, lastFinished' = lastFinished, lastVerify' = lastVerify, budget' = budget, rejectShared' = rejectShared,
     }
@@ -736,7 +793,8 @@ module keyMigration {
 
   /**
    * INV3 Contents are kept: each copy holds the attributes of a copy of the start; a journal copy is
-   * deleted only when a copy was; a snapshot copy has the `created` of a copy.
+   * deleted only when a copy was (the rule ORs the flags); every other attribute (the journal `created`, the snapshot
+   * `deleted` and `created`) is the value of a copy.
    */
   val contentsKept: bool = STORES.forall(st => {
     val t0 = initTables.get(st)
@@ -746,7 +804,7 @@ module keyMigration {
       val origins = copiesIn(t0, lrow(r)).map(k0 => t0.get(k0))
       and {
         origins.exists(o => o.payload == r.payload),
-        r.deleted implies origins.exists(o => o.deleted),
+        if (st == Journal) (r.deleted implies origins.exists(o => o.deleted)) else origins.exists(o => o.deleted == r.deleted),
         origins.exists(o => o.created == r.created),
       }
     })
@@ -839,15 +897,19 @@ module keyMigration {
     }
   })
 
+  /** The attributes that `differences` compares: the row without the column of the duplicate rule of `st`. */
+  pure def compared(st: Store, r: Row): Row = if (st == Journal) { ...r, deleted: false } else { ...r, created: 0 }
+
   /**
-   * INV3' Versions are kept (review O-F1): every content (payload) that a logical row had at the
-   * start is still held by one of its copies. A merge of copies with different contents breaks it.
+   * INV3' Versions are kept (review O-F1): every content (every attribute that `differences` compares, `compared`)
+   * that a logical row had at the start is still held by one of its copies. A merge of copies with different contents
+   * breaks it.
    */
   val versionsKept: bool = STORES.forall(st => {
     val t0 = initTables.get(st)
     val t = tables.get(st)
     presentRows(t0).forall(l =>
-      copiesIn(t0, l).map(k => t0.get(k).payload).forall(p => copiesIn(t, l).exists(k => t.get(k).payload == p)))
+      copiesIn(t0, l).map(k => compared(st, t0.get(k))).forall(v => copiesIn(t, l).exists(k => compared(st, t.get(k)) == v)))
   })
 
   /**
@@ -920,16 +982,34 @@ module keyMigration {
     tool.outcomes.forall(co => co._1.id == "j" implies tool.params.dir == Forward)
   })
 
+  /** INV14 Every outcome that a run records is what the keys held at that step (`truthful`; the report counts it). */
+  val outcomesTruthful: bool = STORES.forall(st => not(tools.get(st).misreported))
+
+  /**
+   * INV15 A reserved target is not given to another row (review C-F1, for Gone too): when the winner of a target ends
+   * without the row there (Failed, Gone), no other candidate of the same run for that target has an outcome. The
+   * winner is the candidate with the smallest stored key (`winnerOf`), so a candidate with a larger one must not run.
+   * It reads the outcomes of the run only, so it holds with writers too.
+   */
+  val reservedRespected: bool = STORES.forall(st => {
+    val os = tools.get(st).outcomes
+    // the outcomes that leave the target without the row, written out here rather than with `reserves`, so that a
+    // change of `reserves` does not change what this checks
+    os.forall(co1 => (match co1._2 { | Failed(_) => true | Gone => true | _ => false }) implies
+      os.forall(co2 => co2._1.dst != co1._1.dst or ORD.get(co2._1.src) <= ORD.get(co1._1.src)))
+  })
+
   val safety: bool = and {
     noLoss, noDuplicate, exactlyOnce, contentsKept, keysKnown, unknownStays, selectionRespected,
     finishedReported, converges, roundTrip, verifySound, verifyReverseShared, unreversibleStays,
-    withinReference, finishedWithinReference, versionsKept, progress,
+    withinReference, finishedWithinReference, versionsKept, progress, outcomesTruthful, reservedRespected,
   }
 
   /** The invariants that do not compute the reference run (cheap per state). */
   val cheapSafety: bool = and {
     noLoss, noDuplicate, exactlyOnce, contentsKept, keysKnown, unknownStays, selectionRespected,
-    finishedReported, roundTrip, verifySound, verifyReverseShared, unreversibleStays, versionsKept,
+    finishedReported, roundTrip, verifySound, verifyReverseShared, unreversibleStays, versionsKept, outcomesTruthful,
+    reservedRespected,
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -970,4 +1050,14 @@ module keyMigration {
   val wVerifyForward: bool = STORES.exists(st => lastVerify.get(st).pass and lastVerify.get(st).dir == Forward and lastVerify.get(st).form == FPlain)
   val wVerifyReverse: bool = STORES.exists(st => lastVerify.get(st).pass and lastVerify.get(st).dir == Reverse)
   val wIndexLag: bool = STORES.exists(st => idx.get(st) != tables.get(st))
+  /** A conflict that only the attribute that the plugin does not write explains (the copies have the same payload). */
+  def conflictByExtra(st: Store): bool = {
+    val t = tables.get(st)
+    tools.get(st).outcomes.exists(co => and {
+      co._2 == Conflict, t.has(co._1.src), t.has(co._1.dst),
+      t.get(co._1.src).payload == t.get(co._1.dst).payload,
+    })
+  }
+  val wConflictExtraJournal: bool = conflictByExtra(Journal)
+  val wConflictExtraSnapshot: bool = conflictByExtra(Snapshot)
 }
