@@ -208,8 +208,19 @@ module keyMigrationWriters {
 
   /** An attempt found the row under neither key (a delete removed it after the scan). */
   val wGone: bool = STORES.exists(st => outcomeSeen(tools.get(st), o => o == Gone))
-  /** The same for a winner, with another candidate of the run for the same target (the reservation matters). */
-  val wGoneShared: bool = STORES.exists(st => tools.get(st).outcomes.exists(co => co._2 == Gone and sharedInRun(tools.get(st), co._1.dst)))
+  /**
+   * The reservation stopped another candidate: a run finished in which the winner of a target (the candidate with the
+   * smallest stored key that the scan found for it) was Gone, and another candidate for the same target was left
+   * remaining without an attempt. A Gone of the loser (after the winner moved) does not count.
+   */
+  val wGoneShared: bool = STORES.exists(st => {
+    val tool = tools.get(st)
+    tool.phase == Finished and tool.outcomes.exists(co => and {
+      co._2 == Gone,
+      co._1 == winnerOf(scanCandidates(tool.startTable, tool.params).filter(c => c.dst == co._1.dst)),
+      tool.remaining.exists(d => d.dst == co._1.dst and d != co._1 and not(tool.outcomes.exists(o => o._1 == d))),
+    })
+  })
   /** `settle` found the row under neither key (a delete during the transient failures). */
   val wOutcomeUnknown: bool = STORES.exists(st => outcomeSeen(tools.get(st), o => o == Failed("outcome unknown")))
 

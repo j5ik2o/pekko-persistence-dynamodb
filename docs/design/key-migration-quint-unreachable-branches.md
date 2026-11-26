@@ -156,7 +156,7 @@ val reservedRespected: bool = STORES.forall(st => {
 | :-- | :-- | :-- |
 | `wConflictExtraJournal`、`wConflictExtraSnapshot` | `keyMigration.qnt` | その表で `Conflict` があり、2つの写しの `payload` が同じ（属性だけが違いを生んだ） |
 | `wGone` | `keyMigrationWriters.qnt` | 結果に `Gone` がある |
-| `wGoneShared` | `keyMigrationWriters.qnt` | `Gone` の候補のほかに、同じ行き先を要る候補がこの実行にある |
+| `wGoneShared` | `keyMigrationWriters.qnt` | 実行が終わり、行き先の勝者（走査で元のキーが最も小さい候補）が `Gone` で、同じ行き先を要るほかの候補が試みなしに残りになった。勝者が移った後に負けた候補が消えた `Gone` は数えない（#1042 の Devin の指摘） |
 | `wOutcomeUnknown` | `keyMigrationWriters.qnt` | 結果に `Failed("outcome unknown")` がある（レビュー R-3） |
 
 これらを `ci-runs.txt` の `--witnesses` に入れる。仕様が変わって分岐にまた届かなくなると、witness が 0 になって CI が落ちる。今回の問題は「届かないことに誰も気づかない」ことだったので、この witness が再発を防ぐ。
@@ -214,7 +214,8 @@ val reservedRespected: bool = STORES.forall(st => {
 | `placementReverseTest`（足す） | 同上 | 1.3.0 がキーを作れない j が、知られていない形のキーにあると `Unmovable(UNKNOWN_REASON)`（R-5） | P190 |
 | `mergeJournalTargetDeletedTest` | 同上 | 行き先の写しが deleted のとき、まとめた後も deleted（R-7） | J |
 | `mergeSnapshotTargetLaterTest` | 同上 | 行き先の写しの `created` が大きいとき、行き先の写しが残る（R-7） | S |
-| `deleteBeforeAttemptGoneTest` | `keyMigrationWriters_test.qnt` | `initD` から `--reverse` を始め、最初のラウンドの後にアプリが h を消す（`hardDeleteCurrent`）。h の試みは `Gone`、h130 は予約、次のラウンドで実行が終わり、i は残り、表は hP が消えただけ。`outcomesTruthful`、`reservedRespected`、`noLossW`、`noDuplicate` が成り立つ | C、D |
+| `deleteBeforeAttemptGoneTest` | `keyMigrationWriters_test.qnt` | `initD` から `--reverse` を始め、最初のラウンドの後にアプリが h を消す（`hardDeleteCurrent`）。h の試みは `Gone`、h130 は予約、次のラウンドで実行が終わり、i は残り、表は hP が消えただけ。`outcomesTruthful`、`reservedRespected`、`noLossW`、`noDuplicate`、`wGoneShared` が成り立つ | C、D |
+| `loserGoneIsNotSharedTest` | 同上 | h が h130 へ移った後に、アプリが i を消す。i は `Gone` だが、勝者ではないので `wGoneShared` は成り立たない | `wGoneShared` を広く数える定義 |
 
 `mergeExtraOnBothTest` と既存の `mergeJournalTest`・`mergeSnapshotTest` は逆向きの確かめで、規則の列や同じ値の属性を違いとして扱う変異を落とす。`keyMigrationWriters_test.qnt` の冒頭の説明は「不変条件が破れることを確かめる」なので、成り立つことを確かめる `deleteBeforeAttemptGoneTest` があることを書き足す。
 
@@ -271,9 +272,9 @@ D がランダムな run でも落ちるのは、`reservedRespected` が予約�
 | 1 | `wConflictExtraJournal`、`wConflictExtraSnapshot` を足し、`wGaveUp` を外す | 400 × 120（今のまま） | 33、28 / 400 | 43秒 → 57秒 |
 | 2 | `wGaveUp` を足す | 2,000 × 60（今のまま） | `wGaveUp` 23 / 2,000 | 35秒 → 38秒 |
 | 8（新規） | `keyMigrationWriters`、`--init initW --step stepD`、4.2 の12個 | 400 × 120 | `wGone` 39 / 400 | 19秒 |
-| 9（新規） | `keyMigrationWriters`、`--init initD --step stepD`、4.2 の12個 | 2,000 × 60 | `wGone` 344、`wGoneShared` 77、`wOutcomeUnknown` 9 / 2,000 | 12秒 |
+| 9（新規） | `keyMigrationWriters`、`--init initD --step stepD`、4.2 の12個 | 2,000 × 60 | `wGone` 344、`wGoneShared` 28、`wOutcomeUnknown` 9 / 2,000 | 12秒 |
 
-8 では `wGoneShared` が 400 のうち 1 本、`wOutcomeUnknown` が 0 本なので、一覧の「4回以上」の決まりに合わず、witness に入れない。共有の行き先の `Gone` と「outcome unknown」は 9 と決まった筋書きで確かめる。
+8 では `wGoneShared` も `wOutcomeUnknown` も 400 のうち 0 本なので、一覧の「4回以上」の決まりに合わず、witness に入れない。共有の行き先の `Gone` と「outcome unknown」は 9 と決まった筋書きで確かめる。
 
 `wGaveUp` を 1 から 2 へ移した（レビュー R-4）。宇宙を広げると、同じ種でも乱数の列が変わる。1 の `wGaveUp` は 5 から 4 になり、決まり（4回以上）の境目に来た。レビューの実測では、種 `0x7` で 500 回にしても 4 のままだった。2 では 2,000 のうち 23 通る。
 

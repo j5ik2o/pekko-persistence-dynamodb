@@ -132,7 +132,7 @@ violation keyMigrationWriters.qnt --main keyMigrationWriters --init initGStale -
 - 1 で通った witness の回数（400 のうち）：`wMoved` 400、`wMerged` 259、`wBlocked` 346、`wConflict` 138、`wRejected` 292、`wGaveUp` 5、`wProgress` 189、`wFinishedAfterStop` 78、`wRoundTrip` 177、`wVerifyForward` 11、`wVerifyReverse` 159、`wIndexLag` 400、`wMergedAfterLost` 21、`wCycleRemaining` 239、`wFinishedForward` 385。`wGaveUpShared` と `wRejectedShared` は 0 で、結果の文書の 1,000 回と同じく `init` では通らないので、2 で確かめる
 - 2 で通った回数（2,000 のうち）：`wGaveUpShared` 10、`wRejectedShared` 489、`wFinishedAfterStop` 382。1,000 回では `wGaveUpShared` が 4 だったので、2,000 回に増やした（R-8）
 - 届かない分岐の直し（[設計](key-migration-quint-unreachable-branches.md)）で、1 に `wConflictExtraJournal` 33 と `wConflictExtraSnapshot` 28 を足し、`wGaveUp` を 1 から 2 へ移した。直しで `init` の乱数の使われ方が変わり、1 の `wGaveUp` は 5 から 4 になって決まりの境目に来た。2 では 2,000 のうち 23 通る。直しの後の 1 のほかの回数：`wMerged` 231、`wBlocked` 353、`wConflict` 176、`wRejected` 282、`wFinishedAfterStop` 77、`wRoundTrip` 179、`wVerifyForward` 10、`wVerifyReverse` 158、`wMergedAfterLost` 22、`wCycleRemaining` 248、`wFinishedForward` 381
-- 8 と 9 は、ツールが走る間にアプリが削除だけをするモデル（`stepD`）。`Gone` と `settle` の「outcome unknown」に届く。8 で `wGone` は 400 のうち 39、9 で `wGone` 344、`wGoneShared` 77、`wOutcomeUnknown` 9（2,000 のうち）。8 の `wGoneShared` は 1 で、`wOutcomeUnknown` は 0 なので、8 には入れない
+- 8 と 9 は、ツールが走る間にアプリが削除だけをするモデル（`stepD`）。`Gone` と `settle` の「outcome unknown」に届く。8 で `wGone` は 400 のうち 39、9 で `wGone` 344、`wGoneShared` 28、`wOutcomeUnknown` 9（2,000 のうち）。8 の `wGoneShared` と `wOutcomeUnknown` は 0 なので、8 には入れない
 - `wCleanAfterGaveUp` は、1 で 1 回、2 で 2 回しか通らないので一覧に入れない（R-8）。この経路は `keyMigrationGaveUp_test.qnt` の `finishThenRerunTest` が決まった筋書きで毎回通す
 - 4 は、`idempotent` を `rejectShared` が真になりうる `initSharedPair` でも流すために足した（R-12）
 - 5 と 6 の `wAppWrote` は 0 で、一覧に入れない。手順を守るアプリのモデルでは、`recoverAndWrite` はインデックスが行を示していないときだけ起き、それが起きないことがこのモデルの結論だから
@@ -289,7 +289,9 @@ tools のテストに足すもの（`test_pr_ci_required.py`）：`quint` が走
 | `differ` から snapshot の `deleted` の比較を外す | `safety`、`init` 1,000 × 120 | 違反なし |
 | `attempt` で、元にも行き先にも行が無いときの `Gone` を `Moved` にする | `safety`、`init` 200 × 120 | 違反なし |
 
-設計レビュー（R-14）が、3つとも仕様の中で届かない分岐だと突き止めた。直しは [key-migration-quint-unreachable-branches.md](key-migration-quint-unreachable-branches.md) にある。`buildTable` は journal の `created` を常に 0、snapshot の `deleted` を常に偽にするので、`differ` の2項はどの状態でも偽になる。書き手のいないモデルでは元のキーの行を消せるのは候補自身だけなので、`Gone` の分岐にも届かない。仕様を直す別件として扱う（依頼元が項目を立てた）。このジョブは仕様が定義したものを流すだけで、届かない分岐は見つけない。
+設計レビュー（R-14）が、3つとも、このジョブを入れた時点（297826be）の仕様の中で届かない分岐だと突き止めた。その仕様の `buildTable` は journal の `created` を常に 0、snapshot の `deleted` を常に偽にしていたので、`differ` の2項はどの状態でも偽だった。書き手のいないモデルでは元のキーの行を消せるのは候補自身だけなので、`Gone` の分岐にも届かなかった。このジョブは仕様が定義したものを流すだけで、届かない分岐は見つけない。
+
+この制限は、[#1042](https://github.com/j5ik2o/pekko-persistence-dynamodb/pull/1042)（設計は [key-migration-quint-unreachable-branches.md](key-migration-quint-unreachable-branches.md)）で仕様の側を直した。`buildTable` がプラグインの書かない属性を持つ写しを作り、書き手のモデルに `stepD` を足した。CI は、その分岐に届いたことを `ci-runs.txt` の witness（`wConflictExtraJournal`、`wConflictExtraSnapshot`、`wGone`、`wGoneShared`、`wOutcomeUnknown`）で確かめる。分岐にまた届かなくなると witness が 0 になり、ジョブが落ちる。上の3つの変更は、直した後の仕様ではどれも落ちる（設計の 5.1）。
 
 ## 守る不変条件
 

@@ -108,6 +108,26 @@ module keyMigrationWriters_test {
         tools.get(Journal).remaining.map(c => c.id) == Set("i"),
         tables.get(Journal) == START_D.keys().exclude(Set("hP")).mapBy(k => START_D.get(k)),
         outcomesTruthful, reservedRespected, noLossW, noDuplicate,
+        wGoneShared,
+      })
+
+  pure val I_CAND: Cand = { id: "i", seq: 1, src: "iP", dst: "h130" }
+
+  /** h moves to h130 first; then a delete removes i@1 before its attempt: i is Gone, but that is not wGoneShared. */
+  run loserGoneIsNotSharedTest =
+    initD
+      .then(tool(startRun(Journal, REV)))
+      .then(tool(nextRound(Journal)))
+      .then(tool(attemptOk(Journal, H_CAND)))
+      .then(hardDeleteCurrent(("i", 1)))
+      .then(tool(nextRound(Journal)))
+      .then(tool(attemptOk(Journal, I_CAND)))
+      .then(tool(nextRound(Journal)))
+      .expect(and {
+        tools.get(Journal).phase == Finished,
+        tools.get(Journal).outcomes == Set((H_CAND, Moved), (I_CAND, Gone)),
+        wGone, not(wGoneShared),
+        outcomesTruthful, reservedRespected,
       })
 
   // ---- O-F3: the application that follows the documentation

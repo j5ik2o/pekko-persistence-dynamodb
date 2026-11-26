@@ -20,7 +20,7 @@ Quint 0.32.0、2026-11-26、Apple Silicon の手元の機械（ほかの作業�
 | :-- | :-- |
 | `quint test keyMigration_test.qnt --main keyMigration_test` | 12件とも通った（0.4秒）。届かない分岐の直しの後は20件（下の「届かない分岐の直し」） |
 | `quint test keyMigrationGaveUp_test.qnt --main keyMigrationGaveUp_test` | 4件とも通った（7.4秒）。`finishThenRerunTest`、`stopThenRerunTest`、`rejectedOnSharedTargetTest` は各 10,000 回、`cleanRunTest` は1回 |
-| `quint test keyMigrationWriters_test.qnt --main keyMigrationWriters_test` | 10件とも通った（0.6秒）。届かない分岐の直しの後は11件。このうち6件は、契約を外すか読み取りが古い値を返すと不変条件が破れることを示すテストで、通ることは「破れた」を意味する |
+| `quint test keyMigrationWriters_test.qnt --main keyMigrationWriters_test` | 10件とも通った（0.6秒）。届かない分岐の直しの後は12件。このうち6件は、契約を外すか読み取りが古い値を返すと不変条件が破れることを示すテストで、通ることは「破れた」を意味する |
 
 決まった筋書き（`keyMigrationGaveUp_test.qnt`）は、逆向き、共有の行き先（h と i が h130 を求める）、勝者 h が行き先に着かない、流し直し、を必ず通る。
 
