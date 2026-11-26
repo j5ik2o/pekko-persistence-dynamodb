@@ -93,4 +93,47 @@ module keyMigrationTwoCopies_test {
       assert(not(rowWithin(START, ref, Map("kP" -> row("k")), N_ROW))),
     }
   }
+
+  /**
+   * The run moves n130, gives up on n831 (its attempts fail), and finishes with both copies (Devin on #1044): a run
+   * that finished between the start and the end, with n831 listed. The next run merges n831.
+   */
+  run giveUpOnTheSecondCopyTest =
+    initWith(START, false)
+      .then(startRun(Journal, FWD))
+      .then(nextRound(Journal))
+      .then(attemptOk(Journal, K))
+      .then(nextRound(Journal))
+      .then(attemptOk(Journal, N130))
+      .then(nextRound(Journal))
+      .then(all { assert(tools.get(Journal).round == Set(N831)), keep })
+      .then(attemptTransient(Journal, N831))
+      .then(attemptTransient(Journal, N831))
+      .then(settle(Journal, N831))
+      .then(nextRound(Journal))
+      .then(all {
+        assert(tools.get(Journal).phase == Finished),
+        assert(tools.get(Journal).gaveUp),
+        assert(tools.get(Journal).remaining == Set(N831)),
+        assert(tables.get(Journal) == Map("kP" -> row("k"), "k130" -> row("n"), "n831" -> row("n"))),
+        assert(withinReference),
+        assert(withinDryRun),
+        assert(dryRunMatches),
+        assert(finishedWithinReference),
+        keep,
+      })
+      // the next run merges n831 into the copy under k130, and the table ends as one uninterrupted run leaves it
+      .then(startRun(Journal, FWD))
+      .then(10.reps(_ => drive(Journal)))
+      .then(all {
+        assert(tools.get(Journal).phase == Finished),
+        assert(not(tools.get(Journal).gaveUp)),
+        assert(tools.get(Journal).outcomes == Set((N831, Merged))),
+        assert(converges),
+        assert(tables.get(Journal) == fullRun(Journal, START, FWD).table),
+        assert(finishedWithinReference),
+        assert(dryRunMatches),
+        keep,
+      })
 }
+

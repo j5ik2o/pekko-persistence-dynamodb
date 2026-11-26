@@ -517,6 +517,45 @@ private[dynamodb] object KeyMigration {
       )
   }
 
+  /** The rounds of `execute`, which the dry-run plays too (#1028). A round gives, of the pending rows that need the
+    * same target, the one with the smallest stored key (the one that the dry-run names), when the target is not
+    * reserved and no pending row holds it. Only the targets that the rows of the round before touched can change: a row
+    * that leaves `pending` gives its target another first row, and frees its stored key for the rows that need it. So a
+    * run costs about as many steps as it has rows, also when many rows need one target (review of #1044).
+    */
+  private[migration] final class Rounds(candidates: Seq[Candidate]) {
+    private def order(c: Candidate): (String, String) = (c.from.partitionKey, c.from.sortKey)
+
+    val pending: mutable.LinkedHashMap[StoredKey, Candidate] =
+      mutable.LinkedHashMap(candidates.map(c => c.from -> c): _*)
+    private val byTarget = mutable.HashMap.empty[StoredKey, mutable.TreeMap[(String, String), Candidate]]
+    candidates.foreach { c =>
+      byTarget.getOrElseUpdate(c.to, mutable.TreeMap.empty[(String, String), Candidate]).update(order(c), c)
+    }
+    private var touched: mutable.Set[StoredKey] = mutable.HashSet(byTarget.keys.toSeq: _*)
+
+    /** The rows of the next round. Each of them leaves `pending` with `done` before the round after it. */
+    def next(reserved: StoredKey => Boolean): Vector[Candidate] = {
+      val ready = touched.iterator
+        .filterNot(reserved)
+        .flatMap(target => byTarget.get(target).flatMap(_.headOption).map(_._2))
+        .filterNot(c => pending.contains(c.to))
+        .toVector
+        .sortBy(order)
+      touched = mutable.HashSet.empty
+      ready
+    }
+
+    /** The row was tried in this round: it leaves `pending`, whatever its outcome. */
+    def done(c: Candidate): Unit = {
+      pending.remove(c.from)
+      byTarget.get(c.to).foreach(_.remove(order(c)))
+      touched += c.to
+      touched += c.from
+      ()
+    }
+  }
+
   private type Item = Map[String, AttributeValue]
 
   /** Builds the attribute name and value placeholders of one expression. */
@@ -739,7 +778,7 @@ private[dynamodb] object KeyMigration {
 
     // --- dry-run -----------------------------------------------------------------------------------------------
 
-    /** Plays the rounds of `execute` without writing (issue #1028): the same `readyOf`, and for each row the outcome
+    /** Plays the rounds of `execute` without writing (issue #1028): the same `Rounds`, and for each row the outcome
       * that `moveOne` gives on a table that no other writer changes. So, without a rejection of DynamoDB (400 KB), a
       * row that the tool gives up, or another writer, the dry-run gives the rows that `--execute` moves, merges, and
       * leaves; with a rejection or a row given up, `--execute` stops short of it. Within a round the rows touch
@@ -777,9 +816,10 @@ private[dynamodb] object KeyMigration {
         this.read(key, projected = false)
       }
       val outcomes = mutable.HashMap.empty[Candidate, Outcome]
-      val pending  = mutable.LinkedHashMap(base.candidates.map(c => c.from -> c): _*)
+      val rounds   = new Rounds(base.candidates)
       // No target is reserved: the dry-run does not foresee a rejection or a row given up.
-      var ready = readyOf(pending, Set.empty)
+      def nextRound(): Vector[Candidate] = rounds.next(_ => false)
+      var ready                          = nextRound()
       while (ready.nonEmpty) {
         ready.foreach { c =>
           val outcome = slots.getOrElse(c.to, EmptySlot) match {
@@ -802,13 +842,13 @@ private[dynamodb] object KeyMigration {
             case ItemSlot            => BlockedByItem
           }
           outcomes.update(c, outcome)
-          pending.remove(c.from)
+          rounds.done(c)
         }
-        ready = readyOf(pending, Set.empty)
+        ready = nextRound()
       }
       // The rows left wait for another pending row: rows in cycles, which the tool does not swap, and the rows that
       // wait for them.
-      val cycles = findCycles(pending)
+      val cycles = findCycles(rounds.pending)
       val cycled = cycles.flatten.toSet
       // The target is the stored key of a row that did not leave it: the row waits for that row.
       def keptBySource(key: StoredKey): Boolean =
@@ -840,30 +880,11 @@ private[dynamodb] object KeyMigration {
       )
     }
 
-    /** The rows that `execute` tries next, and the dry-run with it: of the rows that need the same target, the one with
-      * the smallest stored key (the one that the dry-run names), when the target is not reserved and no pending row
-      * holds it.
-      */
-    private def readyOf(
-        pending: mutable.LinkedHashMap[StoredKey, Candidate],
-        reserved: collection.Set[StoredKey]
-    ): Vector[Candidate] =
-      pending.values
-        .groupBy(_.to)
-        .collect { case (to, group) if !reserved.contains(to) => group }
-        .map(winnerOf)
-        .filterNot(c => pending.contains(c.to))
-        .toVector
-        .sortBy(c => (c.from.partitionKey, c.from.sortKey))
-
-    /** The row that gets a target key that several rows need: the one with the smallest stored key. */
-    private def winnerOf(group: Iterable[Candidate]): Candidate =
-      group.minBy(c => (c.from.partitionKey, c.from.sortKey))
-
     // --- execute -----------------------------------------------------------------------------------------------
 
     private def execute(base: MigrationReport): MigrationReport = {
-      val pending = mutable.LinkedHashMap(base.candidates.map(c => c.from -> c): _*)
+      val rounds  = new Rounds(base.candidates)
+      val pending = rounds.pending
       // The target keys whose winner did not reach them (Failed, Gone), with that winner. No other row gets such a key
       // in this run, so the next run gives it to the same row, as one uninterrupted run does.
       val reserved = mutable.LinkedHashMap.empty[StoredKey, Candidate]
@@ -887,7 +908,7 @@ private[dynamodb] object KeyMigration {
         // A row whose target is held by a pending row waits until that row has moved. Of the rows that need the same
         // target, only the one that the dry-run names goes first; the others are tried after it, and not at all in this
         // run when that row did not reach the target.
-        val ready = readyOf(pending, reserved.keySet)
+        val ready = rounds.next(reserved.contains)
         if (ready.nonEmpty) {
           val outcomes = Await.result(
             Future.traverse(ready) { c =>
@@ -907,7 +928,7 @@ private[dynamodb] object KeyMigration {
             Duration.Inf
           )
           outcomes.foreach { case (c, outcome) =>
-            pending.remove(c.from)
+            rounds.done(c)
             progressMade = true
             outcome match {
               case Blocked(id, seq) =>

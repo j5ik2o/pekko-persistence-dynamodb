@@ -485,9 +485,12 @@ the old key as moved. Running the tool again after it finished moves nothing.
 - The JournalHead table is keyed by the `persistenceId` alone, so its items do not move and do not change.
 
 The dry-run plays the rounds of `--execute` without writing: the same order of the moves, and for each row what
-`--execute` finds under its target key. When DynamoDB rejects no row (it does not read the size of the items) and
-the tool gives up on none, `--execute` moves, merges, and leaves the rows that the dry-run lists; otherwise it moves
-fewer, and lists the others as remaining. The dry-run prints the rows to move per `persistenceId`, the blocked rows, the cycles, the copies to merge, the rows
+`--execute` finds under its target key. It foresees `--execute` only for a table that nothing else writes to between
+the two runs: when DynamoDB rejects no row (it does not read the size of the items), the tool gives up on none, and
+no application or other tool writes to the table, `--execute` moves, merges, and leaves the rows that the dry-run
+lists; when DynamoDB rejects a row or the tool gives up on one, it moves fewer, and lists the others as remaining.
+The steps below run the dry-run before the applications are stopped, so read it as a preview: what `--execute`
+does is what it reports. The dry-run prints the rows to move per `persistenceId`, the blocked rows, the cycles, the copies to merge, the rows
 that are not moved, and the requests and the capacity units that DynamoDB reported. With `--persistence-id`, it places
 only the rows of those `persistenceId`s. It also lists the `persistenceId`s that shared their keys in 1.3.0 (the same
 `prefix`, second part, and shard), among the `persistenceId`s that the table holds rows of. For the journal, each comes with its highest sequence number and the sequence

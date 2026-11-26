@@ -992,8 +992,10 @@ module keyMigration {
 
   /**
    * INV8b Every finished run, also one that gave up (no exclusion): each logical row is as the
-   * uninterrupted run leaves it, or it is as at the start of the epoch and listed (remaining or not
-   * movable). A run that gave up stops short; it never goes elsewhere.
+   * uninterrupted run leaves it, or it is between the start of the epoch and that end (`rowWithin`; with one
+   * copy, as at the start) and a copy of it is listed (remaining or not movable). A run that gave up stops short; it
+   * never goes elsewhere. Between the start and the end is a row whose copies move in different rounds and whose run
+   * gave up on a later copy (n130 under k130, n831 given up and listed; #1028, Devin on #1044).
    */
   val finishedWithinReference: bool = STORES.forall(st => {
     val tool = tools.get(st)
@@ -1003,7 +1005,7 @@ module keyMigration {
     tool.phase == Finished implies {
       val ref = fullRunWith(rejectShared, st, t0, tool.params).table
       presentRows(t0).union(presentRows(t)).forall(l =>
-        rowsOf(t, l) == rowsOf(ref, l) or (rowsOf(t, l) == rowsOf(t0, l) and copiesIn(t, l).exists(k => listed.contains(k))))
+        rowsOf(t, l) == rowsOf(ref, l) or (rowWithin(t0, ref, t, l) and copiesIn(t, l).exists(k => listed.contains(k))))
     }
   })
 

@@ -99,7 +99,7 @@ journal と snapshot の表の行の、主キー（`pkey`, `skey`）だけを変
 13. `--reverse` の `--verify` は、キーを共有する組の id が2つ以上表にある間は一致しない（`verifyReverseShared`）。
 14. 1.3.0 がキーを作れない id の行は、`--reverse` で動かない（`unreversibleStays`）。
 15. 行がよそへ行かない（`withinReference`、全状態）。同じ条件の実行が始まってから、各論理的な行は、起点のときのままか、起点から止めずに流した結果のままか、写しごとにその間にある（`rowWithin`、#1028）。写しの間というのは、各写しが、起点のキーに起点の中身のままか、止めずに流した結果のキーに、その結果の中身か元のキーを離れた写しの中身であり、起点に無かったキーの写しが、元のキーを離れた写しより多くないこと。写しが1つの行では、起点のままか結果のままかと同じ。同じ行の2つの写しが別々の回で動く途中（n130 が k130 へ移り、n831 がまだ）だけを許す。
-16. 終わった実行は手前で止まる（`finishedWithinReference`、あきらめた実行を含む）。各論理的な行は、止めずに流した結果のままか、起点のままで一覧に出ているか、のどちらか。
+16. 終わった実行は手前で止まる（`finishedWithinReference`、あきらめた実行を含む）。各論理的な行は、止めずに流した結果のままか、起点と結果の間（`rowWithin`。写しが1つなら起点のまま）にあって写しのどれかが一覧に出ているか、のどちらか。起点と結果の間で終わるのは、写しが別々の回で動き、後の写しをあきらめた実行（n130 が k130 へ移り、n831 をあきらめて一覧に出す。#1044 の Devin の指摘）。
 17. 初めの写しの中身の違いは、まとめで消えない（`versionsKept`、レビュー O-F1）。
 18. 動ける行は動く（`progress`、レビュー O-F2）。全 id を選び、動けない行の無い起点から、あきらめなしで終わった実行は、残りを出さず、全行を置き場所に置く。
 19. 実行は dry-run の予測の手前で止まる（`withinDryRun`、全状態、#1028 の P2）。実行が動かした行は、その実行の起点の表の dry-run も動かし、統合した行は、dry-run も統合する。
@@ -264,8 +264,8 @@ Quint のキーは文字列の名前で、リゾルバの計算はしない。�
 | `is831` | `ResolverKeyPlan.isIssue831Key`（:47-48）。Quint は `pkey` の比較をせず、#831 のキーを行ごとに与える |
 | `GROUP`、`sharedGroupsPresent` | `ResolverKeyPlan.sharedKeyGroup`（:80-84）、`KeyVerification.run` の `shared`（KeyVerification.scala:152-161） |
 | `scanCandidates`、`scanUnmovable` | `Session.scanTable`（KeyMigration.scala:625-、#1035 の後の行番号。以下同じ） |
-| `winnerOf` | `Session.winnerOf`（:845-846） |
-| `readyOf` | `Session.readyOf`（:847-858）。`execute` と dry-run が同じ関数を使う。予約した行き先を外す（dry-run では予約は無い） |
+| `winnerOf` | `Rounds` の行き先ごとの並び（元のキーの順）の先頭 |
+| `readyOf` | `KeyMigration.Rounds.next`。`execute` と dry-run が同じ `Rounds` を使う。予約した行き先を外す（dry-run では予約は無い）。コードは、前の回の行が触った行き先だけを見直して同じ集合を作る（`KeyMigrationRoundsSpec` が、保留中のすべてをまとめ直す `readyOf` の式と回ごとに同じになることを確かめる） |
 | `predict` | `Session.dryRun` の予測（:748-）。行き先の仮の中身が空き → `Moved`、同じ行 → `differences` で `Merged` か `Conflict`、ほかの行 → `Blocked`。400 KB の拒否、応答の消失、一時的な失敗は予測しない |
 | `dryStep`、`dryRun` | `Session.dryRun` の回（:748-845）。進まなくなって残った候補は残り（コードは `findCycles` で循環と待つ行に分けて表示する） |
 | `withinDryRun`、`dryRunMatches` | #1028 の P2 と P1（`docs/design/key-migration-1028-output-and-arguments.md` 0節の4）。Scala では `KeyMigrationDryRunPropertySpec` |
