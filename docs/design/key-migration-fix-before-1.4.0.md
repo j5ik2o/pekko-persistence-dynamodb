@@ -126,7 +126,7 @@ dry-run（`dryRun`）は変えない。もとから `winnerOf` だけが行き�
 | `JournalKeyMigrationSpec`「the fixes before 1.4.0 / give the shared key of 1.3.0 to the same id after a --reverse run that gave up on it…（C-F1）」 | 本物のリゾルバで、1.3.0 のキーを共有する2つの id を新しいキーに書き、`--reverse` で同じことをする | **落ちた**：負けた id の行が 1.3.0 のキー（`X-0000000000000000001`）に入っていた |
 | `KeyMigrationSpec`「…keep a shared target key for its winner when DynamoDB rejects the winner（C-F1、2.4 の例外）」（R3、PR-A で足す） | A と B が key 9 を求める。A の `TransactWriteItems` が `ValidationException` を返す。実行1で B が動かず、`remaining` に「kept for A@…」で出て、key 9 が空のまま。同じ故障で実行2も同じ結果（冪等） | 未作成。今のコードでは B が key 9 に入るので落ちる見込み。PR-A で、直す前に落ちることを確かめてから直す |
 
-2.4 の例外（400 KB の拒否）は、今の Quint の宇宙では共有の行き先で起きない（`tooBig` は順方向の PLAIN の行き先だけ）。PR-B で、`--reverse` の 1.3.0 のキーへの移動でも拒否が起きる行（`h` を足す）を宇宙に入れ、その拒否を必ず通る決まった筋書き（`winnerRejectedOnSharedTargetTest`：h が拒否され、i が待ち、表が起点のまま。流し直しても同じ）を `keyMigrationGaveUp_test.qnt` に足す（R3）。拒否は決まった結果なので、止めずに流した参照の実行も同じく拒否する。この筋書きでは、`withinReference`、`finishedWithinReference`、`converges`、表が起点のままであることを確かめる。
+2.4 の例外（400 KB の拒否）は、今の Quint の宇宙では共有の行き先で起きない（`tooBig` は順方向の PLAIN の行き先だけ）。PR-B で、`--reverse` の 1.3.0 のキーへの移動でも拒否が起きる行（`("h", 1)` の、1.3.0 のキー `h130` への移動）を宇宙に入れ、その拒否を必ず通る決まった筋書き（`winnerRejectedOnSharedTargetTest`：h が拒否され、i が待ち、表が起点のまま。流し直しても同じ）を `keyMigrationGaveUp_test.qnt` に足す（R3）。拒否は決まった結果なので、止めずに流した参照の実行も同じく拒否する。この筋書きでは、`withinReference`、`finishedWithinReference`、`converges`、表が起点のままであることを確かめる。
 
 ### 2.9 壊しうる入力
 
