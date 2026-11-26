@@ -16,7 +16,7 @@ module keyMigrationWriters_test {
   action startW = all {
     initWith(START, true), appDeleted' = Set(), appDeleting' = Set(), appWritten' = Set(),
     appStarted' = false, appNode' = Forward, headEnabled' = false, staleReads' = false, idxHist' = Set(),
-    toolsSinceVerify' = STORES.mapBy(_ => false),
+    toolsSinceVerify' = STORES.mapBy(_ => false), verifyDeleting' = Set(),
   }
   action tool(a: bool): bool = all { a, keepApp }
 
@@ -46,6 +46,21 @@ module keyMigrationWriters_test {
       .then(tool(verify(Journal, Forward, FPlain)))
       .expect(lastVerify.get(Journal).pass and not(verifySoundW))
 
+  /** A1'': a hard delete after that --verify does not change what the --verify said (the deletes it saw are kept). */
+  run deleteAfterVerifyKeepsVerdictTest =
+    startW
+      .then(tool(startRun(Journal, FWD)))
+      .then(tool(nextRound(Journal)))
+      .then(tool(attemptOk(Journal, B_CAND)))
+      .then(tool(propagateKey(Journal, "b130")))
+      .then(recoverAndWrite(("b", 1), "bP"))
+      .then(tool(propagateKey(Journal, "bP")))
+      .then(tool(nextRound(Journal)))
+      .then(verifyW(Journal, Forward, FPlain, toolsSinceVerify))
+      .then(all { assert(lastVerify.get(Journal).pass and not(verifySoundW)), keepAll })
+      .then(hardDeleteCurrent(("b", 1)))
+      .expect(appDeleting.contains(("b", 1)) and not(verifySoundW))
+
   /** A2: a node of 1.3.0 that misses the moved event writes it again under the old key: two copies. */
   run oldNodeDuplicatesMovedEventTest =
     startW
@@ -71,7 +86,35 @@ module keyMigrationWriters_test {
   pure val A_CAND: Cand = { id: "a", seq: 1, src: "a130", dst: "b130" }
 
   /** Both tables of START_G moved (b, then a into b130), the index caught up, and --verify matched twice. */
-  action migrateAndVerifyTwice(stale: bool, withHead: bool): bool =
+  action migrateAndVerifyTwice(stale: bool, withHead: bool): bool = migrateAndVerifyTwiceNoStart(stale, withHead).then(appStart(Forward))
+
+  action keepAll = all {
+    keepApp, tables' = tables, idx' = idx, tools' = tools, init130' = init130, initTables' = initTables,
+    epochStart' = epochStart, lastFinished' = lastFinished, lastVerify' = lastVerify, budget' = budget,
+    rejectShared' = rejectShared,
+  }
+
+  /** A step of a tool as `stepG` takes it: it marks that a tool ran after the last --verify of `st`. */
+  action toolG(st: Store, a: bool): bool = all { a, keepAppBut, toolsSinceVerify' = toolsSinceVerify.set(st, true) }
+
+  /** O-F3 1: a tool run after a matching --verify blocks the start, also when it leaves the table as it was. */
+  run toolAfterVerifyBlocksStartTest =
+    migrateAndVerifyTwiceNoStart(false, false)
+      .then(all { assert(verifiedForStart(Forward)), keepAll })
+      .then(toolG(Journal, startRun(Journal, FWD)))
+      .then(toolG(Journal, nextRound(Journal)))
+      .then(all {
+        assert(tools.get(Journal).phase == Finished),
+        assert(tables.get(Journal) == lastVerify.get(Journal).table),
+        assert(not(verifiedForStart(Forward))),
+        assert(not(appStarted)),
+        keepAll,
+      })
+      .then(verifyW(Journal, Forward, FPlain, toolsSinceVerify.set(Journal, false)))
+      .then(appStart(Forward))
+      .expect(appStarted)
+
+  action migrateAndVerifyTwiceNoStart(stale: bool, withHead: bool): bool =
     initGWith(stale, withHead)
       .then(tool(startRun(Journal, FWD))).then(tool(nextRound(Journal)))
       .then(tool(attemptOk(Journal, B_CAND)))
@@ -89,11 +132,8 @@ module keyMigrationWriters_test {
       .then(all {
         assert(idx.get(Journal) == tables.get(Journal)),
         assert(lastVerify.get(Journal).pass and lastVerify.get(Snapshot).pass),
-        keepApp, tables' = tables, idx' = idx, tools' = tools, init130' = init130, initTables' = initTables,
-        epochStart' = epochStart, lastFinished' = lastFinished, lastVerify' = lastVerify, budget' = budget,
-        rejectShared' = rejectShared,
+        keepAll,
       })
-      .then(appStart(Forward))
 
   /** O-F3 1: an index that only catches up: after the start, no recovery misses b, so nothing is replaced. */
   run guardedStartTest =

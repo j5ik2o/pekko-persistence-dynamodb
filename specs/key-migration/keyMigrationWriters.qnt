@@ -41,13 +41,15 @@ module keyMigrationWriters {
   var idxHist: Set[Table]
   /** A step of the tool ran after the last --verify of the table (`stepG` only). */
   var toolsSinceVerify: Store -> bool
+  /** The rows whose hard delete had started when the last --verify of the journal ran (`verifySoundW`). */
+  var verifyDeleting: Set[LRow]
 
   pure val NEW_PAYLOAD = 9
 
   action initW = all {
     init, appDeleted' = Set(), appDeleting' = Set(), appWritten' = Set(),
     appStarted' = false, appNode' = Forward, headEnabled' = false, staleReads' = false, idxHist' = Set(),
-    toolsSinceVerify' = STORES.mapBy(_ => false),
+    toolsSinceVerify' = STORES.mapBy(_ => false), verifyDeleting' = Set(),
   }
 
   pure def idsInIndex(i: Table): Set[Id] = i.keys().map(k => i.get(k).id)
@@ -75,6 +77,7 @@ module keyMigrationWriters {
       epochStart' = epochStart, lastFinished' = lastFinished, lastVerify' = lastVerify, budget' = budget, rejectShared' = rejectShared,
       appStarted' = appStarted, appNode' = appNode, headEnabled' = headEnabled, staleReads' = staleReads,
       idxHist' = idxHist.union(Set(idx.get(Journal))), toolsSinceVerify' = toolsSinceVerify,
+      verifyDeleting' = verifyDeleting,
     }
   }
 
@@ -92,6 +95,7 @@ module keyMigrationWriters {
       epochStart' = epochStart, lastFinished' = lastFinished, lastVerify' = lastVerify, budget' = budget, rejectShared' = rejectShared,
       appStarted' = appStarted, appNode' = appNode, headEnabled' = headEnabled, staleReads' = staleReads,
       idxHist' = idxHist.union(Set(idx.get(Journal))), toolsSinceVerify' = toolsSinceVerify,
+      verifyDeleting' = verifyDeleting,
     }
   }
 
@@ -109,6 +113,7 @@ module keyMigrationWriters {
       epochStart' = epochStart, lastFinished' = lastFinished, lastVerify' = lastVerify, budget' = budget, rejectShared' = rejectShared,
       appStarted' = appStarted, appNode' = appNode, headEnabled' = headEnabled, staleReads' = staleReads,
       idxHist' = idxHist.union(Set(idx.get(Journal))), toolsSinceVerify' = toolsSinceVerify,
+      verifyDeleting' = verifyDeleting,
     }
   }
 
@@ -130,16 +135,34 @@ module keyMigrationWriters {
   }
 
   /** The variables of this module, unchanged (with a step of keyMigration.qnt). */
-  action keepAppBut = all {
+  action keepAppCore = all {
     appDeleted' = appDeleted, appDeleting' = appDeleting, appWritten' = appWritten,
     appStarted' = appStarted, appNode' = appNode, headEnabled' = headEnabled, staleReads' = staleReads,
     idxHist' = idxHist.union(Set(idx.get(Journal))),
   }
+  action keepAppBut = all { keepAppCore, verifyDeleting' = verifyDeleting }
   action keepApp = all { keepAppBut, toolsSinceVerify' = toolsSinceVerify }
 
-  action stepW = any {
-    all { step, keepApp },
-    appStep,
+  /** --verify of `st`; for the journal, it records the hard deletes that had started (`verifySoundW`). */
+  action verifyW(st: Store, dir: Dir, form: Form, toolsSince: Store -> bool): bool = all {
+    verify(st, dir, form), keepAppCore,
+    toolsSinceVerify' = toolsSince,
+    verifyDeleting' = if (st == Journal) appDeleting else verifyDeleting,
+  }
+
+  /** A step of keyMigration.qnt (`step`, with --verify recording the deletes), or of the application. */
+  action stepW = {
+    nondet st = STORES.oneOf()
+    nondet dir = DIRS.oneOf()
+    nondet form = FORMS.oneOf()
+    any {
+      all { toolStep(st), keepApp },
+      all { toolStep(st), keepApp },
+      all { toolStep(st), keepApp },
+      all { propagate(st), keepApp },
+      verifyW(st, dir, form, toolsSinceVerify),
+      appStep,
+    }
   }
 
   // ---- O-F3: the application that follows the documentation
@@ -165,7 +188,7 @@ module keyMigrationWriters {
     appStarted' = true, appNode' = dir,
     appDeleted' = appDeleted, appDeleting' = appDeleting, appWritten' = appWritten,
     headEnabled' = headEnabled, staleReads' = staleReads, idxHist' = idxHist.union(Set(idx.get(Journal))),
-    toolsSinceVerify' = toolsSinceVerify,
+    toolsSinceVerify' = toolsSinceVerify, verifyDeleting' = verifyDeleting,
     tables' = tables, idx' = idx, tools' = tools, init130' = init130, initTables' = initTables,
     epochStart' = epochStart, lastFinished' = lastFinished, lastVerify' = lastVerify, budget' = budget,
     rejectShared' = rejectShared,
@@ -192,7 +215,7 @@ module keyMigrationWriters {
     nondet form = FORMS.oneOf()
     any {
       all { not(appStarted), toolStep(st), keepAppBut, toolsSinceVerify' = toolsSinceVerify.set(st, true) },
-      all { not(appStarted), verify(st, dir, form), keepAppBut, toolsSinceVerify' = toolsSinceVerify.set(st, false) },
+      all { not(appStarted), verifyW(st, dir, form, toolsSinceVerify.set(st, false)) },
       all { propagate(st), keepApp },
       appStart(dir),
       appStepGuarded,
@@ -209,7 +232,7 @@ module keyMigrationWriters {
     initWith(START_G, true),
     appDeleted' = Set(), appDeleting' = Set(), appWritten' = Set(),
     appStarted' = false, appNode' = Forward, headEnabled' = withHead, staleReads' = stale, idxHist' = Set(),
-    toolsSinceVerify' = STORES.mapBy(_ => false),
+    toolsSinceVerify' = STORES.mapBy(_ => false), verifyDeleting' = Set(),
   }
   /** O-F3 1: an index that only catches up (`quint run --init initG --step stepG`). */
   action initG = initGWith(false, false)
@@ -249,8 +272,9 @@ module keyMigrationWriters {
   val verifySoundW: bool = {
     val v = lastVerify.get(Journal)
     val t0 = initTables.get(Journal)
+    // only the deletes that had started when the --verify ran; a later delete does not change what it said
     (v.done and v.pass and v.dir == Forward and v.form == FPlain) implies
-      presentRows(t0).exclude(appDeleting).forall(l =>
+      presentRows(t0).exclude(verifyDeleting).forall(l =>
         copiesIn(v.table, l).exists(k => copiesIn(t0, l).exists(k0 => t0.get(k0).payload == v.table.get(k).payload)))
   }
 }

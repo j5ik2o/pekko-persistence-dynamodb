@@ -73,6 +73,7 @@ module keyMigration {
     unmovable: Set[Key],       // MigrationReport.unmovable
     gaveUp: bool,              // a transient failure ended in Failed (settle)
     epochGaveUp: bool,         // an earlier run of the same epoch gave up (history, read by the witnesses only)
+    epochStopped: bool,        // an earlier run of the same epoch stopped (history, read by the witnesses only)
     reserved: Set[Key],        // KeyMigration.execute: `reserved`, the targets whose winner ended without the row there
     startTable: Table,         // the table when this run started (for the selection invariant)
   }
@@ -426,7 +427,7 @@ module keyMigration {
   pure val IDLE_TOOL: Tool = {
     phase: Idle, params: { dir: Forward, form: FPlain, sel: IDS }, pending: Set(), round: Set(),
     attempts: Map(), merging: Set(), outcomes: Set(), remaining: Set(), unmovable: Set(),
-    gaveUp: false, epochGaveUp: false, reserved: Set(), startTable: Map(),
+    gaveUp: false, epochGaveUp: false, epochStopped: false, reserved: Set(), startTable: Map(),
   }
 
   action init: bool = {
@@ -513,6 +514,8 @@ module keyMigration {
         ...IDLE_TOOL, phase: Running, params: p, pending: scanCandidates(t, p),
         unmovable: scanUnmovable(t, p), startTable: t,
         epochGaveUp: continues and (tool.epochGaveUp or tool.gaveUp),
+        // a run that continues from the phase Idle continues a run that stopped
+        epochStopped: continues and (tool.epochStopped or tool.phase == Idle),
       }),
       tables' = tables, idx' = idx, init130' = init130, initTables' = initTables,
       lastFinished' = lastFinished, lastVerify' = lastVerify, budget' = budget, rejectShared' = rejectShared,
@@ -560,15 +563,20 @@ module keyMigration {
     }
   }
 
-  /** The transaction of an attempt is applied, but its response is lost: the tool tries again. */
+  /**
+   * The transaction of an attempt is applied, but its response is lost: the tool tries again. Only an attempt that
+   * sends a transaction: the row is under its stored key (an attempt that finds it gone sends none).
+   */
   action attemptLost(st: Store, c: Cand): bool = {
     val tool = tools.get(st)
-    val e = attempt(rejectShared, st, tables.get(st), c, tool.merging.contains(c))
+    val t = tables.get(st)
+    val e = attempt(rejectShared, st, t, c, tool.merging.contains(c))
     val n = if (tool.attempts.has(c)) tool.attempts.get(c) else 0
     all {
       budget > 0,
       tool.phase == Running,
       tool.round.contains(c),
+      t.has(c.src) and isRowOf(t.get(c.src), c),
       writes(e),
       n < MAX_ATTEMPTS,
       tables' = tables.set(st, e.table),
@@ -956,7 +964,8 @@ module keyMigration {
   val wMergedAfterLost: bool = STORES.exists(st => tools.get(st).merging.exists(c => tools.get(st).outcomes.contains((c, Merged))))
   val wCycleRemaining: bool = STORES.exists(st => tools.get(st).phase == Finished and tools.get(st).remaining.exists(c => c.id == "c"))
   val wFinishedForward: bool = STORES.exists(st => tools.get(st).phase == Finished and tools.get(st).params.dir == Forward and tools.get(st).outcomes.size() >= 3)
-  val wFinishedAfterStop: bool = STORES.exists(st => tools.get(st).phase == Finished and epochStart.get(st) != tools.get(st).startTable)
+  /** A run finished after an earlier run of the same epoch stopped (`epochStopped`, not the start table). */
+  val wFinishedAfterStop: bool = STORES.exists(st => tools.get(st).phase == Finished and tools.get(st).epochStopped)
   val wRoundTrip: bool = STORES.exists(st => init130.get(st) and tools.get(st).phase == Finished and tools.get(st).params.dir == Reverse and tools.get(st).params.sel == IDS and epochStart.get(st) != initTables.get(st))
   val wVerifyForward: bool = STORES.exists(st => lastVerify.get(st).pass and lastVerify.get(st).dir == Forward and lastVerify.get(st).form == FPlain)
   val wVerifyReverse: bool = STORES.exists(st => lastVerify.get(st).pass and lastVerify.get(st).dir == Reverse)

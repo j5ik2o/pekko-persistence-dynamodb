@@ -137,8 +137,12 @@ module keyMigrationGaveUp_test {
       .then(10.reps(_ => drive(Journal)))
       .then(all {
         assert(tools.get(Journal).phase == Finished),
+        assert(not(tools.get(Journal).gaveUp)),
+        assert(withinReference),
+        assert(finishedWithinReference),
         assert(converges),
         assert(tables.get(Journal) == START),
+        assert(tools.get(Journal).remaining == Set(H, I)),
         keep,
       })
 

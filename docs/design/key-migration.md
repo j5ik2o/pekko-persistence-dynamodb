@@ -60,7 +60,7 @@ journal と snapshot の表の行の、主キー（`pkey`, `skey`）だけを変
 
 ラウンドを繰り返す。各ラウンドの始めに、保留中の候補から `ready` を作る：行き先ごとに `winnerOf` で1つ選び、行き先を保留中のほかの候補が持っているものは外す。予約した行き先（下）の組も外す。`ready` を並行に `moveOne` し、全部の結果が出たら保留から外す。`ready` が空になったら止め、残りは、予約した行き先を待つ行（「the target key is kept for …」）、循環、循環を待つ行として残す（`findCycles`）。
 
-勝者の結果が `Failed`（理由を問わない）か `Gone` なら、その行き先を勝者のために予約する（`reserved`）。予約した行き先は、その実行の残りの間ほかの候補に渡さない。勝者が `Moved` か `Merged` なら行き先にはその行があり、`Blocked` と `Conflict` なら行き先にほかの行があるので、どれも予約しない。こうすると、負けた候補が行き先を得るのは、勝者が行き先にいるとき（負けた候補は `Blocked`）だけになり、流し直しても、止めずに流した場合と同じ勝者が行き先を得る（レビュー C-F1）。勝者が 400 KB で拒否されたときは、負けた候補も動かない。dry-run はもとから勝者を示しているので、dry-run と `--execute` が合う。
+勝者の結果が `Failed`（理由を問わない）か `Gone` なら、その行き先を勝者のために予約する（`reserved`）。予約した行き先は、その実行の残りの間ほかの候補に渡さない。勝者が `Moved` か `Merged` なら行き先にはその行があり、`Blocked` と `Conflict` なら行き先にほかの行があるので、どれも予約しない。こうすると、負けた候補が試されるのは、勝者が行き先にいるとき（`Moved`、`Merged`）か、行き先がほかのものでふさがれていて勝者が動かないとき（`Blocked`、`Conflict`、`BlockedByItem`）だけになる。前者なら負けた候補は勝者にふさがれる（同じ行の写しならまとめる）。後者なら、負けた候補も行き先が実際に持つものでふさがれる。ただし行き先にあるのが負けた候補自身の行の写しなら、負けた候補はそれとまとまる（例：h と i が h130 を求め、h130 に i の写しがあるとき、勝者 h は `Blocked` で、i はその写しとまとまる）。dry-run も同じに分ける（2.3）。どの場合も、流し直すと、止めずに流した場合と同じ結果になる（レビュー C-F1）。勝者が 400 KB で拒否されたときは、負けた候補も動かない。dry-run はもとから勝者を示しているので、dry-run と `--execute` が合う。
 
 `moveOne` の1回の試み：
 
@@ -218,7 +218,7 @@ Quint のキーは文字列の名前で、リゾルバの計算はしない。�
 ## 7. 分かっている限界
 
 - オフラインの契約。`--execute` の間と、インデックスが追いつくまでは、書くアプリも読むアプリも止めておく。破るとどの不変条件が破れるかは、Quint の書き手のモデルで反例を作った（8.5）。
-- GSI の結果整合。`--verify` の一致は見た時点のもの。2回の一致を間を空けて取ることをドキュメントは勧めるが、遅れが無いことの証明にはならない。DynamoDB がインデックスを更新する時間は測っていない。Quint のインデックスは、キーごとに古い値から新しい値へ一度だけ変わる（単調）。読むたびに古い値と新しい値が入れ替わる読み取りは入れていない。
+- GSI の結果整合。`--verify` の一致は見た時点のもの。2回の一致を間を空けて取ることをドキュメントは勧めるが、遅れが無いことの証明にはならない。DynamoDB がインデックスを更新する時間は測っていない。本体のモデル（`keyMigration.qnt`）のインデックスは、キーごとに古い値から新しい値へ一度だけ変わる（単調）。読むたびに古い値と新しい値が入れ替わる読み取りは、本体のモデルには入れていない。書き手のモデル（`keyMigrationWriters.qnt`）の `staleReads` では、読み取りがインデックスの持ったことのあるどの値でも返しうる（単調でない）。8.5 の `initGStale` がこれを扱う。
 - JournalHead を有効にしていれば、復旧で番号を取り違えた上書きは起きない（ドキュメント）。無効なら起きる。書き込み側の守りは [#1026](https://github.com/j5ik2o/pekko-persistence-dynamodb/issues/1026) で追っている。
 - DAX。ツールは DAX を通らない（v2 のクライアントを作り直す）。アプリは起動前に DAX の項目キャッシュとクエリキャッシュを捨てる必要がある。DAX では測っていない。
 - DynamoDB Local でしか測っていない。公開版の JAR が書いた行での試験は [#1032](https://github.com/j5ik2o/pekko-persistence-dynamodb/issues/1032) と [#1027](https://github.com/j5ik2o/pekko-persistence-dynamodb/issues/1027)。
@@ -262,9 +262,9 @@ Quint のキーは文字列の名前で、リゾルバの計算はしない。�
 | `mergeTx` | `merge`（:1230-）、`markDeleted`（:1061-） |
 | `differ` | `differences`（:1116-） |
 | `tooBig` | `ValidationException` の `Failed`（:1191-1192）。`BIG_SHARED` は `--reverse` の 1.3.0 のキーへの超過 |
-| `attemptLost` | `transact` の `Left`（応答が無い）と、次の試みで元が無いときの分岐（:1067-1069、:1076-1081） |
-| `settleOutcome` | `settle`（:1098-1110） |
-| `MAX_ATTEMPTS` | `MigrationSettings.maxAttempts`（:110）。Quint は 2、コードは 10 |
+| `attemptLost` | `transact` の `Left`（応答が無い、:1101-1103）と、次の試みで元が無いときの分岐（:1183-1188）。Quint は、元のキーに行があり、試みが書いたときだけ応答を失わせる |
+| `settleOutcome` | `settle`（:1205-1217） |
+| `MAX_ATTEMPTS` | `MigrationSettings.maxAttempts`（:111）。Quint は 2、コードは 10 |
 | `verifyPass` | `KeyVerification.run` と `VerifyReport.verified`（KeyVerification.scala:70-72、:91-205） |
 | `propagate` | DynamoDB の GSI の非同期の更新（コードには無い） |
 | `recoverAndWrite` | `JournalRowStore.writeRows` の条件 `sameRowOrNone`（JournalRowStore.scala:222-223、:347-348）と、`highestSequenceNr` がインデックスを読むこと（:118-140） |
