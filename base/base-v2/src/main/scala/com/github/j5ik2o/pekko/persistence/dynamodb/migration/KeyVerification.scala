@@ -254,7 +254,8 @@ private[dynamodb] object KeyVerification {
     // The check sees only the ids that have rows: an id whose rows were all deleted can still collide (#1028).
     if (direction == "reverse")
       lines += "[verify] the shared keys of 1.3.0 are checked for only the persistence ids that the table holds rows of; " +
-      "an id without rows that shares its keys with another id makes its writes fail as a conflict after the rollback"
+      "after the rollback, a write of an id without rows that shares its keys with another id fails as a conflict " +
+      "when the other id holds a row of the same sequence number"
     if (report.verified) {
       lines += "[verify] matched: when it was checked, every row was under the key it belongs under and the index " +
       "showed the rows of the table. The index is eventually consistent, so this does not prove that a later read sees " +

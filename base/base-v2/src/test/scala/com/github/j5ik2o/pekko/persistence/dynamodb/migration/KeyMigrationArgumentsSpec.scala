@@ -71,17 +71,23 @@ final class KeyMigrationArgumentsSpec extends AnyWordSpec with Matchers {
       val thai = Locale.forLanguageTag("th-TH-u-nu-thai")
       // the key of issue #831 that an application with Thai digits wrote
       val written = "%019d".formatLocal(thai, 1L)
-      written should not be "%019d".formatLocal(Locale.ROOT, 1L)
-      val plan = new ResolverKeyPlan(
-        (_, seq) => Some(StoredKey("pk", s"id-$seq")),
-        (_, seq) => Some(StoredKey("pk", s"new-$seq")),
-        KeyForm.PlainText,
-        reverse = false
-      )
-      plan.placement("id", 1L, StoredKey("pk", written)) match {
-        case Placement.Unmovable(reason) => reason should include("default format locale")
-        case other                       => fail(s"expected Unmovable, got $other")
-      }
+      // The plan reads the key with the default format locale of the JVM, so the test runs with ASCII digits whatever
+      // the locale of the JVM that runs it.
+      val default = Locale.getDefault(Locale.Category.FORMAT)
+      Locale.setDefault(Locale.Category.FORMAT, Locale.ROOT)
+      try {
+        written should not be "%019d".format(1L)
+        val plan = new ResolverKeyPlan(
+          (_, seq) => Some(StoredKey("pk", s"id-$seq")),
+          (_, seq) => Some(StoredKey("pk", s"new-$seq")),
+          KeyForm.PlainText,
+          reverse = false
+        )
+        plan.placement("id", 1L, StoredKey("pk", written)) match {
+          case Placement.Unmovable(reason) => reason should include("default format locale")
+          case other                       => fail(s"expected Unmovable, got $other")
+        }
+      } finally Locale.setDefault(Locale.Category.FORMAT, default)
     }
   }
 
