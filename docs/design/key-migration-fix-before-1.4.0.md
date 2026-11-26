@@ -335,7 +335,7 @@ witness が薄い（`initFixed` で `wGaveUpShared` が 1,000 のうち数件）
 | 件 | 処理 | issue の題の案、または採らない理由 |
 | :-- | :-- | :-- |
 | C-F2 の本体 | 別件（既存） | [#1026](https://github.com/j5ik2o/pekko-persistence-dynamodb/issues/1026)（JournalHead 無効のときの書き込み側の守り） |
-| C-F4 の残り | 別件 | 「移行ツール：`--verify` が識別の属性の無い項目で落ちる」。終了コード1で止まり、誤って合格はしない。C-F4 の後は、dry-run と `--execute` は落ちずに一覧を出すのに `--verify` だけが落ちる、と issue に書く（R7） |
+| C-F4 の残り | 別件 | [#1035](https://github.com/j5ik2o/pekko-persistence-dynamodb/issues/1035)「移行ツール：--verify が行でない項目で落ちる」。終了コード1で止まり、誤って合格はしない。C-F4 の後は、dry-run と `--execute` は落ちずに一覧を出すのに `--verify` だけが落ちる、と issue に書いた（R7）。#1033 のレビューで、`customize.md` に「`--verify` の前に、そのような項目を手で移すか消す」を足した |
 | C-F5 | 別件 | 「移行ツール：権限・期限切れ・表が無いエラーを再試行せずに止める」。大きな移行の前に入れたい。C-F1 の直しの後は、恒久のエラーで勝者があきらめても行き先は予約されるので、行は動かず安全側 |
 | C-F6 | 文書の言い方は PR-B で直す。残りは別件 | 文書（R7）：`customize.md` の要約の説明「only by a collision of SHA-256」を、SHA-256 の先頭 128 ビットを足し合わせた要約であることが分かる言い方に、「parallel segments」を、`--verify` の区切りは順に読むことが分かる言い方に直す（`KeyVerification.scala:247-248, 335-336, 348`）。`release-notes.md` の同じ言い方（92行目）も合わせる。別件の issue の題の案：「移行ツール：`--verify` の `describeTable` の時間切れ、`--segments` を並行に読む」 |
 | C-F7 | 別件 | 「Quint：`contentsKept` を強める（`deleted` の戻り、`created` の規則）、`attemptOk` の上限、`fullRun` の範囲を定数に」。`attemptOk` の上限の抜けは、モデルがコードより多くの試みを許す側の差で、安全の性質の反例を隠さない。今回の筋書きはこの差に頼っていない |
@@ -396,6 +396,7 @@ witness が薄い（`initFixed` で `wGaveUpShared` が 1,000 のうち数件）
 | R3 の Quint | `h` を宇宙に足す | 状態の変数 `rejectShared`（トレースごとに固定）で、h の h130 への `--reverse` の移動を拒否する。`initSharedPair` の4回に1回と決まった筋書きだけで真、`init` では偽 | `init` で真にすると、`progress` と `roundTrip` が違反した。どちらも前提が「h は 1.3.0 のキーへ戻れる」で、拒否はこの前提の外。前提を広げる（性質を変える）のではなく、拒否を入れる表を限った。`fixed` の代わりに入れたので、変数の数は変わらない |
 | O-F3 の起動の条件 | 最後の `--verify` が一致し、その後にツールが走っておらず、表が変わっていない | 「その後にツールが一歩も走っていない」を `toolsSinceVerify` で持った | 表の値だけで比べると、ツールが移して戻した表が同じ値に戻り、インデックスが遅れたまま起動できてしまい、`noLossW` の違反が出た。文書の手順 6 に、ツールを流したら `--verify` をやり直すことを1文足した |
 | dry-run の分類（#1033 のレビュー） | 変えない（2.3） | 勝者の行き先がほかの行か行でない項目にふさがれているとき、ほかの候補も、その行き先が実際に持つものでふさがれる（自分の行ならまとめる）とした | `--execute` は、その行き先を予約せずにほかの候補を後で試し、同じものにふさがれる。dry-run は「勝者にふさがれる」「まとめる」と示し、`--execute` と合っていなかった（CodeRabbit と Devin の指摘）。勝者の行き先が空きのとき、ほかの行がまだ動く行のときは変えない |
+| O-F4・O-F5 の文面（#1034 のレビュー） | 7.4：利用者を止めるか、削除を飛ばす。7.5：全リージョンで `--verify` | 7.4：止めても再開で削除が届くので、削除を飛ばすか、移行の後に下流のデータを作り直す。7.5：あわせて、各リージョンの `--verify` が報告する行と `persistenceId` の数を、ツールを流したリージョンと比べる | 止めた利用者は止めた位置から読み直す。`--verify` はそのリージョンが持つ行のキーを見るだけで、まだ届いていない行に気づかない（Devin の指摘） |
 | O-F4・O-F5 の一次情報 | 実装の段で AWS の文書を読む | 読んで文面を合わせた | DynamoDB Streams は項目ごとの順だけを保証する（[Streams](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Streams.html)）。Kinesis Data Streams は順が入れ替わり、同じ変更が2回以上届きうる（[kds](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/kds.html)）。グローバルテーブルの取引の ACID は呼んだリージョンの中だけで、ほかのリージョンでは途中まで反映された取引が見えうる。強い整合性のグローバルテーブル（MRSC）は取引の API を受け付けない（[transaction-apis](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/transaction-apis.html)、[globaltables_HowItWorks](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/globaltables_HowItWorks.html)）。最後の点は文書に足した |
 
 O-F3 の予想（7.3）は、起動の条件を直した後、2つとも当たった。インデックスが単調なモデルでは4つの不変条件が成り立ち、古い値を返す読み取りでは、JournalHead が無効なら `--verify` が2回一致した後でも上書きが起き、有効なら起きない。

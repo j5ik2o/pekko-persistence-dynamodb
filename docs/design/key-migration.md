@@ -78,7 +78,7 @@ journal と snapshot の表の行の、主キー（`pkey`, `skey`）だけを変
 
 ### 2.5 確かめ（`KeyVerification.run`、`--verify`）
 
-`--persistence-id` を受け付けない。インデックスの定義（キーと型、ACTIVE、読まれる属性の射影）を確かめ、表全体を Scan して全行を判定し、インデックス全体を Scan して、persistence id ごとに表とインデックスの行を SHA-256 の要約で比べる。違う id は `--verify-timeout` まで Query し直す。`--reverse` では、1.3.0 でキーを共有する id が2つ以上表にあれば一致としない。一致は「見た時点で」の観察で、後の読み取りが同じものを見ることは保証しない。
+`--persistence-id` を受け付けない。インデックスの定義（キーと型、ACTIVE、読まれる属性の射影）を確かめ、表全体を Scan して全行を判定し、インデックス全体を Scan して、persistence id ごとに表とインデックスの行を要約（行の数と、各行の SHA-256 の先頭 128 ビットを 64 ビットずつ足したもの）で比べる。区切り（`--segments`）は順に読む。行でない項目（識別の属性を持たない項目）があると、例外で止まる（[#1035](https://github.com/j5ik2o/pekko-persistence-dynamodb/issues/1035)、文書に `--verify` の前に移すか消すよう書いた）。違う id は `--verify-timeout` まで Query し直す。`--reverse` では、1.3.0 でキーを共有する id が2つ以上表にあれば一致としない。一致は「見た時点で」の観察で、後の読み取りが同じものを見ることは保証しない。
 
 ## 3. 守る不変条件
 
