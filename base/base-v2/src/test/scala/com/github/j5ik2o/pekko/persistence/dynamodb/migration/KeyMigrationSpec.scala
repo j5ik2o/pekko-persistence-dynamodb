@@ -917,6 +917,32 @@ final class KeyMigrationSpec extends AnyWordSpec with Matchers with DynamoDBCont
       verify(table, plan()).verified shouldBe true
     }
 
+    "fail while the index shows an old row under the key of an item that is not a row (#1046)" in {
+      // The table replaced A@2 at key 9 with an item that is not a row; the index still shows A@2 there. Only the items
+      // of the index that are not rows are skipped under the keys of such items, so A@2 counts for A.
+      val table = newTable(index = true)
+      putRow(table, k(1), "A", 1)
+      putItem(table, k(9), Map("note" -> s("written by hand")))
+      val stale = Map(
+        "pkey"           -> s("p9"),
+        "skey"           -> s("s9"),
+        "persistence-id" -> s("A"),
+        "sequence-nr"    -> n(2),
+        "message" -> AttributeValue.builder().b(software.amazon.awssdk.core.SdkBytes.fromUtf8String("A-2")).build()
+      ).asJava
+      val c = hooked(
+        indexScan = r => r.toBuilder.items((r.items().asScala :+ stale).asJava).build(),
+        query = r =>
+          if (r.expressionAttributeValues().values().asScala.head.s() == "A")
+            Some(QueryResponse.builder().items((rowAt(table, k(1)).get.asJava +: Seq(stale)).asJava).build())
+          else None
+      )
+      val report = verify(table, plan(), c)
+      report.notRows shouldBe 1
+      report.indexMismatch shouldBe Seq("A")
+      report.verified shouldBe false
+    }
+
     "check every persistence id, also those that an earlier run moved, after a lagging run and a filtered one" in {
       val table = newTable(index = true)
       putRow(table, k(1), "A", 1)
