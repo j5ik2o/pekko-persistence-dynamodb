@@ -99,10 +99,12 @@ module keyMigration {
    *  j  : 1.3.0 cannot build its key (e.g. `order-`)  -> cannot go back
    *  k  : may have a copy under both keys (equal, or different contents)
    *  u  : may be stored under a key of no known form (e.g. another shard-count)
+   *  n  : may have two copies (its 1.3.0 key and its #831 key) that need the same new key, k130, which k holds and
+   *       leaves; when k cannot leave it (a copy of k with other contents under kP), neither copy of n moves (#1028)
    */
   pure val LROWS: Set[LRow] = Set(
     ("a", 1), ("b", 1), ("c", 1), ("d", 1), ("e", 1), ("f", 1), ("g", 1), ("x", 1),
-    ("h", 1), ("i", 1), ("j", 1), ("k", 1), ("u", 1)
+    ("h", 1), ("i", 1), ("j", 1), ("k", 1), ("u", 1), ("n", 1)
   )
   pure val IDS: Set[Id] = LROWS.map(l => l._1)
 
@@ -110,16 +112,16 @@ module keyMigration {
   pure val R130: LRow -> Key = Map(
     ("a", 1) -> "a130", ("b", 1) -> "b130", ("c", 1) -> "c130", ("d", 1) -> "d130",
     ("e", 1) -> "e130", ("f", 1) -> "f130", ("g", 1) -> "g130", ("x", 1) -> "x130",
-    ("h", 1) -> "h130", ("i", 1) -> "h130", ("k", 1) -> "k130", ("u", 1) -> "u130"
+    ("h", 1) -> "h130", ("i", 1) -> "h130", ("k", 1) -> "k130", ("u", 1) -> "u130", ("n", 1) -> "n130"
   )
   /** plainText: the key of the PlainText resolvers; always defined, never shared by two ids. */
   pure val PLAIN: LRow -> Key = Map(
     ("a", 1) -> "b130", ("b", 1) -> "bP", ("c", 1) -> "d130", ("d", 1) -> "c130",
     ("e", 1) -> "f130", ("f", 1) -> "fP", ("g", 1) -> "g130", ("x", 1) -> "x130",
-    ("h", 1) -> "hP", ("i", 1) -> "iP", ("j", 1) -> "jP", ("k", 1) -> "kP", ("u", 1) -> "uP"
+    ("h", 1) -> "hP", ("i", 1) -> "iP", ("j", 1) -> "jP", ("k", 1) -> "kP", ("u", 1) -> "uP", ("n", 1) -> "k130"
   )
   /** The key of issue #831 (same pkey as the target, skey = "%019d" of the sequence number). */
-  pure val K831: LRow -> Key = Map(("g", 1) -> "g831", ("x", 1) -> "g831")
+  pure val K831: LRow -> Key = Map(("g", 1) -> "g831", ("x", 1) -> "g831", ("n", 1) -> "n831")
   /** A key of no known form (another shard-count, separator, or resolver). */
   pure val UNKNOWN: LRow -> Key = Map(("u", 1) -> "uX")
   /** Too large (400 KB) under its new key: the Put is rejected with a ValidationException. */
@@ -132,14 +134,19 @@ module keyMigration {
   /** ResolverKeyPlan.sharedKeyGroup: the key of 1.3.0 without the sequence number; None for j. */
   pure val GROUP: Id -> str = Map(
     "a" -> "a", "b" -> "b", "c" -> "c", "d" -> "d", "e" -> "e", "f" -> "f", "g" -> "g",
-    "x" -> "x", "h" -> "hi", "i" -> "hi", "k" -> "k", "u" -> "u"
+    "x" -> "x", "h" -> "hi", "i" -> "hi", "k" -> "k", "u" -> "u", "n" -> "n"
   )
   /** The order of the stored keys (`winnerOf` takes the smallest stored key). */
   pure val ORD: Key -> int = Map(
     "a130" -> 1, "b130" -> 2, "bP" -> 3, "c130" -> 4, "d130" -> 5, "e130" -> 6, "f130" -> 7,
     "fP" -> 8, "g130" -> 9, "g831" -> 10, "x130" -> 11, "h130" -> 12, "hP" -> 13, "iP" -> 14,
-    "jP" -> 15, "k130" -> 16, "kP" -> 17, "u130" -> 18, "uP" -> 19, "uX" -> 20
+    "jP" -> 15, "k130" -> 16, "kP" -> 17, "u130" -> 18, "uP" -> 19, "uX" -> 20, "n130" -> 21, "n831" -> 22
   )
+  /**
+   * The rounds of a run, enough for every table: each round but the last takes at least one candidate, and each
+   * candidate leaves its own stored key, so there are at most as many candidates as keys.
+   */
+  pure val ROUNDS: int = ORD.keys().size() + 1
   pure val STORES: Set[Store] = Set(Journal, Snapshot)
   pure val MAX_ATTEMPTS = 2   // MigrationSettings.maxAttempts (10 in the code)
 
@@ -329,10 +336,60 @@ module keyMigration {
 
   /** KeyMigration.run --execute from table `t`, to the end; `big` as `rejectShared`. */
   pure def fullRunWith(big: bool, st: Store, t: Table, p: Params): RunResult =
-    1.to(LROWS.size() + 2).fold({ table: t, pending: scanCandidates(t, p), remaining: Set(), reserved: Set() }, (s, _) => roundStep(big, st, s))
+    1.to(ROUNDS).fold({ table: t, pending: scanCandidates(t, p), remaining: Set(), reserved: Set() }, (s, _) => roundStep(big, st, s))
 
   /** The reference without the rejection under h130 (the pure tests use it). */
   pure def fullRun(st: Store, t: Table, p: Params): RunResult = fullRunWith(false, st, t, p)
+
+  // ---------------------------------------------------------------------------------------------
+  // The dry-run: KeyMigration.dryRun plays the rounds of `execute` without writing (#1028)
+  // ---------------------------------------------------------------------------------------------
+
+  /**
+   * The outcome that the dry-run foresees for a ready candidate: the outcome of `moveOne` on a table that no other
+   * writer changes, without a rejection of DynamoDB (it does not read the size of the item) and without a lost
+   * response or a transient failure (it sends nothing). The source of a ready candidate is still its row: no other
+   * candidate takes it before the candidate is tried. The table stands for the slots of the code: the code keeps the
+   * key that each row is read from, and a merge keeps the other attributes that `differ` compares.
+   */
+  pure def predict(st: Store, t: Table, c: Cand): Effect = {
+    val src = t.get(c.src)
+    if (not(t.has(c.dst))) { table: t.remove(c.src).put(c.dst, src), outcome: Moved }
+    else {
+      val tgt = t.get(c.dst)
+      if (isRowOf(tgt, c)) {
+        if (differ(st, src, tgt)) { table: t, outcome: Conflict }
+        else { table: mergeTx(st, t, c, src, tgt), outcome: Merged }
+      } else { table: t, outcome: Blocked(lrow(tgt)) }
+    }
+  }
+
+  /** What the dry-run reports: the rows to move, to merge, and to leave, and the table that the moves would give. */
+  type DryResult = { table: Table, pending: Set[Cand], moved: Set[Cand], merged: Set[Cand], remaining: Set[Cand] }
+
+  /** One round of the dry-run: the same `readyOf` as `execute`, with no reserved target. */
+  pure def dryStep(st: Store, s: DryResult): DryResult =
+    if (s.pending == Set()) s
+    else {
+      val ready = readyOf(s.pending, Set())
+      if (ready == Set()) { ...s, pending: Set(), remaining: s.remaining.union(s.pending) }
+      else ready.fold({ ...s, pending: s.pending.exclude(ready) }, (acc, c) => {
+        val e = predict(st, acc.table, c)
+        {
+          ...acc, table: e.table,
+          moved: if (e.outcome == Moved) acc.moved.union(Set(c)) else acc.moved,
+          merged: if (e.outcome == Merged) acc.merged.union(Set(c)) else acc.merged,
+          remaining: if (isRemaining(e.outcome)) acc.remaining.union(Set(c)) else acc.remaining,
+        }
+      })
+    }
+
+  /** KeyMigration.run without --execute, from table `t`. */
+  pure def dryRun(st: Store, t: Table, p: Params): DryResult =
+    1.to(ROUNDS).fold(
+      { table: t, pending: scanCandidates(t, p), moved: Set(), merged: Set(), remaining: Set() },
+      (s, _) => dryStep(st, s)
+    )
 
   // ---------------------------------------------------------------------------------------------
   // --verify: KeyVerification.run, as one atomic look
@@ -457,8 +514,10 @@ module keyMigration {
     nondet creS = LROWS.setOfMaps(Set(1, 2)).oneOf()
     nondet exJ = LROWS.setOfMaps(0.to(2)).oneOf()
     nondet exS = LROWS.setOfMaps(0.to(2)).oneOf()
-    val keysJ = LROWS.mapBy(l => keysFor(modeJ, l, chJ.get(l)))
-    val keysS = LROWS.mapBy(l => keysFor(modeS, l, chS.get(l)))
+    // n is left out of the random tables: it is stuck whenever k is, which keeps a forward --verify from passing
+    // in the runs of CI; initDryRunShapes starts from it (#1028)
+    val keysJ = LROWS.mapBy(l => if (l == N_ROW) Set() else keysFor(modeJ, l, chJ.get(l)))
+    val keysS = LROWS.mapBy(l => if (l == N_ROW) Set() else keysFor(modeS, l, chS.get(l)))
     // a table whose every row can move has copies that do not differ: the attribute is on every copy or on none
     val tj = buildTable(Journal, keysJ, if (modeJ == 2) LROWS.mapBy(_ => 1) else secondJ, delJ, creS, if (modeJ == 2) sameExtra(exJ) else exJ)
     val ts = buildTable(Snapshot, keysS, if (modeS == 2) LROWS.mapBy(_ => 1) else secondS, delJ, creS, if (modeS == 2) sameExtra(exS) else exS)
@@ -506,6 +565,30 @@ module keyMigration {
     "a130" -> { id: "a", seq: 1, payload: 1, deleted: false, created: 0 },
     "b130" -> { id: "b", seq: 1, payload: 1, deleted: false, created: 0 },
   )
+  /** The row of #1028 2.2, whose two copies need the same target. */
+  pure val N_ROW: LRow = ("n", 1)
+
+  /**
+   * A start weighted towards #1028 (`quint run --init initDryRunShapes`): the two copies of n need k130, which k
+   * holds and leaves unless a copy of k with other contents is under kP (2.2); a needs b130, which b leaves unless a
+   * copy of b with other contents is under bP (2.3); f is too large under fP and e waits for it (a rejection that the
+   * dry-run does not foresee). The random steps still choose the direction, the faults, and the stops.
+   */
+  action initDryRunShapes: bool = {
+    nondet second = Set(false, true).oneOf()  // n also under n831
+    nondet nDeleted = Set(false, true).oneOf() // the copy of n under n831 is marked deleted
+    nondet kCopy = 0.to(2).oneOf()             // under kP: no copy of k, the same contents, other contents
+    nondet bCopy = 0.to(2).oneOf()             // under bP: no copy of b, the same contents, other contents
+    nondet withF = Set(false, true).oneOf()    // e and f
+    pure def r(id: Id, p: int, d: bool): Row = { id: id, seq: 1, payload: p, deleted: d, created: 0 }
+    val t0 = Map("n130" -> r("n", 1, false), "k130" -> r("k", 1, false), "a130" -> r("a", 1, false), "b130" -> r("b", 1, false))
+    val t1 = if (second) t0.put("n831", r("n", 1, nDeleted)) else t0
+    val t2 = if (kCopy == 0) t1 else t1.put("kP", r("k", kCopy, false))
+    val t3 = if (bCopy == 0) t2 else t2.put("bP", r("b", bCopy, false))
+    val t4 = if (withF) t3.put("e130", r("e", 1, false)).put("f130", r("f", 1, false)) else t3
+    initWithRule(t4, false, false)
+  }
+
   action initSharedPair: bool = {
     // one trace in four has DynamoDB reject h under h130
     nondet big = 0.to(3).oneOf()
@@ -865,10 +948,37 @@ module keyMigration {
   pure def rowsOf(t: Table, l: LRow): Set[(Key, Row)] = copiesIn(t, l).map(k => (k, t.get(k)))
 
   /**
+   * The copies of `l` in `t` are those of the start `t0`, those of the reference end `ref`, or a state between them,
+   * copy by copy (#1028):
+   *  - each copy is under a key that it was under at the start, with the contents it had there; or under a key that
+   *    the reference gives `l`, with the contents of the reference there or those of a copy that left its key;
+   *  - a copy is under a key that `l` was not under at the start only for a copy that left its key (no copy is
+   *    added: a Put without its Delete breaks this);
+   *  - a row of the start keeps a copy.
+   * With one copy, this is the row as at the start or as at the reference end. With two or more copies that move in
+   * different rounds (n130 and n831 to k130), it also holds between them: the winner under the target, the other copy
+   * still under its key (a stop there is followed by a run that merges it).
+   */
+  pure def rowWithin(t0: Table, ref: Table, t: Table, l: LRow): bool = {
+    val now = copiesIn(t, l)
+    val keys0 = copiesIn(t0, l)
+    val keysRef = copiesIn(ref, l)
+    val left = keys0.exclude(now)
+    and {
+      now.forall(k => or {
+        keys0.contains(k) and t.get(k) == t0.get(k),
+        keysRef.contains(k) and (t.get(k) == ref.get(k) or left.exists(k0 => t0.get(k0) == t.get(k))),
+      }),
+      now.exclude(keys0).size() <= left.size(),
+      keys0 != Set() implies now != Set(),
+    }
+  }
+
+  /**
    * INV8a No row goes elsewhere (no exclusion, every state): since the start of the epoch, each
-   * logical row is as it was at the start, or as the uninterrupted run from the start leaves it.
-   * A row never takes a key that the uninterrupted run does not give it (C-F1: the loser of a shared
-   * target took it after its winner gave up).
+   * logical row is as it was at the start, as the uninterrupted run from the start leaves it, or, copy by copy,
+   * between the two (`rowWithin`). A row never takes a key that the uninterrupted run does not give it (C-F1: the
+   * loser of a shared target took it after its winner gave up).
    */
   val withinReference: bool = STORES.forall(st => {
     val tool = tools.get(st)
@@ -876,7 +986,7 @@ module keyMigration {
     val t = tables.get(st)
     tool.startTable != Map() implies {
       val ref = fullRunWith(rejectShared, st, t0, tool.params).table
-      presentRows(t0).union(presentRows(t)).forall(l => rowsOf(t, l) == rowsOf(t0, l) or rowsOf(t, l) == rowsOf(ref, l))
+      presentRows(t0).union(presentRows(t)).forall(l => rowWithin(t0, ref, t, l))
     }
   })
 
@@ -999,10 +1109,65 @@ module keyMigration {
       os.forall(co2 => co2._1.dst != co1._1.dst or ORD.get(co2._1.src) <= ORD.get(co1._1.src)))
   })
 
+  /** The candidates of a run with outcome `o`. */
+  pure def withOutcome(tool: Tool, o: Outcome): Set[Cand] = tool.outcomes.filter(co => co._2 == o).map(co => co._1)
+
+  /**
+   * P2 of #1028, at every state (no exclusion; stops, lost responses, transient failures, rejections, and runs that
+   * gave up included): a row that the run moved, the dry-run of the table that the run started from moves; a row that
+   * it merged, the dry-run merges. The run stops short of the dry-run and never goes elsewhere. The targets of the
+   * plan depend on the row alone (`planTargetsByRow`), as those of ResolverKeyPlan do.
+   */
+  val withinDryRun: bool = STORES.forall(st => {
+    val tool = tools.get(st)
+    tool.startTable != Map() implies {
+      val d = dryRun(st, tool.startTable, tool.params)
+      withOutcome(tool, Moved).subseteq(d.moved) and withOutcome(tool, Merged).subseteq(d.merged)
+    }
+  })
+
+  /**
+   * P1 and the rest of P2 of #1028, for every finished run: what the dry-run leaves, the run leaves, and what the
+   * dry-run moves or merges and the run did not is listed as remaining. A run in which DynamoDB rejected no row and
+   * the tool gave up on none (lost responses and transient failures included) gives what the dry-run gives: the same
+   * rows moved, merged, and left, and the same table.
+   */
+  val dryRunMatches: bool = STORES.forall(st => {
+    val tool = tools.get(st)
+    tool.phase == Finished implies {
+      val d = dryRun(st, tool.startTable, tool.params)
+      val done = withOutcome(tool, Moved).union(withOutcome(tool, Merged))
+      val failed = tool.outcomes.exists(co => match co._2 { | Failed(_) => true | _ => false })
+      and {
+        d.remaining.subseteq(tool.remaining),
+        d.moved.union(d.merged).exclude(done).subseteq(tool.remaining),
+        (not(failed) and not(tool.gaveUp)) implies and {
+          withOutcome(tool, Moved) == d.moved,
+          withOutcome(tool, Merged) == d.merged,
+          tool.remaining == d.remaining,
+          tables.get(st) == d.table,
+        },
+      }
+    }
+  })
+
+  /**
+   * The plan gives each row one target, whatever key a copy is under, and no copy is the target of another: under
+   * the target, the row is in place. P2 rests on it; ResolverKeyPlanPropertySpec checks it on the code.
+   */
+  pure val planTargetsByRow: bool = DIRS.forall(dir => FORMS.forall(form => LROWS.forall(l => {
+    val targets = ORD.keys().fold(Set(), (acc, k) => match placement(dir, form, l, k) {
+      | Move(m) => acc.union(Set(m.to))
+      | _ => acc
+    })
+    targets.size() <= 1 and targets.forall(t => isInPlace(placement(dir, form, l, t)))
+  })))
+
   val safety: bool = and {
     noLoss, noDuplicate, exactlyOnce, contentsKept, keysKnown, unknownStays, selectionRespected,
     finishedReported, converges, roundTrip, verifySound, verifyReverseShared, unreversibleStays,
     withinReference, finishedWithinReference, versionsKept, progress, outcomesTruthful, reservedRespected,
+    withinDryRun, dryRunMatches,
   }
 
   /** The invariants that do not compute the reference run (cheap per state). */
@@ -1060,4 +1225,30 @@ module keyMigration {
   }
   val wConflictExtraJournal: bool = conflictByExtra(Journal)
   val wConflictExtraSnapshot: bool = conflictByExtra(Snapshot)
+
+  /** A finished run that moved or merged fewer rows than the dry-run of its start (a rejection, or a row given up). */
+  val wDryRunShortfall: bool = STORES.exists(st => {
+    val tool = tools.get(st)
+    tool.phase == Finished and {
+      val d = dryRun(st, tool.startTable, tool.params)
+      withOutcome(tool, Moved).union(withOutcome(tool, Merged)).size() < d.moved.union(d.merged).size()
+    }
+  })
+  /** #1028 2.2: a finished run in which both copies of n needed k130, and neither moved. */
+  val wDryRun22: bool = STORES.exists(st => {
+    val tool = tools.get(st)
+    tool.phase == Finished and tool.remaining.filter(c => c.id == "n" and c.dst == "k130").size() == 2
+  })
+  /** #1028 2.3: a finished run in which a row waited for a copy with other contents (a after b, or n after k). */
+  val wDryRun23: bool = STORES.exists(st => {
+    val tool = tools.get(st)
+    tool.phase == Finished and tool.outcomes.exists(co => co._2 == Conflict and
+      tool.remaining.exists(w => w.dst == co._1.src))
+  })
+  /** The state between the moves of two copies of n (`rowWithin`): one under k130, the other still under its key. */
+  val wBetweenCopies: bool = STORES.exists(st => {
+    val t = tables.get(st)
+    t.has("k130") and t.get("k130").id == "n" and (t.has("n130") or t.has("n831"))
+  })
 }
+

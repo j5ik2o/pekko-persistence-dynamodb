@@ -232,4 +232,78 @@ module keyMigration_test {
     val back = fullRun(Journal, fwd, ALL_REV).table
     all { assert(fwd != t), assert(back == norm130(t)) }
   }
+
+  // ---- the dry-run (#1028): the same rounds as --execute
+
+  /** The dry-run and the reference run give the same rows moved, merged, and left, and the same table. */
+  pure def dryMatchesRun(st: Store, t: Table, p: Params): bool = {
+    val d = dryRun(st, t, p)
+    val r = fullRun(st, t, p)
+    val cands = scanCandidates(t, p)
+    and {
+      d.table == r.table,
+      d.remaining == r.remaining,
+      d.moved.union(d.merged) == cands.exclude(r.remaining),
+      d.moved.intersect(d.merged) == Set(),
+    }
+  }
+
+  run planTargetsByRowTest = assert(planTargetsByRow)
+
+  run dryRunCopiesOfAWinnerThatWaitsTest = {
+    // 2.2: both copies of n need k130; k holds it and cannot leave (a copy of k with other contents under kP)
+    val t = Map("n130" -> row("n", 1), "n831" -> row("n", 1), "k130" -> row("k", 1), "kP" -> row("k", 2))
+    val d = dryRun(Journal, t, ALL_FWD)
+    all {
+      assert(d.merged == Set()),
+      assert(d.moved == Set()),
+      assert(d.remaining.map(c => (c.id, c.src)) == Set(("n", "n130"), ("n", "n831"), ("k", "k130"))),
+      assert(dryMatchesRun(Journal, t, ALL_FWD)),
+    }
+  }
+
+  run dryRunCopiesOfAWinnerThatMovesTest = {
+    // the same with k free to leave: k moves to kP, the winner n130 moves to k130 after it, n831 merges into it
+    val t = Map("n130" -> row("n", 1), "n831" -> row("n", 1), "k130" -> row("k", 1))
+    val d = dryRun(Journal, t, ALL_FWD)
+    all {
+      assert(d.moved.map(c => c.src) == Set("k130", "n130")),
+      assert(d.merged.map(c => c.src) == Set("n831")),
+      assert(dryMatchesRun(Journal, t, ALL_FWD)),
+      assert(dryMatchesRun(Snapshot, t, ALL_FWD)),
+    }
+  }
+
+  run dryRunWaitsForAConflictTest = {
+    // 2.3: a needs b130; b needs bP, which holds a copy of b with other contents
+    val t = Map("a130" -> row("a", 1), "b130" -> row("b", 1), "bP" -> row("b", 2))
+    val d = dryRun(Journal, t, ALL_FWD)
+    all {
+      assert(d.moved == Set()),
+      assert(d.remaining.map(c => c.id) == Set("a", "b")),
+      assert(dryMatchesRun(Journal, t, ALL_FWD)),
+    }
+  }
+
+  run dryRunCycleAndBlockedTest = {
+    val t = tableOf(Set(("c130", "c"), ("d130", "d"), ("e130", "e"), ("a130", "a"), ("b130", "b"), ("g831", "g")))
+    all {
+      assert(dryMatchesRun(Journal, t, ALL_FWD)),
+      assert(dryMatchesRun(Snapshot, t, ALL_FWD)),
+      assert(dryMatchesRun(Journal, t, ALL_REV)),
+    }
+  }
+
+  run dryRunRejectedTest = {
+    // f is too large under fP: the dry-run moves it and e after it; --execute moves neither, and goes nowhere else
+    val t = tableOf(Set(("e130", "e"), ("f130", "f")))
+    val d = dryRun(Journal, t, ALL_FWD)
+    val r = fullRun(Journal, t, ALL_FWD)
+    all {
+      assert(d.moved.map(c => c.id) == Set("e", "f")),
+      assert(r.remaining.map(c => c.id) == Set("e", "f")),
+      assert(r.table == t),
+    }
+  }
 }
+
