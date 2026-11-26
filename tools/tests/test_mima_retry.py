@@ -99,7 +99,7 @@ class MimaRetryTests(unittest.TestCase):
         result, calls, sleeps = self.run_step()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(len(calls), 2)
-        self.assertEqual(sleeps, ["30"])
+        self.assertEqual(sleeps, ["60"])
         self.assertIn("::warning::Attempt 1 failed on a transient download error", result.stdout)
 
     def test_retries_after_a_server_error_or_timeout(self):
@@ -142,7 +142,7 @@ class MimaRetryTests(unittest.TestCase):
         result, calls, sleeps = self.run_step()
         self.assertEqual(result.returncode, 1)
         self.assertEqual(len(calls), 3)
-        self.assertEqual(sleeps, ["30", "60"])
+        self.assertEqual(sleeps, ["60", "120"])
         self.assertIn("::error::Downloads still failed after 3 attempts.", result.stdout)
 
     def test_keeps_a_dependency_cache_for_each_scala_version(self):

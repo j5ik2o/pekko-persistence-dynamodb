@@ -240,7 +240,7 @@ jobs:
         env:
           SCALA_VERSION: ${{ matrix.scala }}
           MIMA_ATTEMPTS: '3'
-          MIMA_RETRY_DELAY: '30'
+          MIMA_RETRY_DELAY: '60'
         run: |
           set -o pipefail
           log="$RUNNER_TEMP/mima.log"
@@ -333,9 +333,70 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: ${{ matrix.jdk }}
-          cache: 'sbt'
+      # The setup-java sbt cache is saved by the lint job, which resolves 2.13 only, and
+      # the test jobs hit it exactly, so they never saved the dependencies of 2.12 and 3
+      # and fetched them from Maven Central on every run. Each Scala version keeps its
+      # own cache; the JDK is not in the key because the coursier cache does not depend
+      # on it. The paths are the mima job's, so a first run restores the mima cache.
+      - uses: actions/cache@v4
+        if: env.RUN_SCALA == 'true'
+        with:
+          path: |
+            ~/.cache/coursier
+            ~/.ivy2/cache
+            ~/.sbt
+            !~/.sbt/*.lock
+          key: test-deps-${{ runner.os }}-${{ matrix.scala }}-${{ hashFiles('**/*.sbt', '**/project/build.properties', '**/project/**.scala', '**/project/**.sbt') }}
+          restore-keys: |
+            test-deps-${{ runner.os }}-${{ matrix.scala }}-
+            mima-deps-${{ runner.os }}-${{ matrix.scala }}-
       - uses: sbt/setup-sbt@v1
         if: env.RUN_SCALA == 'true'
+      # Maven Central answers HTTP 429 when runners fetch too much at once, and sbt's
+      # coursier retries only 5xx and timeouts. This step fetches every dependency of
+      # the tests, the compiler bridge, and the released plugins, and compiles; it is
+      # tried again only on a transient download error. A failed release resolution is
+      # only a warning, so a run that passed with one is tried again while attempts
+      # remain. The sbt test step is never retried, so a retry cannot hide a test failure.
+      - name: Fetch the dependencies
+        if: env.RUN_SCALA == 'true'
+        shell: bash
+        env:
+          SCALA_VERSION: ${{ matrix.scala }}
+          FETCH_ATTEMPTS: '3'
+          FETCH_RETRY_DELAY: '60'
+        run: |
+          set -o pipefail
+          log="$RUNNER_TEMP/fetch.log"
+          transient='download error: .*(HTTP response code: (429|5[0-9][0-9])|timed out|Connection reset)'
+          # A missing cache directory counts as empty.
+          count() { { find "$HOME/.cache/coursier" -type f 2>/dev/null || true; } | wc -l; }
+          before=$(count)
+          fetched() { echo "Fetched $(( $(count) - before )) files into the coursier cache."; }
+          for (( attempt = 1; ; attempt++ )); do
+            status=0
+            sbt -v "++$SCALA_VERSION" Test/compile journal-v2/releasedPluginClasspaths 2>&1 | tee "$log" || status=$?
+            if ! grep -Eq "$transient" "$log"; then
+              if (( status == 0 )); then
+                fetched
+                exit 0
+              fi
+              echo "::error::Fetching the dependencies failed without a transient download error; not retrying."
+              exit 1
+            fi
+            if (( attempt >= FETCH_ATTEMPTS )); then
+              if (( status == 0 )); then
+                echo "::warning::Attempt $attempt still logged a transient download error; the tests show what is missing."
+                fetched
+                exit 0
+              fi
+              echo "::error::Downloads still failed after $attempt attempts."
+              exit 1
+            fi
+            delay=$(( attempt * FETCH_RETRY_DELAY ))
+            echo "::warning::Attempt $attempt logged a transient download error; retrying in ${delay}s."
+            sleep "$delay"
+          done
       - name: sbt test
         if: env.RUN_SCALA == 'true'
         run: sbt -v ++${{ matrix.scala }} test
