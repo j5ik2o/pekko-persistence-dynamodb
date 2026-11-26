@@ -42,7 +42,7 @@ module keyMigrationWriters {
       appWritten' = appWritten.union(Set(l)),
       appDeleted' = appDeleted, appDeleting' = appDeleting,
       idx' = idx, tools' = tools, init130' = init130, initTables' = initTables,
-      epochStart' = epochStart, lastFinished' = lastFinished, lastVerify' = lastVerify, budget' = budget,
+      epochStart' = epochStart, lastFinished' = lastFinished, lastVerify' = lastVerify, budget' = budget, fixed' = fixed,
     }
   }
 
@@ -57,7 +57,7 @@ module keyMigrationWriters {
       appDeleting' = appDeleting.union(Set(l)),
       appDeleted' = appDeleted, appWritten' = appWritten,
       idx' = idx, tools' = tools, init130' = init130, initTables' = initTables,
-      epochStart' = epochStart, lastFinished' = lastFinished, lastVerify' = lastVerify, budget' = budget,
+      epochStart' = epochStart, lastFinished' = lastFinished, lastVerify' = lastVerify, budget' = budget, fixed' = fixed,
     }
   }
 
@@ -72,7 +72,7 @@ module keyMigrationWriters {
       appDeleted' = appDeleted.union(Set(l)),
       appDeleting' = appDeleting, appWritten' = appWritten,
       idx' = idx, tools' = tools, init130' = init130, initTables' = initTables,
-      epochStart' = epochStart, lastFinished' = lastFinished, lastVerify' = lastVerify, budget' = budget,
+      epochStart' = epochStart, lastFinished' = lastFinished, lastVerify' = lastVerify, budget' = budget, fixed' = fixed,
     }
   }
 

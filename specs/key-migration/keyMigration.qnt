@@ -71,6 +71,7 @@ module keyMigration {
     remaining: Set[Cand],      // MigrationReport.remaining
     unmovable: Set[Key],       // MigrationReport.unmovable
     gaveUp: bool,              // a transient failure ended in Failed (settle)
+    reserved: Set[Key],        // the targets whose winner ended without the row there (the fix; see `reserve`)
     startTable: Table,         // the table when this run started (for the selection invariant)
   }
 
@@ -211,10 +212,14 @@ module keyMigration {
     group.fold({ id: "", seq: 0, src: "", dst: "" }, (best, c) =>
       if (best.src == "" or ORD.get(c.src) < ORD.get(best.src)) c else best)
 
-  /** `ready`: one winner per target, and only when no pending row holds the target. */
-  pure def readyOf(pending: Set[Cand]): Set[Cand] = {
+  /**
+   * `ready`: one winner per target, and only when no pending row holds the target. A reserved target (its winner
+   * ended in this run without the row there) is given to no other candidate (always empty as built).
+   */
+  pure def readyOf(pending: Set[Cand], reserved: Set[Key]): Set[Cand] = {
     val sources = pending.map(c => c.src)
     pending.map(c => c.dst)
+      .filter(d => not(reserved.contains(d)))
       .map(d => winnerOf(pending.filter(c => c.dst == d)))
       .filter(c => not(sources.contains(c.dst)))
   }
@@ -280,26 +285,42 @@ module keyMigration {
   pure def isRemaining(o: Outcome): bool =
     match o { | Blocked(_) => true | Conflict => true | Failed(_) => true | _ => false }
 
+  /**
+   * The rule for a target whose winner did not reach it (fix/key-migration-before-1.4.0, review C-F1 / O-F6).
+   * `fix` false: the code at main (a5d28a3d / edfce815): the target goes to the next candidate in a later round.
+   * `fix` true: the proposed fix: when the winner's outcome leaves the target without its row (Failed, Gone),
+   * the target stays reserved for it for the rest of the run, and the other candidates stay pending (remaining).
+   */
+  pure def reserves(fix: bool, o: Outcome): bool =
+    fix and match o { | Failed(_) => true | Gone => true | _ => false }
+
   // ---------------------------------------------------------------------------------------------
   // The reference: a whole run without stops, lost responses, or transient failures
   // ---------------------------------------------------------------------------------------------
 
-  type RunResult = { table: Table, pending: Set[Cand], remaining: Set[Cand] }
+  type RunResult = { table: Table, pending: Set[Cand], remaining: Set[Cand], reserved: Set[Key] }
 
-  pure def roundStep(st: Store, s: RunResult): RunResult =
+  pure def roundStep(fix: bool, st: Store, s: RunResult): RunResult =
     if (s.pending == Set()) s
     else {
-      val ready = readyOf(s.pending)
-      if (ready == Set()) { table: s.table, pending: Set(), remaining: s.remaining.union(s.pending) }
+      val ready = readyOf(s.pending, s.reserved)
+      if (ready == Set()) { ...s, pending: Set(), remaining: s.remaining.union(s.pending) }
       else ready.fold({ ...s, pending: s.pending.exclude(ready) }, (acc, c) => {
         val e = attempt(st, acc.table, c, false)
-        { ...acc, table: e.table, remaining: if (isRemaining(e.outcome)) acc.remaining.union(Set(c)) else acc.remaining }
+        {
+          ...acc, table: e.table,
+          remaining: if (isRemaining(e.outcome)) acc.remaining.union(Set(c)) else acc.remaining,
+          reserved: if (reserves(fix, e.outcome)) acc.reserved.union(Set(c.dst)) else acc.reserved,
+        }
       })
     }
 
   /** KeyMigration.run --execute from table `t`, to the end. */
-  pure def fullRun(st: Store, t: Table, p: Params): RunResult =
-    1.to(LROWS.size() + 2).fold({ table: t, pending: scanCandidates(t, p), remaining: Set() }, (s, _) => roundStep(st, s))
+  pure def fullRunWith(fix: bool, st: Store, t: Table, p: Params): RunResult =
+    1.to(LROWS.size() + 2).fold({ table: t, pending: scanCandidates(t, p), remaining: Set(), reserved: Set() }, (s, _) => roundStep(fix, st, s))
+
+  /** The reference of the code as built (the pure tests use it). */
+  pure def fullRun(st: Store, t: Table, p: Params): RunResult = fullRunWith(false, st, t, p)
 
   // ---------------------------------------------------------------------------------------------
   // --verify: KeyVerification.run, as one atomic look
@@ -388,6 +409,8 @@ module keyMigration {
   /** The last --verify: its params and whether it matched, and the table it saw. */
   var lastVerify: Store -> { done: bool, dir: Dir, form: Form, pass: bool, table: Table }
   var budget: int                    // stops, lost responses, and transient failures per trace
+  /** Which rule the tool follows (`reserves`): false = the code at main, true = the proposed fix. Fixed per trace. */
+  var fixed: bool
 
   pure val ALL_PARAMS_SEL: Set[Set[Id]] = Set(IDS).union(IDS.map(id => Set(id)))
   pure val DIRS: Set[Dir] = Set(Forward, Reverse)
@@ -396,10 +419,14 @@ module keyMigration {
   pure val IDLE_TOOL: Tool = {
     phase: Idle, params: { dir: Forward, form: FPlain, sel: IDS }, pending: Set(), round: Set(),
     attempts: Map(), merging: Set(), outcomes: Set(), remaining: Set(), unmovable: Set(),
-    gaveUp: false, startTable: Map(),
+    gaveUp: false, reserved: Set(), startTable: Map(),
   }
 
-  action init = {
+  action init = initRule(false)
+  /** The same initial tables, with the tool of the proposed fix (`quint run --init initFixed`). */
+  action initFixed = initRule(true)
+
+  action initRule(rule: bool): bool = {
     // 0: any table; 1: a table of 1.3.0 alone; 2: a table whose every row can move
     nondet modeJ = 0.to(2).oneOf()
     nondet modeS = 0.to(2).oneOf()
@@ -426,11 +453,14 @@ module keyMigration {
       lastFinished' = STORES.mapBy(_ => { done: false, params: IDLE_TOOL.params, clean: true }),
       lastVerify' = STORES.mapBy(_ => { done: false, dir: Forward, form: FPlain, pass: false, table: Map() }),
       budget' = 6,
+      fixed' = rule,
     }
   }
 
   /** A given start (for the scenario tests): the same journal and snapshot table, the index caught up. */
-  action initWith(t: Table, pure130: bool): bool = all {
+  action initWith(t: Table, pure130: bool): bool = initWithRule(t, pure130, false)
+
+  action initWithRule(t: Table, pure130: bool, rule: bool): bool = all {
     tables' = STORES.mapBy(_ => t),
     idx' = STORES.mapBy(_ => t),
     tools' = STORES.mapBy(_ => IDLE_TOOL),
@@ -440,7 +470,22 @@ module keyMigration {
     lastFinished' = STORES.mapBy(_ => { done: false, params: IDLE_TOOL.params, clean: true }),
     lastVerify' = STORES.mapBy(_ => { done: false, dir: Forward, form: FPlain, pass: false, table: Map() }),
     budget' = 6,
+    fixed' = rule,
   }
+
+  /**
+   * A start weighted towards review C-F1 (`quint run --init initSharedPair`): the pair h, i that shares h130,
+   * under their new keys, beside rows that move directly (b) and in order (a after b). The random steps still
+   * choose the direction, the faults, and the stops.
+   */
+  pure val SHARED_PAIR_START: Table = Map(
+    "hP" -> { id: "h", seq: 1, payload: 1, deleted: false, created: 0 },
+    "iP" -> { id: "i", seq: 1, payload: 1, deleted: false, created: 0 },
+    "a130" -> { id: "a", seq: 1, payload: 1, deleted: false, created: 0 },
+    "b130" -> { id: "b", seq: 1, payload: 1, deleted: false, created: 0 },
+  )
+  action initSharedPair = initWithRule(SHARED_PAIR_START, false, false)
+  action initSharedPairFixed = initWithRule(SHARED_PAIR_START, false, true)
 
   // ---------------------------------------------------------------------------------------------
   // Actions
@@ -450,8 +495,9 @@ module keyMigration {
   action startRun(st: Store, p: Params): bool = {
     val tool = tools.get(st)
     val t = tables.get(st)
-    // A new epoch unless this run continues the stopped runs with the same params.
-    val continues = tool.phase == Idle and tool.params == p and tool.startTable != Map()
+    // A new epoch unless this run continues the runs with the same params that stopped, or that finished but gave
+    // up (the convergence is judged from the start of those runs; review C-F1: a run that gave up must not reset it).
+    val continues = tool.params == p and tool.startTable != Map() and (tool.phase == Idle or (tool.phase == Finished and tool.gaveUp))
     all {
       tool.phase != Running,
       epochStart' = epochStart.set(st, if (continues) epochStart.get(st) else t),
@@ -460,14 +506,14 @@ module keyMigration {
         unmovable: scanUnmovable(t, p), startTable: t,
       }),
       tables' = tables, idx' = idx, init130' = init130, initTables' = initTables,
-      lastFinished' = lastFinished, lastVerify' = lastVerify, budget' = budget,
+      lastFinished' = lastFinished, lastVerify' = lastVerify, budget' = budget, fixed' = fixed,
     }
   }
 
   /** The start of a round of `execute`, or its end when no pending row is ready. */
   action nextRound(st: Store): bool = {
     val tool = tools.get(st)
-    val ready = readyOf(tool.pending)
+    val ready = readyOf(tool.pending, tool.reserved)
     // findCycles: what is left waits for a pending row; all of it is remaining.
     val fin = { ...tool, phase: Finished, pending: Set(), remaining: tool.remaining.union(tool.pending) }
     all {
@@ -478,16 +524,17 @@ module keyMigration {
         if (ready != Set()) lastFinished
         else lastFinished.set(st, { done: true, params: tool.params, clean: not(tool.gaveUp) }),
       tables' = tables, idx' = idx, init130' = init130, initTables' = initTables,
-      epochStart' = epochStart, lastVerify' = lastVerify, budget' = budget,
+      epochStart' = epochStart, lastVerify' = lastVerify, budget' = budget, fixed' = fixed,
     }
   }
 
-  pure def record(tool: Tool, c: Cand, o: Outcome): Tool = {
+  pure def record(fix: bool, tool: Tool, c: Cand, o: Outcome): Tool = {
     ...tool,
     round: tool.round.exclude(Set(c)),
     outcomes: tool.outcomes.union(Set((c, o))),
     remaining: if (isRemaining(o)) tool.remaining.union(Set(c)) else tool.remaining,
     gaveUp: tool.gaveUp or o == Failed("gave up") or o == Failed("outcome unknown"),
+    reserved: if (reserves(fix, o)) tool.reserved.union(Set(c.dst)) else tool.reserved,
   }
 
   /** An attempt of moveOne whose response arrives. */
@@ -498,9 +545,9 @@ module keyMigration {
       tool.phase == Running,
       tool.round.contains(c),
       tables' = tables.set(st, e.table),
-      tools' = tools.set(st, record(tool, c, e.outcome)),
+      tools' = tools.set(st, record(fixed, tool, c, e.outcome)),
       idx' = idx, init130' = init130, initTables' = initTables,
-      epochStart' = epochStart, lastFinished' = lastFinished, lastVerify' = lastVerify, budget' = budget,
+      epochStart' = epochStart, lastFinished' = lastFinished, lastVerify' = lastVerify, budget' = budget, fixed' = fixed,
     }
   }
 
@@ -521,7 +568,7 @@ module keyMigration {
         attempts: tool.attempts.put(c, n + 1),
         merging: if (e.outcome == Merged) tool.merging.union(Set(c)) else tool.merging,
       }),
-      budget' = budget - 1,
+      budget' = budget - 1, fixed' = fixed,
       idx' = idx, init130' = init130, initTables' = initTables,
       epochStart' = epochStart, lastFinished' = lastFinished, lastVerify' = lastVerify,
     }
@@ -537,7 +584,7 @@ module keyMigration {
       tool.round.contains(c),
       n < MAX_ATTEMPTS,
       tools' = tools.set(st, { ...tool, attempts: tool.attempts.put(c, n + 1) }),
-      budget' = budget - 1,
+      budget' = budget - 1, fixed' = fixed,
       tables' = tables, idx' = idx, init130' = init130, initTables' = initTables,
       epochStart' = epochStart, lastFinished' = lastFinished, lastVerify' = lastVerify,
     }
@@ -550,9 +597,9 @@ module keyMigration {
       tool.phase == Running,
       tool.round.contains(c),
       tool.attempts.has(c) and tool.attempts.get(c) >= MAX_ATTEMPTS,
-      tools' = tools.set(st, record(tool, c, settleOutcome(tables.get(st), c, tool.merging.contains(c)))),
+      tools' = tools.set(st, record(fixed, tool, c, settleOutcome(tables.get(st), c, tool.merging.contains(c)))),
       tables' = tables, idx' = idx, init130' = init130, initTables' = initTables,
-      epochStart' = epochStart, lastFinished' = lastFinished, lastVerify' = lastVerify, budget' = budget,
+      epochStart' = epochStart, lastFinished' = lastFinished, lastVerify' = lastVerify, budget' = budget, fixed' = fixed,
     }
   }
 
@@ -561,7 +608,7 @@ module keyMigration {
     budget > 0,
     tools.get(st).phase == Running,
     tools' = tools.set(st, { ...tools.get(st), phase: Idle }),
-    budget' = budget - 1,
+    budget' = budget - 1, fixed' = fixed,
     tables' = tables, idx' = idx, init130' = init130, initTables' = initTables,
     epochStart' = epochStart, lastFinished' = lastFinished, lastVerify' = lastVerify,
   }
@@ -577,7 +624,7 @@ module keyMigration {
       lagging(t, i).contains(k),
       idx' = idx.set(st, if (t.has(k)) i.put(k, t.get(k)) else i.remove(k)),
       tables' = tables, tools' = tools, init130' = init130, initTables' = initTables,
-      epochStart' = epochStart, lastFinished' = lastFinished, lastVerify' = lastVerify, budget' = budget,
+      epochStart' = epochStart, lastFinished' = lastFinished, lastVerify' = lastVerify, budget' = budget, fixed' = fixed,
     }
   }
 
@@ -596,7 +643,7 @@ module keyMigration {
       pass: verifyPass(tables.get(st), idx.get(st), dir, form), table: tables.get(st),
     }),
     tables' = tables, idx' = idx, tools' = tools, init130' = init130, initTables' = initTables,
-    epochStart' = epochStart, lastFinished' = lastFinished, budget' = budget,
+    epochStart' = epochStart, lastFinished' = lastFinished, budget' = budget, fixed' = fixed,
   }
 
   pure val ALL_KEYS: Set[Key] = ORD.keys()
@@ -724,21 +771,97 @@ module keyMigration {
   })
 
   /**
-   * INV8 Convergence: however often the runs with the same params stopped, lost a response, or
-   * failed for a while, the run that finishes without giving up ends in the table that one
-   * uninterrupted run from the start of those runs gives.
+   * INV8 Convergence: however often the runs with the same params stopped, lost a response,
+   * failed for a while, or finished after giving up, the run that finishes without giving up ends in
+   * the table that one uninterrupted run from the start of those runs gives.
+   *
+   * The runs that gave up (the set G = finished runs with tool.gaveUp) are not dropped: the epoch
+   * (epochStart) does not restart after them, so the clean run after G is compared with the start of
+   * the first run; and G itself is checked by `finishedWithinReference`, every state by
+   * `withinReference` (review C-F1: the old exclusion hid the counterexample).
    */
   val converges: bool = STORES.forall(st => {
     val tool = tools.get(st)
     (tool.phase == Finished and not(tool.gaveUp)) implies
-      tables.get(st) == fullRun(st, epochStart.get(st), tool.params).table
+      tables.get(st) == fullRunWith(fixed, st, epochStart.get(st), tool.params).table
+  })
+
+  /** The copies of `l` with their keys and contents. */
+  pure def rowsOf(t: Table, l: LRow): Set[(Key, Row)] = copiesIn(t, l).map(k => (k, t.get(k)))
+
+  /**
+   * INV8a No row goes elsewhere (no exclusion, every state): since the start of the epoch, each
+   * logical row is as it was at the start, or as the uninterrupted run from the start leaves it.
+   * A row never takes a key that the uninterrupted run does not give it (C-F1: the loser of a shared
+   * target took it after its winner gave up).
+   */
+  val withinReference: bool = STORES.forall(st => {
+    val tool = tools.get(st)
+    val t0 = epochStart.get(st)
+    val t = tables.get(st)
+    tool.startTable != Map() implies {
+      val ref = fullRunWith(fixed, st, t0, tool.params).table
+      presentRows(t0).union(presentRows(t)).forall(l => rowsOf(t, l) == rowsOf(t0, l) or rowsOf(t, l) == rowsOf(ref, l))
+    }
+  })
+
+  /**
+   * INV8b Every finished run, also one that gave up (no exclusion): each logical row is as the
+   * uninterrupted run leaves it, or it is as at the start of the epoch and listed (remaining or not
+   * movable). A run that gave up stops short; it never goes elsewhere.
+   */
+  val finishedWithinReference: bool = STORES.forall(st => {
+    val tool = tools.get(st)
+    val t0 = epochStart.get(st)
+    val t = tables.get(st)
+    val listed = tool.remaining.map(c => c.src).union(tool.unmovable)
+    tool.phase == Finished implies {
+      val ref = fullRunWith(fixed, st, t0, tool.params).table
+      presentRows(t0).union(presentRows(t)).forall(l =>
+        rowsOf(t, l) == rowsOf(ref, l) or (rowsOf(t, l) == rowsOf(t0, l) and copiesIn(t, l).exists(k => listed.contains(k))))
+    }
+  })
+
+  /**
+   * INV3' Versions are kept (review O-F1): every content (payload) that a logical row had at the
+   * start is still held by one of its copies. A merge of copies with different contents breaks it.
+   */
+  val versionsKept: bool = STORES.forall(st => {
+    val t0 = initTables.get(st)
+    val t = tables.get(st)
+    presentRows(t0).forall(l =>
+      copiesIn(t0, l).map(k => t0.get(k).payload).forall(p => copiesIn(t, l).exists(k => t.get(k).payload == p)))
+  })
+
+  /**
+   * A start from which every selected row can reach its place: no row of the stuck set (cycle,
+   * too large, blocked by it, unknown key), no row that the plan cannot move, copies with equal
+   * contents, and for --reverse no shared-key pair with both ids present.
+   */
+  pure def movableStart(st: Store, t0: Table, p: Params): bool = and {
+    t0.keys().forall(k => match placement(p.dir, p.form, lrow(t0.get(k)), k) { | Unmovable(_) => false | _ => true }),
+    presentRows(t0).forall(l => not(STUCK.contains(l))),
+    presentRows(t0).forall(l => copiesIn(t0, l).forall(k1 => copiesIn(t0, l).forall(k2 => not(differ(st, t0.get(k1), t0.get(k2)))))),
+    p.dir == Reverse implies not(sharedGroupsPresent(t0)),
+  }
+
+  /**
+   * INV7' Rows that can move do move (review O-F2): a clean finished run over all ids, from a start
+   * that `movableStart` accepts, leaves nothing remaining and every row in place. Outside the
+   * premise, `finishedReported` and `finishedWithinReference` hold; the runs that gave up are G.
+   */
+  val progress: bool = STORES.forall(st => {
+    val tool = tools.get(st)
+    val t = tables.get(st)
+    (tool.phase == Finished and not(tool.gaveUp) and tool.params.sel == IDS and movableStart(st, epochStart.get(st), tool.params))
+      implies (tool.remaining == Set() and t.keys().forall(k => isInPlace(placement(tool.params.dir, tool.params.form, lrow(t.get(k)), k))))
   })
 
   /** INV9 Idempotence: a second uninterrupted run moves nothing (for every params, from the current table). */
   val idempotent: bool = STORES.forall(st => DIRS.forall(dir => FORMS.forall(form => {
     val p = { dir: dir, form: form, sel: IDS }
-    val once = fullRun(st, tables.get(st), p).table
-    fullRun(st, once, p).table == once
+    val once = fullRunWith(fixed, st, tables.get(st), p).table
+    fullRunWith(fixed, st, once, p).table == once
   })))
 
   /** The table that a full reverse run gives a table of 1.3.0 alone: every row under its 1.3.0 key. */
@@ -783,6 +906,13 @@ module keyMigration {
   val safety: bool = and {
     noLoss, noDuplicate, exactlyOnce, contentsKept, keysKnown, unknownStays, selectionRespected,
     finishedReported, converges, roundTrip, verifySound, verifyReverseShared, unreversibleStays,
+    withinReference, finishedWithinReference, versionsKept, progress,
+  }
+
+  /** The invariants that do not compute the reference run (cheap per state). */
+  val cheapSafety: bool = and {
+    noLoss, noDuplicate, exactlyOnce, contentsKept, keysKnown, unknownStays, selectionRespected,
+    finishedReported, roundTrip, verifySound, verifyReverseShared, unreversibleStays, versionsKept,
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -796,6 +926,11 @@ module keyMigration {
   val wConflict: bool = STORES.exists(st => outcomeSeen(tools.get(st), o => o == Conflict))
   val wRejected: bool = STORES.exists(st => outcomeSeen(tools.get(st), o => o == Failed("rejected by DynamoDB")))
   val wGaveUp: bool = STORES.exists(st => tools.get(st).gaveUp)
+  /** C-F1: a reverse run gave up on a candidate of the shared target h130, and its pair is still pending or gone. */
+  val wGaveUpShared: bool = STORES.exists(st => tools.get(st).params.dir == Reverse and tools.get(st).outcomes.exists(co => co._1.dst == "h130" and co._2 == Failed("gave up")))
+  /** The clean run after a run that gave up, in the same epoch. */
+  val wCleanAfterGaveUp: bool = STORES.exists(st => tools.get(st).phase == Finished and not(tools.get(st).gaveUp) and lastFinished.get(st).done and epochStart.get(st) != tools.get(st).startTable)
+  val wProgress: bool = STORES.exists(st => tools.get(st).phase == Finished and not(tools.get(st).gaveUp) and tools.get(st).params.sel == IDS and movableStart(st, epochStart.get(st), tools.get(st).params))
   val wMergedAfterLost: bool = STORES.exists(st => tools.get(st).merging.exists(c => tools.get(st).outcomes.contains((c, Merged))))
   val wCycleRemaining: bool = STORES.exists(st => tools.get(st).phase == Finished and tools.get(st).remaining.exists(c => c.id == "c"))
   val wFinishedForward: bool = STORES.exists(st => tools.get(st).phase == Finished and tools.get(st).params.dir == Forward and tools.get(st).outcomes.size() >= 3)

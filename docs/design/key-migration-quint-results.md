@@ -4,6 +4,8 @@
 
 すべて `specs/key-migration/` で実行した。
 
+この結果は 5ff2d62d の仕様のもの。`fix/key-migration-before-1.4.0` で足した性質と決まった筋書きの結果は、`docs/design/key-migration-fix-before-1.4.0.md` の 2.7 と 7.6 にある。そこで、ここの `converges` の「違反なし」は、あきらめの後に比べる起点を切り直していたためで、反例（レビュー C-F1）を見逃していたと分かった。
+
 ## typecheck
 
 ```

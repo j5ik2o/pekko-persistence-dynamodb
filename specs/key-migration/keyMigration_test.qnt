@@ -39,7 +39,7 @@ module keyMigration_test {
     val t = tableOf(Set(("a130", "a"), ("b130", "b")))
     val r = fullRun(Journal, t, ALL_FWD)
     all {
-      assert(readyOf(scanCandidates(t, ALL_FWD)).map(c => c.id) == Set("b")),
+      assert(readyOf(scanCandidates(t, ALL_FWD), Set()).map(c => c.id) == Set("b")),
       assert(r.table.keys() == Set("b130", "bP")),
       assert(r.table.get("b130").id == "a"),
       assert(r.remaining == Set()),
