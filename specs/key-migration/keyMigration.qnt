@@ -286,7 +286,7 @@ module keyMigration {
   pure def settleOutcome(t: Table, c: Cand, merging: bool): Outcome = {
     val source = t.has(c.src) and isRowOf(t.get(c.src), c)
     val target = t.has(c.dst) and isRowOf(t.get(c.dst), c)
-    if (not(source) and target) { if (merging) Merged else Moved }
+    if (target) { if (merging) Merged else Moved }
     else if (source) Failed("gave up")
     else Failed("outcome unknown")
   }
