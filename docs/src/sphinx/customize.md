@@ -326,6 +326,12 @@ application runs meanwhile:
 - a soft delete can miss the event: it deletes the events that a query of the index returns with `deleted = false`
   (`WriteJournalDaoImpl.deleteMessages`), so an event that the index does not show at that moment stays undeleted.
 
+A move also reaches the consumers of DynamoDB Streams and of Kinesis Data Streams for DynamoDB, as an insert under the
+new key and a remove under the old key: two changes to two items. DynamoDB Streams keeps the order of the changes of
+one item only, and Kinesis Data Streams can deliver the changes out of order and more than once, so a consumer can
+receive the remove before the insert. Stop the consumers that treat a remove as the deletion of an event or a snapshot
+while the tools run, or let them skip a remove whose `persistenceId` and sequence number the table still holds.
+
 The tool cannot prevent these, so the migration is offline. `--execute` looks for some signs of another writer: a row
 that left its key without reaching the target key, a row that changed after the tool read it, or a target key that
 holds a row the scan did not see (a sequence number above the highest one of its `persistenceId`). It prints a warning
@@ -435,6 +441,11 @@ against your own records. For the snapshot store, which does not save every sequ
 with the number of snapshots of each `persistenceId`. Events and snapshots that were replaced are not in the table, and
 the tool cannot bring them back.
 
+With a global table, run both tools against one region, and run `--verify` of both tools against the endpoint of every
+region before you start the application in any region. A transaction is atomic in the region that runs it; DynamoDB
+replicates its items one by one, so another region can show a move half applied while it replicates. A global table
+with multi-Region strong consistency does not take `TransactWriteItems`, so the tools cannot move its rows.
+
 The steps:
 
 1. Upgrade every node to this release and select the PlainText resolvers on every node. While a node of 1.3.0 still
@@ -448,7 +459,9 @@ The steps:
 5. Run both tools with `--verify`. If one does not match, keep the application stopped: run `--execute` again for the
    rows to move, resolve the blocked rows, the cycles, and the rows that are not movable, or run `--verify` again later
    when only the index does not match yet.
-6. When both match, follow {ref}`before you start the application <key-migration-restart>`, and start it.
+6. When both match, follow {ref}`before you start the application <key-migration-restart>`, and start it. If you run
+   a tool after that `--verify`, run `--verify` again: a table that a run changed and changed back can look the same
+   while its index still lags.
 7. Set `legacy-keys-enabled = false` only after a forward `--verify` of both tools matched. A blocked row or a row that is
    not movable stays under an old key, and with `false` deletes and updates do not reach it.
 

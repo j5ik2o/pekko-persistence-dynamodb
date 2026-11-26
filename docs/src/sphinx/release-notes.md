@@ -28,6 +28,8 @@ If you select the new resolvers and migrate, note these limits:
 
 - The migration is offline. Every application that writes to or recovers from the tables must be stopped while it
   runs; `--execute` requires `--writers-stopped`.
+- A move reaches DynamoDB Streams and Kinesis Data Streams as an insert and a remove, which a consumer can receive in
+  either order. With a global table, run `--verify` in every region before the application starts in any.
 - The `persistence-id` index is eventually consistent, so `--verify` only says that the rows matched when it checked
   them. {ref}`Before you start the application <key-migration-restart>` says what to do before the application starts.
 - The resolvers and the tools were measured on DynamoDB Local only. They were not measured on DynamoDB in AWS or with
