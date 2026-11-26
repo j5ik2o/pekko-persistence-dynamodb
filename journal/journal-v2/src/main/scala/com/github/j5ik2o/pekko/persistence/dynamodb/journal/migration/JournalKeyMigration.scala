@@ -147,9 +147,10 @@ object JournalKeyMigration {
 
   /** Moves the rows (a dry-run without `--execute`) and prints the report with `out`. */
   private[dynamodb] def run(args: Seq[String], config: Config, out: String => Unit): MigrationReport =
-    withClient(args, config) { (options, pluginConfig, client) =>
+    withClient(args, config) { (options, pluginConfig, client, clientVersion) =>
       require(options.verify.isEmpty, "use verify for --verify")
       out(localeLine)
+      KeyMigration.startWarnings(clientVersion, options.settings.execute, !pluginConfig.headConfig.enabled).foreach(out)
       val prefix = if (options.settings.execute) "" else "[dry-run] "
       val report = KeyMigration.run(
         client,
@@ -165,9 +166,12 @@ object JournalKeyMigration {
 
   /** Checks the whole table and its index (`--verify`) and prints the report with `out`. */
   private[dynamodb] def verify(args: Seq[String], config: Config, out: String => Unit): VerifyReport =
-    withClient(args, config) { (options, pluginConfig, client) =>
+    withClient(args, config) { (options, pluginConfig, client, clientVersion) =>
       val settings = options.verify.getOrElse(throw new IllegalArgumentException("verify needs --verify"))
       out(s"[verify] $localeLine")
+      KeyMigration
+        .startWarnings(clientVersion, execute = false, !pluginConfig.headConfig.enabled)
+        .foreach(line => out(s"[verify] $line"))
       val report = KeyVerification.run(
         client,
         table(pluginConfig),
@@ -195,12 +199,15 @@ object JournalKeyMigration {
     "in its digits; run the tool with the locale of the application that wrote the rows)"
 
   private def withClient[T](args: Seq[String], config: Config)(
-      f: (MigrationOptions, JournalPluginConfig, software.amazon.awssdk.services.dynamodb.DynamoDbClient) => T
+      f: (MigrationOptions, JournalPluginConfig, software.amazon.awssdk.services.dynamodb.DynamoDbClient, String) => T
   ): T = {
     val options = MigrationOptions.parse(args)
+    // The client-version of the plugin, which can come from j5ik2o.dynamo-db-defaults through reference.conf.
+    val resolved      = config.withFallback(ConfigFactory.defaultReference()).resolve()
+    val clientVersion = resolved.getString("j5ik2o.dynamo-db-journal.dynamo-db-client.client-version")
     // The tool connects with the plain v2 client whatever client-version the plugin uses: the moves bypass DAX, and
     // the v2 client builders accept only a v2 client-version.
-    val toolConfig = config.withValue(
+    val toolConfig = resolved.withValue(
       "j5ik2o.dynamo-db-journal.dynamo-db-client.client-version",
       ConfigValueFactory.fromAnyRef("v2")
     )
@@ -212,7 +219,7 @@ object JournalKeyMigration {
         .newDynamicAccessor[V2SyncClientFactory]()
         .createThrow(pluginConfig.v2SyncClientFactoryClassName)
         .create
-      try f(options, pluginConfig, client)
+      try f(options, pluginConfig, client, clientVersion)
       finally client.close()
     } finally {
       system.terminate()
