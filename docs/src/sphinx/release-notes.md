@@ -17,6 +17,11 @@ Replace `v1.4.0` and `<SHA>` with the approved version and commit. If the lookup
   limiter stop pacing after its first request, and `Infinity` did not limit at all. A row under an unknown key names
   the default format locale among the possible causes, and `--reverse --verify` says that it checks the shared keys of
   1.3.0 only for the `persistenceId`s that the table holds rows of.
+- Key migration tools (#1028): the dry-run plays the rounds of `--execute` instead of a graph of its own, so it no
+  longer counts a copy as merged when the row that its target waits for does not move, or a row as moved after a
+  row that stays because its copy under the target key has other contents. Without a rejection of DynamoDB (400 KB)
+  or a row that the tool gives up, it gives the rows that `--execute` moves, merges, and leaves; with them,
+  `--execute` moves fewer. The dry-run reads each target key once, so it sends fewer `GetItem` requests.
 
 ## 1.4.0
 
