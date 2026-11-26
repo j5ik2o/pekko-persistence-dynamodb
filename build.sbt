@@ -83,7 +83,7 @@ ThisBuild / credentials += Credentials(Path.userHome / ".sbt" / "1.0" / "sonatyp
 // Set it to the new version after each release is on Maven Central (docs/src/sphinx/release-notes.md).
 // A fixed value, not the previous dynver tag, so that a tag whose artifacts are not yet on Maven Central
 // and a checkout without tags compare with the same, resolvable release.
-val mimaPreviousVersion = "1.3.0"
+val mimaPreviousVersion = "1.4.0"
 
 // Every published module uses these settings. Add an accepted incompatibility to
 // mimaBinaryIssueFilters of the module, with the comment that AGENTS.md requires.
