@@ -408,8 +408,8 @@ length. Two different sets of rows match only when those sums coincide, which is
 `--reverse`, it also does not match while two `persistenceId`s that the table holds share their keys of 1.3.0, at any
 sequence numbers: after the rollback, a write of one of them collides with a row of the other. Only the
 `persistenceId`s that the table holds rows of are checked: when every row of one of them was deleted, the pair is not
-listed, and after the rollback a write of one of them fails as a conflict when the other holds a row of the same
-sequence number (it does not overwrite the row). The index is updated
+listed. After the rollback to 1.3.0, a write of one of them fails as a conflict when the other holds a row of the same
+sequence number, and does not overwrite the row; a release up to 1.2.0 replaces that row instead (issue #1009). The index is updated
 asynchronously, so the `persistenceId`s that differ are queried again until they match or `--verify-timeout` passes;
 the timeout bounds the whole check, each request, the scans of the table and the index, and the waits for `--max-rate`
 included; a check that the timeout stops, or that ends after it, does not match. A query of the index that fails (no permission, throttling) is reported
