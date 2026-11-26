@@ -332,6 +332,15 @@ holds a row the scan did not see (a sequence number above the highest one of its
 for each and exits with 1. A run without a warning does not show that the writers were stopped: most of the paths above
 leave no sign, and an overwrite after a recovery leaves a table that `--verify` matches. These paths were reasoned from how DynamoDB updates an
 index; DynamoDB Local updates its index at once, so they were not reproduced.
+
+Each tool prints a warning at the start, after the line of the locale, for what it cannot check:
+
+- `the tool cannot check that the writers are stopped`, with `--execute`;
+- `the tool reads and writes without DAX`, when the `client-version` of the plugin is `v1-dax` or `v2-dax`, also when
+  it comes from `j5ik2o.dynamo-db-defaults`;
+- `the JournalHead is disabled` (the journal tool, when `head.enabled` is false, the default): an actor that recovers
+  while the index lags can replace a moved event, so keep the application stopped until `--verify` matches twice, some
+  minutes apart (see {ref}`before you start the application <key-migration-restart>`).
 ```
 
 Each tool reads its plugin configuration (`j5ik2o.dynamo-db-journal` or `j5ik2o.dynamo-db-snapshot`): the table, the
@@ -354,7 +363,7 @@ $ sbt -batch "snapshot-v2/runMain com.github.j5ik2o.pekko.persistence.dynamodb.s
 | `--verify-timeout <seconds>` | With `--verify`: the most time the whole check takes, waits included (default 300, at least 1). |
 | `--reverse` | Move the rows under the new keys back to the keys of 1.3.0, or, with `--verify`, check for the keys of 1.3.0. |
 | `--persistence-id <id>` | Move only the rows of these `persistenceId`s. Repeat it for more. `--verify` does not take it. |
-| `--max-rate <n>` | Move at most `n` rows a second (in a dry-run, check at most `n` target keys a second; with `--verify`, send at most `n` requests a second). |
+| `--max-rate <n>` | Move at most `n` rows a second. In a dry-run, check at most `n` target keys a second. Each page of the scan, and each read that compares two copies, also takes one of the `n` a second; set `--scan-page-size` to bound the items of a page. With `--verify`, send at most `n` requests a second. |
 | `--parallelism <n>` | Move up to `n` rows at the same time (default 4). `--segments` does not change it. |
 | `--segments <n>` | Scan the table in `n` parallel segments (default 1). |
 | `--scan-page-size <n>` | Read at most `n` items per scan request. |
@@ -412,17 +421,23 @@ the old key as moved. Running the tool again after it finished moves nothing.
 - When the new key holds the old row of another `persistenceId` that moves too, the tool moves that row first.
 - When the new key holds a row of another `persistenceId` that does not move, the row stays and is listed. With
   `--persistence-id`, a row of a `persistenceId` that is not selected is listed as outside the selection; it may move
-  when you select its `persistenceId`. When two rows
-  need the same new key, the one with the smaller stored key gets it, in the dry-run and in `--execute` alike, and the
-  other is listed. The dry-run lists such rows as blocked.
+  when you select its `persistenceId`. When two rows need the same new key, the one with the smaller stored key gets it,
+  in the dry-run and in `--execute` alike, and the other is listed. The dry-run lists such rows as blocked. When that
+  row does not reach the key in a run (DynamoDB rejects it, or the tool gives up after its attempts), the key stays
+  reserved for it: the other row is not moved in that run and is listed, and a later run gives the key to the same
+  row. A row that DynamoDB rejects is rejected again in the next run, so shrink or remove that row by hand first.
 - Rows that hold each other's new keys (a cycle) are not moved: the tool lists them, and the rows that wait for them,
   as remaining. Move them by hand: move one row of the cycle to a free key, run `--execute` for the others, and then
   move that row from the free key to the key it belongs under, by hand too, because the tool lists a row under any
   other key as not movable. `--verify` passes only after that.
 - A row under a key that is neither the key of 1.3.0, of issue #831, nor of the new format (for example a row written
   with another `shard-count`) is listed as not movable and not moved.
-- The dry-run does not read the items, so it cannot tell whether an item exceeds the 400 KB of DynamoDB under its
-  longer new key. `--execute` lists such a row as remaining with the error of DynamoDB, and leaves it under the old key.
+- An item that no plugin wrote, whose `persistence-id` is not a string or whose `sequence-nr` is not a whole number
+  from 0 up (missing, of another type, a fraction, negative, or beyond a `Long`), is listed as an item that is not a row
+  and is not moved. With `--persistence-id`, such items are counted but not listed. A row whose new key holds such an
+  item is listed as blocked, in the dry-run and in `--execute` alike; move or remove the item by hand.
+- The dry-run does not read the items, so it cannot tell whether an item exceeds the 400 KB of DynamoDB under the key
+  it moves to (the new key, or with `--reverse` the longer key of 1.3.0). `--execute` lists such a row as remaining with the error of DynamoDB, and leaves it under the old key.
 - The JournalHead table is keyed by the `persistenceId` alone, so its items do not move and do not change.
 
 The dry-run prints the rows to move per `persistenceId`, the blocked rows, the cycles, the copies to merge, the rows

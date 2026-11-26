@@ -34,6 +34,9 @@ If you select the new resolvers and migrate, note these limits:
   DAX.
 - No test has moved rows that the published JARs actually wrote. The keys of the releases are checked as fixed values
   that the key functions of the published sources give.
+- With the JournalHead disabled (the default), stopping the application and running `--verify` twice, some minutes
+  apart, lowers the risk that a recovery replaces a moved event, and does not remove it (#1026). The journal tool warns
+  about it at the start.
 
 {ref}`Moving the old rows <key-migration>` gives the steps. The follow-up work is tracked in
 [#1026](https://github.com/j5ik2o/pekko-persistence-dynamodb/issues/1026) (a guard on the write side against stale
@@ -87,14 +90,20 @@ with the default resolvers the keys do not change. The migration is offline: `--
 because the `persistence-id` index is updated asynchronously. Both tools run as a dry-run unless you pass `--execute`, move each
 row in one `TransactWriteItems` (a conditional `Put` under the new key and a conditional `Delete` under the old key),
 and can be run again after a stop. `--reverse` moves the rows back to the keys of 1.3.0 before a rollback, and lists the
-rows that cannot go back. `--max-rate`, `--parallelism`, `--segments`, and `--persistence-id` limit the run. `--execute` exits with 1 when a
+rows that cannot go back. `--max-rate`, `--parallelism`, `--segments`, and `--persistence-id` limit the run; `--max-rate` also paces each page of
+the scan and each read of the dry-run. Each tool warns at the start that it cannot check that the writers are stopped
+(with `--execute`), that it does not go through DAX (with a DAX `client-version`), and, for the journal, that the
+JournalHead is disabled. `--execute` exits with 1 when a
 selected row is left. `--verify` checks the whole table and its `persistence-id` index, comparing the rows of each persistence id as
 SHA-256 digests (a probabilistic comparison), and is
 the check that the migration ends with; what it reports is what it observed, because the index is eventually
 consistent, and the documentation says what to do before the application starts (#1026 tracks a guard on the write
 side). The
 tools do not swap rows that hold each other's new keys, and do not merge copies of the same row whose contents differ;
-they list them. `--execute` also exits with 1 when it sees a sign of another writer. The rows
+they list them. When two rows need the same key, the one that the dry-run names gets it; when that row does not reach
+the key in a run (DynamoDB rejects it, or the tool gives up), the other row is not moved in that run, so a later run
+ends as one uninterrupted run would. An item without a `persistence-id` string or a whole `sequence-nr` is listed as an
+item that is not a row, and a move to its key is listed as blocked. `--execute` also exits with 1 when it sees a sign of another writer. The rows
 of issue #831 (`skey` is the sequence number alone in 19 digits, written up to 1.0.59) move too, also with the default resolvers. The dry-run lists the
 `persistenceId`s that shared keys in 1.3.0 with the sequence numbers that have no row, which may be events that were
 replaced up to 1.2.0; the tools cannot restore them. {ref}`Moving the old rows <key-migration>` gives the steps and the
