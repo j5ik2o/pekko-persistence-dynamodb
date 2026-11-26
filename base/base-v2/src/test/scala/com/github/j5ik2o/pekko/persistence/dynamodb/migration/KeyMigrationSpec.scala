@@ -549,6 +549,41 @@ final class KeyMigrationSpec extends AnyWordSpec with Matchers with DynamoDBCont
       owner(table, k(3)) shouldBe Some("A" -> 1L)
     }
 
+    "not count a copy as merged when the winner of its target waits for a row that does not move (#1028, 2.2)" in {
+      val table = newTable()
+      putRow(table, k(1), "A", 1)
+      putRow(table, k(2), "A", 1)
+      putRow(table, k(9), "C", 1)
+      putRow(table, k(8), "E", 1)
+      // both copies of A need key 9; C, under key 9, needs key 8, which E holds and does not leave
+      val p   = plan(("A", 1L) -> k(9), ("C", 1L) -> k(8))
+      val dry = run(journal(table), p, execute = false)
+      dry.duplicates shouldBe empty
+      dry.directMoves + dry.orderedMoves shouldBe 0
+      dry.blocked.map(_.candidate.persistenceId) shouldBe Seq("C")
+      dry.waiting.map(c => (c.persistenceId, c.from)).toSet shouldBe Set("A" -> k(1), "A" -> k(2))
+      val report = run(journal(table), p, execute = true)
+      report.moved shouldBe 0
+      report.merged shouldBe 0
+      report.remaining.map(_._1).toSet shouldBe dry.candidates.toSet
+    }
+
+    "not count a row as an ordered move when the row it waits for is a copy with other contents (#1028, 2.3)" in {
+      val table = newTable()
+      putRow(table, k(1), "A", 1)
+      putRow(table, k(2), "B", 1)
+      putRow(table, k(3), "B", 1, "tags" -> s("other contents"))
+      // A needs key 2; B, under key 2, needs key 3, which holds a copy of B with other contents
+      val p   = plan(("A", 1L) -> k(2), ("B", 1L) -> k(3))
+      val dry = run(journal(table), p, execute = false)
+      dry.orderedMoves shouldBe 0
+      dry.conflictingCopies.map(_._1.persistenceId) shouldBe Seq("B")
+      dry.waiting.map(_.persistenceId) shouldBe Seq("A")
+      val report = run(journal(table), p, execute = true)
+      report.moved shouldBe 0
+      report.remaining.map(_._1.persistenceId).sorted shouldBe Seq("A", "B")
+    }
+
     "list a row that waits for a row in a cycle" in {
       val table = newTable()
       putRow(table, k(1), "A", 1)
@@ -1222,9 +1257,10 @@ final class KeyMigrationSpec extends AnyWordSpec with Matchers with DynamoDBCont
       )
       report.duplicates should have size 3
       val times = sentAt.asScala.toVector.map(_.longValue()).sorted
-      // the pages of the scan, the target checks of the 4 candidates, and the reads that compare the copies: both
-      // copies of A and of B, and the copy of D, the target key of D, and the copy of the other candidate of D
-      times.size should be >= 4 + 4 + 7
+      // the pages of the scan, the target checks of the 3 target keys (the two copies of D need the same key 19, which
+      // is read once), and the reads that compare the copies: both copies of A and of B, and the copy of D that merges
+      // and the copy of the other candidate of D, which moves to key 19 before it (#1028)
+      times.size should be >= 4 + 3 + 6
       // Each request takes its own slot, so the last one is sent at least (n - 1) intervals after the first, however
       // late a request is. A request without a slot shortens that by one interval; 100 ms leave room for the first.
       val elapsedMillis = (times.last - times.head) / 1000000L
