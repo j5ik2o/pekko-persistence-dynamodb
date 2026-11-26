@@ -238,6 +238,9 @@ Quint のキーは文字列の名前で、リゾルバの計算はしない。�
 | `specs/key-migration/keyMigrationGaveUp_test.qnt` | 決まった筋書き：逆向き＋共有の行き先＋勝者があきらめる・拒否される＋流し直し（レビュー C-F1、O-F6、R3） |
 | `specs/key-migration/keyMigrationWriters.qnt` | 契約を外したモデル。アプリが書き込み・復旧・削除をする |
 | `specs/key-migration/keyMigrationWriters_test.qnt` | 契約を外したときの反例を、固定のトレースで示すテスト |
+| `specs/key-migration/ci-runs.txt` | CI の `quint` ジョブが流す `quint run` の一覧（`docs/design/quint-in-ci.md`） |
+
+不変条件を足すときは、`safety` に入れるか、`ci-runs.txt` に行を足す。どちらにも無い不変条件は、CI で流れない。
 
 ### 8.2 状態と遷移
 
@@ -270,6 +273,7 @@ Quint のキーは文字列の名前で、リゾルバの計算はしない。�
 | `verifyPass` | `KeyVerification.run` と `VerifyReport.verified`（KeyVerification.scala:72-74、:93-230） |
 | `propagate` | DynamoDB の GSI の非同期の更新（コードには無い） |
 | `recoverAndWrite` | `JournalRowStore.writeRows` の条件 `sameRowOrNone`（JournalRowStore.scala:222-223、:347-348）と、`highestSequenceNr` がインデックスを読むこと（:118-140） |
+| `headEnabled` | `JournalAggregateStore.highestSequenceNr`（JournalAggregateStore.scala:35-48）。JournalHead が有効なら、journal と head の番号の大きい方を取る |
 | `hardDeleteCurrent`、`hardDeleteLegacy` | `JournalRowStore.delete` = `deleteRows` の後に `deleteLegacyRows`（:288-340） |
 
 ### 8.4 実物と合わない点（抽象にしたところ）
