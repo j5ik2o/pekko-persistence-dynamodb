@@ -436,7 +436,9 @@ the old key as moved. Running the tool again after it finished moves nothing.
 - An item that no plugin wrote, whose `persistence-id` is not a string or whose `sequence-nr` is not a whole number
   from 0 up (missing, of another type, a fraction, negative, or beyond a `Long`), is listed as an item that is not a row
   and is not moved. With `--persistence-id`, such items are counted but not listed. A row whose new key holds such an
-  item is listed as blocked, in the dry-run and in `--execute` alike; move or remove the item by hand.
+  item is listed as blocked, in the dry-run and in `--execute` alike; move or remove the item by hand. `--verify` stops
+  with an error at such an item (it is not checked yet, see [#1035](https://github.com/j5ik2o/pekko-persistence-dynamodb/issues/1035)),
+  so move or remove these items before you run `--verify`.
 - The dry-run does not read the items, so it cannot tell whether an item exceeds the 400 KB of DynamoDB under the key
   it moves to (the new key, or with `--reverse` the longer key of 1.3.0). `--execute` lists such a row as remaining with the error of DynamoDB, and leaves it under the old key.
 - The JournalHead table is keyed by the `persistenceId` alone, so its items do not move and do not change.
