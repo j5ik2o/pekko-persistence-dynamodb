@@ -78,7 +78,7 @@ journal と snapshot の表の行の、主キー（`pkey`, `skey`）だけを変
 
 ### 2.5 確かめ（`KeyVerification.run`、`--verify`）
 
-`--persistence-id` を受け付けない。インデックスの定義（キーと型、ACTIVE、読まれる属性の射影）を確かめ、表全体を Scan して全行を判定し、インデックス全体を Scan して、persistence id ごとに表とインデックスの行を要約（行の数と、各行の SHA-256 の先頭 128 ビットを 64 ビットずつ足したもの）で比べる。区切り（`--segments`）は順に読む。行でない項目（識別の属性を持たない項目）があると、例外で止まる（[#1035](https://github.com/j5ik2o/pekko-persistence-dynamodb/issues/1035)、文書に `--verify` の前に移すか消すよう書いた）。違う id は `--verify-timeout` まで Query し直す。`--reverse` では、1.3.0 でキーを共有する id が2つ以上表にあれば一致としない。一致は「見た時点で」の観察で、後の読み取りが同じものを見ることは保証しない。
+`--persistence-id` を受け付けない。インデックスの定義（キーと型、ACTIVE、読まれる属性の射影）を確かめ、表全体を Scan して全行を判定し、インデックス全体を Scan して、persistence id ごとに表とインデックスの行を要約（行の数と、各行の SHA-256 の先頭 128 ビットを 64 ビットずつ足したもの）で比べる。区切り（`--segments`）は順に読む。行でない項目（識別の属性を持たない項目）は、移すツールと同じ `MigrationTable.rowIdentity` で見分け、数えてキーを一覧に出し、ほかの行の確かめを続ける。表に1つでもあれば一致としない（`VerifyReport.notRows`、[#1035](https://github.com/j5ik2o/pekko-persistence-dynamodb/issues/1035)）。インデックスの Scan と Query では、表が同じキーに行でない項目として持つものだけを外す（小数の `sequence-nr` などは、インデックスのキーを持つのでインデックスにも載る）。表から消えたのにインデックスにまだ残る項目は、その id の行として数え、インデックスが追いつくまでその id を不一致とする（#1036 のレビュー）。行でない項目のキーは、移す行・動かせない行とは別に、先頭の 20 件を出す。違う id は `--verify-timeout` まで Query し直す。`--reverse` では、1.3.0 でキーを共有する id が2つ以上表にあれば一致としない。一致は「見た時点で」の観察で、後の読み取りが同じものを見ることは保証しない。
 
 ## 3. 守る不変条件
 
@@ -184,6 +184,7 @@ journal と snapshot の表の行の、主キー（`pkey`, `skey`）だけを変
 | 応答の消失 | 次の試みで両方のキーを読んで決める。最後の試みなら `settle` | `moveOne`、`settle` | あり | `attemptLost`、`settle` |
 | 二重起動（同じ表に2つの `--execute`） | 防ぐ仕組みは無い。条件つきの書き込みなので、同じ行を2つが動かしても、片方が `Moved`、他方が「行がキーを離れた」（`Gone` か `Moved`）になる。行は消えない | `moveOne` の条件 | 無し | 無し（ツールは1つ） |
 | 索引（GSI）の遅れ | `--execute` の後しばらく、インデックスは移った行を2回見せるか見せない | `--verify` の再問い合わせ、ドキュメント | DynamoDB Local は即時更新で再現できない | `propagate`、書き手のモデル |
+| 行でない項目（識別の属性が無い、型が違う、小数・負・Long を超える番号） | dry-run と `--execute` は一覧に出して動かさない。行き先に持つと `BlockedByItem`。`--verify` は数えて一覧に出し、一致としない（#1035）。型の違う項目は、インデックスのある表には DynamoDB が書かせない | `MigrationTable.rowIdentity` | `KeyMigrationSpec`（C-F4、#1035） | 範囲外（8節の13） |
 | `--persistence-id` | 選んだ id の行だけ動く。行き先を選ばなかった id の行が持てば「選択の外」として一覧 | `selected` | あり | `sel` |
 | サイズの大きい表 | 1回の Scan と候補ごとの GetItem、TransactWriteItems | `--max-rate`、`--parallelism` | DynamoDB Local で 10万行 | 範囲外 |
 
@@ -252,20 +253,20 @@ Quint のキーは文字列の名前で、リゾルバの計算はしない。�
 | :-- | :-- |
 | `placement` | `ResolverKeyPlan.placement`（ResolverKeyPlan.scala:50-77） |
 | `is831` | `ResolverKeyPlan.isIssue831Key`（:47-48）。Quint は `pkey` の比較をせず、#831 のキーを行ごとに与える |
-| `GROUP`、`sharedGroupsPresent` | `ResolverKeyPlan.sharedKeyGroup`（:80-84）、`KeyVerification.run` の `shared`（KeyVerification.scala:136-145） |
-| `scanCandidates`、`scanUnmovable` | `Session.scanTable`（KeyMigration.scala:611-、#1033 の後の行番号。以下同じ） |
-| `winnerOf` | `Session.winnerOf`（:831-832） |
-| `readyOf` | `execute` の `ready`（:861-867）。予約した行き先を外す |
-| `reserves`、`Tool.reserved` | `execute` の `reserved`（:840）と、結果の処理（`Failed`、`Gone`） |
-| `nextRound` | `execute` のループと、残りを予約待ち・循環・待ちとする部分（:836-930） |
-| `attempt` | `moveOne` の1回の試み（:1131-1197）と、`put`・`delete` の条件 |
-| `mergeTx` | `merge`（:1230-）、`markDeleted`（:1061-） |
-| `differ` | `differences`（:1116-） |
-| `tooBig` | `ValidationException` の `Failed`（:1191-1192）。`BIG_SHARED` は `--reverse` の 1.3.0 のキーへの超過 |
-| `attemptLost` | `transact` の `Left`（応答が無い、:1101-1103）と、次の試みで元が無いときの分岐（:1183-1188）。Quint は、元のキーに行があり、試みが書いたときだけ応答を失わせる |
-| `settleOutcome` | `settle`（:1205-1217） |
-| `MAX_ATTEMPTS` | `MigrationSettings.maxAttempts`（:111）。Quint は 2、コードは 10 |
-| `verifyPass` | `KeyVerification.run` と `VerifyReport.verified`（KeyVerification.scala:70-72、:91-205） |
+| `GROUP`、`sharedGroupsPresent` | `ResolverKeyPlan.sharedKeyGroup`（:80-84）、`KeyVerification.run` の `shared`（KeyVerification.scala:152-161） |
+| `scanCandidates`、`scanUnmovable` | `Session.scanTable`（KeyMigration.scala:625-、#1035 の後の行番号。以下同じ） |
+| `winnerOf` | `Session.winnerOf`（:845-846） |
+| `readyOf` | `execute` の `ready`（:875-881）。予約した行き先を外す |
+| `reserves`、`Tool.reserved` | `execute` の `reserved`（:854）と、結果の処理（`Failed`、`Gone`） |
+| `nextRound` | `execute` のループと、残りを予約待ち・循環・待ちとする部分（:850-944） |
+| `attempt` | `moveOne` の1回の試み（:1134-1200）と、`put`・`delete` の条件 |
+| `mergeTx` | `merge`（:1233-）、`markDeleted`（:1064-） |
+| `differ` | `differences`（:1119-） |
+| `tooBig` | `ValidationException` の `Failed`（:1194-1195）。`BIG_SHARED` は `--reverse` の 1.3.0 のキーへの超過 |
+| `attemptLost` | `transact` の `Left`（応答が無い、:1104-1106）と、次の試みで元が無いときの分岐（:1186-1191）。Quint は、元のキーに行があり、試みが書いたときだけ応答を失わせる |
+| `settleOutcome` | `settle`（:1208-1220） |
+| `MAX_ATTEMPTS` | `MigrationSettings.maxAttempts`（:125）。Quint は 2、コードは 10 |
+| `verifyPass` | `KeyVerification.run` と `VerifyReport.verified`（KeyVerification.scala:72-74、:93-230） |
 | `propagate` | DynamoDB の GSI の非同期の更新（コードには無い） |
 | `recoverAndWrite` | `JournalRowStore.writeRows` の条件 `sameRowOrNone`（JournalRowStore.scala:222-223、:347-348）と、`highestSequenceNr` がインデックスを読むこと（:118-140） |
 | `hardDeleteCurrent`、`hardDeleteLegacy` | `JournalRowStore.delete` = `deleteRows` の後に `deleteLegacyRows`（:288-340） |
@@ -281,7 +282,7 @@ Quint のキーは文字列の名前で、リゾルバの計算はしない。�
 7. 宇宙は13の論理的な行で、sequence number は 1 だけ。番号の抜けの報告（`IdSummary`）、`--segments`、`--max-rate`、`--scan-page-size`、進捗の表示、使用量は入れていない。
 8. `--persistence-id` は、全 id か1つの id。
 9. 400 KB の超過は、新しいキーへの `Put`（f）と、`rejectShared` のときの h の h130 への `Put` だけ。snapshot のまとめで行き先へ `Put` するときの超過は入れていない。
-13. 行でない項目（C-F4）は入れていない。項目の分類は純粋な関数で、`BlockedByItem` は `Blocked` と同じく残りになり、予約もしないので、Quint の `Blocked` と同じ扱いになる。
+13. 行でない項目（C-F4）は入れていない。項目の分類は純粋な関数で、`BlockedByItem` は `Blocked` と同じく残りになり、予約もしないので、Quint の `Blocked` と同じ扱いになる。`--verify` は行でない項目が1つでもあれば一致としない（#1035）。これは `verifyPass` に条件を1つ足すだけで、行だけの表では `verifyPass` と同じなので、「`verifyPass` なら〜」の形の不変条件はそのまま成り立つ。
 10. ほかの書き手の兆候（`writerSigns`）は入れていない。書き手のいないモデルでは出ない。
 11. journal と snapshot の実行は互いに独立で、`legacy-keys-enabled` の設定とアプリの読み取りは、書き手のモデルの `recoverAndWrite` 以外では入れていない。
 12. 収束と冪等の基準 `fullRun` は、ツールと同じ `readyOf` と `attempt` で書いた。比べているのは「止まらない1回の実行」と「止まり、応答を失い、失敗する実行」の違いで、ラウンドの規則そのものの正しさではない。ラウンドの規則は、ほかの不変条件（消えない、増えない、一覧に出る、往復）で確かめている。

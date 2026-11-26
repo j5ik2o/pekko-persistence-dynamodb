@@ -100,7 +100,21 @@ private[dynamodb] final case class MigrationTable(
     sequential: Boolean = true,
     // the attributes, other than the keys, that a replay or a snapshot load reads from the persistence-id index
     indexAttributes: Seq[String] = Seq.empty
-)
+) {
+
+  /** The persistence id and the sequence number of a row, read as the plugin reads them. None for an item that is not a
+    * row: an attribute is missing or of another type, or the number is not a whole number from 0 to Long.MaxValue. The
+    * moves and `--verify` both read the items with it (#1035).
+    */
+  def rowIdentity(item: Map[String, AttributeValue]): Option[(String, Long)] =
+    for {
+      id <- item.get(persistenceIdColumn).flatMap(v => Option(v.s()))
+      seq <- item
+        .get(sequenceNrColumn).flatMap(v => Option(v.n()))
+        .flatMap(n => Try(BigDecimal(n).toLongExact).toOption)
+        .filter(_ >= 0)
+    } yield (id, seq)
+}
 
 private[dynamodb] final case class MigrationSettings(
     execute: Boolean,
@@ -646,7 +660,7 @@ private[dynamodb] object KeyMigration {
             items.foreach { item =>
               val stored = StoredKey(item.get(table.partitionKeyColumn).s(), item.get(table.sortKeyColumn).s())
               rows += 1
-              identity(item.asScala.toMap) match {
+              table.rowIdentity(item.asScala.toMap) match {
                 case None =>
                   // An item that no plugin wrote. It is listed only when every id is selected.
                   if (settings.persistenceIds.isEmpty)
@@ -981,22 +995,11 @@ private[dynamodb] object KeyMigration {
       if (response.hasItem && !response.item().isEmpty) Some(response.item().asScala.toMap) else None
     }
 
-    /** The persistence id and the sequence number of a row, read as the plugin reads them. None for an item that is not
-      * a row: an attribute is missing or of another type, or the number is not a whole number from 0 to Long.MaxValue.
-      */
-    private def identity(item: Item): Option[(String, Long)] =
-      for {
-        id <- item.get(table.persistenceIdColumn).flatMap(v => Option(v.s()))
-        seq <- item
-          .get(table.sequenceNrColumn).flatMap(v => Option(v.n()))
-          .flatMap(n => Try(BigDecimal(n).toLongExact).toOption)
-          .filter(_ >= 0)
-      } yield (id, seq)
-
-    private def isRowOf(item: Item, c: Candidate): Boolean = identity(item).contains((c.persistenceId, c.sequenceNr))
+    private def isRowOf(item: Item, c: Candidate): Boolean =
+      table.rowIdentity(item).contains((c.persistenceId, c.sequenceNr))
 
     private def occupantOf(c: Candidate, item: Option[Item]): Occupant =
-      item.map(identity) match {
+      item.map(table.rowIdentity) match {
         case None                                                                  => Free
         case Some(None)                                                            => OtherItem
         case Some(Some((id, seq))) if id == c.persistenceId && seq == c.sequenceNr => SameRow
@@ -1174,7 +1177,7 @@ private[dynamodb] object KeyMigration {
                           result = Some(if (merging) mergedAfterLostResponse(c) else Moved)
                       }
                     case Some(target) =>
-                      result = Some(identity(target).fold[Outcome](BlockedByItem) { case (id, seq) =>
+                      result = Some(table.rowIdentity(target).fold[Outcome](BlockedByItem) { case (id, seq) =>
                         Blocked(id, seq)
                       })
                     case None => // the source changed or the transaction raced; try again

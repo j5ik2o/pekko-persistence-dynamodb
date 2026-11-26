@@ -857,6 +857,31 @@ final class KeyMigrationSpec extends AnyWordSpec with Matchers with DynamoDBCont
       report.verified shouldBe false
     }
 
+    "fail while the index still shows an item that is not a row after the table removed it (review of #1036)" in {
+      // A@1 and A@2 with an item of sequence-nr 1.5 between them, removed from the table; the index still shows it.
+      val table = newTable(index = true)
+      putRow(table, k(1), "A", 1)
+      putRow(table, k(2), "A", 2)
+      val ghost = Map(
+        "pkey"           -> s("p9"),
+        "skey"           -> s("s9"),
+        "persistence-id" -> s("A"),
+        "sequence-nr"    -> AttributeValue.builder().n("1.5").build(),
+        "deleted"        -> b(false)
+      ).asJava
+      val c = hooked(
+        indexScan = r => r.toBuilder.items((r.items().asScala :+ ghost).asJava).build(),
+        query = r =>
+          if (r.expressionAttributeValues().values().asScala.head.s() == "A")
+            Some(QueryResponse.builder().items((allRows(table).map(_.asJava) :+ ghost).asJava).build())
+          else None
+      )
+      val report = verify(table, plan(), c)
+      report.indexMismatch shouldBe Seq("A")
+      report.verified shouldBe false
+      verify(table, plan()).verified shouldBe true
+    }
+
     "check every persistence id, also those that an earlier run moved, after a lagging run and a filtered one" in {
       val table = newTable(index = true)
       putRow(table, k(1), "A", 1)
@@ -948,6 +973,118 @@ final class KeyMigrationSpec extends AnyWordSpec with Matchers with DynamoDBCont
       an[IllegalArgumentException] should be thrownBy MigrationOptions.parse(Seq("--verify-timeout", "1"))
       an[IllegalArgumentException] should be thrownBy MigrationOptions.parse(Seq("--verify", "--verify-timeout", "0"))
       MigrationOptions.parse(Seq("--verify", "--verify-timeout", "1")).verify.map(_.timeout) shouldBe Some(1.second)
+    }
+
+    def putItem(table: String, key: StoredKey, attributes: Map[String, AttributeValue]): Unit = {
+      client.putItem(
+        PutItemRequest
+          .builder().tableName(table).item(
+            (Map("pkey" -> s(key.partitionKey), "skey" -> s(key.sortKey)) ++ attributes).asJava
+          )
+          .build()
+      )
+      ()
+    }
+
+    "list an item that is not a row instead of stopping, and not pass while the table holds one (#1035)" in {
+      // The index has persistence-id (S) and sequence-nr (N) as its keys, so DynamoDB refuses an item that holds either
+      // of another type in an indexed table; those two cases run on a table without the index.
+      val others: Seq[(String, Boolean, Map[String, AttributeValue])] = Seq(
+        ("no persistence id and no sequence number", true, Map("note" -> s("written by hand"))),
+        ("no sequence number", true, Map("persistence-id" -> s("A"))),
+        ("no persistence id", true, Map("sequence-nr" -> n(1))),
+        (
+          "a sequence number beyond Long",
+          true,
+          Map("persistence-id" -> s("A"), "sequence-nr" -> AttributeValue.builder().n("99999999999999999999").build())
+        ),
+        (
+          "a fractional sequence number",
+          true,
+          Map("persistence-id" -> s("A"), "sequence-nr" -> AttributeValue.builder().n("1.5").build())
+        ),
+        ("a negative sequence number", true, Map("persistence-id" -> s("A"), "sequence-nr" -> n(-1))),
+        ("a persistence id number", false, Map("persistence-id" -> n(7), "sequence-nr" -> n(1))),
+        ("a sequence number string", false, Map("persistence-id" -> s("A"), "sequence-nr" -> s("1")))
+      )
+      others.foreach { case (clue, indexed, attributes) =>
+        withClue(s"$clue: ") {
+          val table = newTable(index = indexed)
+          putRow(table, k(1), "A", 1)
+          putItem(table, k(9), attributes)
+          val report   = verify(table, plan())
+          val rendered = KeyVerification.render(report, "test", None).mkString("\n")
+          report.notRows shouldBe 1
+          report.scannedRows shouldBe 1
+          report.persistenceIds shouldBe 1
+          report.verified shouldBe false
+          rendered should include(s"an item that is not a row ${k(9)}")
+          rendered should include("[verify] not matched")
+          rendered should not include "@-1"
+          if (indexed) {
+            // The rows match; only the item keeps the check from passing.
+            report.toMove shouldBe 0
+            report.notMovable shouldBe 0
+            report.indexProblems shouldBe empty
+            report.indexMismatch shouldBe empty
+            report.indexErrors shouldBe empty
+            report.stoppedBy shouldBe empty
+            client.deleteItem(
+              DeleteItemRequest
+                .builder().tableName(table).key(Map("pkey" -> s("p9"), "skey" -> s("s9")).asJava).build()
+            )
+            verify(table, plan()).verified shouldBe true
+          }
+        }
+      }
+    }
+
+    "check the rows next to items that are not rows, and a table of such items alone (#1035)" in {
+      val table = newTable(index = true)
+      putRow(table, k(1), "A", 1, "sequence-nr" -> AttributeValue.builder().n("1.0").build()) // a row, as 1
+      putRow(table, k(2), "B", 1)
+      putItem(table, k(8), Map("persistence-id" -> s("B"), "sequence-nr" -> AttributeValue.builder().n("2.5").build()))
+      putItem(table, k(9), Map("note" -> s("written by hand")))
+      val mixed = verify(table, plan(("B", 1L) -> k(12)))
+      mixed.scannedRows shouldBe 2
+      mixed.notRows shouldBe 2
+      mixed.toMove shouldBe 1
+      mixed.indexMismatch shouldBe empty
+      mixed.verified shouldBe false
+
+      val alone = newTable(index = true)
+      putItem(alone, k(9), Map("note" -> s("written by hand")))
+      val report = verify(alone, plan())
+      report.scannedRows shouldBe 0
+      report.persistenceIds shouldBe 0
+      report.notRows shouldBe 1
+      report.verified shouldBe false
+    }
+
+    "list the keys of the items that are not rows apart from the rows to move, 20 of each (review of #1036)" in {
+      val table = newTable(index = true)
+      (1 to 25).foreach(i => putRow(table, k(i), s"P$i", 1))
+      (1 to 22).foreach(i => putItem(table, k(100 + i), Map("note" -> s("written by hand"))))
+      val report = verify(table, plan((1 to 25).map(i => (s"P$i", 1L) -> k(50 + i)): _*))
+      report.toMove shouldBe 25
+      report.notRows shouldBe 22
+      report.examples.count(_.startsWith("an item that is not a row")) shouldBe 20
+      report.examples.count(_.contains("should be under")) shouldBe 20
+    }
+
+    "report the moved rows after a run with --persistence-id, next to an item that is not a row (#1035)" in {
+      // The example of the review of #1033: the run moves A@1, and --verify then reports the index of A.
+      val table = newTable(index = true)
+      putRow(table, k(1), "A", 1)
+      putItem(table, k(9), Map("note" -> s("written by hand")))
+      val p = plan(("A", 1L) -> k(11))
+      run(journal(table), p, execute = true, settings = _.copy(persistenceIds = Some(Set("A")))).moved shouldBe 1
+      val report = verify(table, p)
+      report.scannedRows shouldBe 1
+      report.toMove shouldBe 0
+      report.indexMismatch shouldBe empty
+      report.notRows shouldBe 1
+      report.verified shouldBe false
     }
   }
 

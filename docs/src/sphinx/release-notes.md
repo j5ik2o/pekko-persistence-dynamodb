@@ -107,7 +107,8 @@ tools do not swap rows that hold each other's new keys, and do not merge copies 
 they list them. When two rows need the same key, the one that the dry-run names gets it; when that row does not reach
 the key in a run (DynamoDB rejects it, or the tool gives up), the other row is not moved in that run, so a later run
 ends as one uninterrupted run would. An item without a `persistence-id` string or a whole `sequence-nr` is listed as an
-item that is not a row, and a move to its key is listed as blocked. `--execute` also exits with 1 when it sees a sign of another writer. The rows
+item that is not a row, and a move to its key is listed as blocked; `--verify` lists such items too, and does not
+match while the table holds one (#1035). `--execute` also exits with 1 when it sees a sign of another writer. The rows
 of issue #831 (`skey` is the sequence number alone in 19 digits, written up to 1.0.59) move too, also with the default resolvers. The dry-run lists the
 `persistenceId`s that shared keys in 1.3.0 with the sequence numbers that have no row, which may be events that were
 replaced up to 1.2.0; the tools cannot restore them. {ref}`Moving the old rows <key-migration>` gives the steps and the
