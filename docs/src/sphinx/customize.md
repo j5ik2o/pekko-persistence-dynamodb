@@ -384,7 +384,7 @@ $ sbt -batch "snapshot-v2/runMain com.github.j5ik2o.pekko.persistence.dynamodb.s
 | `--verify-timeout <seconds>` | With `--verify`: the most time the whole check takes, waits included (default 300, at least 1). |
 | `--reverse` | Move the rows under the new keys back to the keys of 1.3.0, or, with `--verify`, check for the keys of 1.3.0. |
 | `--persistence-id <id>` | Move only the rows of these `persistenceId`s. Repeat it for more. `--verify` does not take it. |
-| `--max-rate <n>` | Move at most `n` rows a second. In a dry-run, check at most `n` target keys a second. Each page of the scan, and each read that compares two copies, also takes one of the `n` a second; set `--scan-page-size` to bound the items of a page. With `--verify`, send at most `n` requests a second. |
+| `--max-rate <n>` | Move at most `n` rows a second. In a dry-run, check at most `n` target keys a second. Each page of the scan, and each read that compares two copies, also takes one of the `n` a second; set `--scan-page-size` to bound the items of a page. With `--verify`, send at most `n` requests a second. `n` is a finite number of at least 0.001. |
 | `--parallelism <n>` | Move up to `n` rows at the same time (default 4). `--segments` does not change it. |
 | `--segments <n>` | Scan the table in `n` segments (default 1). The dry-run and `--execute` read them in parallel; `--verify` reads them one after another. |
 | `--scan-page-size <n>` | Read at most `n` items per scan request. |
@@ -406,7 +406,10 @@ the same rows as the table: the same keys and the same values of the attributes 
 64-bit parts of the SHA-256 of each row (its first 128 bits), over an encoding that gives each value its type and
 length. Two different sets of rows match only when those sums coincide, which is unlikely but not ruled out. With
 `--reverse`, it also does not match while two `persistenceId`s that the table holds share their keys of 1.3.0, at any
-sequence numbers: after the rollback, a write of one of them collides with a row of the other. The index is updated
+sequence numbers: after the rollback, a write of one of them collides with a row of the other. Only the
+`persistenceId`s that the table holds rows of are checked: when every row of one of them was deleted, the pair is not
+listed. After the rollback to 1.3.0, a write of one of them fails as a conflict when the other holds a row of the same
+sequence number, and does not overwrite the row; a release up to 1.2.0 replaces that row instead (issue #1009). The index is updated
 asynchronously, so the `persistenceId`s that differ are queried again until they match or `--verify-timeout` passes;
 the timeout bounds the whole check, each request, the scans of the table and the index, and the waits for `--max-rate`
 included; a check that the timeout stops, or that ends after it, does not match. A query of the index that fails (no permission, throttling) is reported
@@ -417,7 +420,8 @@ Set each only after its own tool matched. Otherwise it lists what does not match
 
 The tools print the default format locale of their JVM when they start. The keys hold numbers in the digits of that
 locale, as the plugin writes them, so run the tools in a JVM with the locale of the application that wrote the rows;
-in a JVM whose digits differ (for example `ar-EG` and `en-US`), the tools list the rows as not movable.
+in a JVM whose digits differ (for example `ar-EG` and `en-US`), the tools list the rows as not movable, with the
+default format locale among the possible causes.
 
 The tests run the tools on rows that the published JARs of 1.0.59, 1.3.0, and 1.4.0 (with its default resolvers) wrote
 to DynamoDB Local: events, a soft delete, and a snapshot of `persistenceId`s with no separator, one, and two, and for
@@ -483,7 +487,7 @@ the old key as moved. Running the tool again after it finished moves nothing.
 The dry-run prints the rows to move per `persistenceId`, the blocked rows, the cycles, the copies to merge, the rows
 that are not moved, and the requests and the capacity units that DynamoDB reported. With `--persistence-id`, it places
 only the rows of those `persistenceId`s. It also lists the `persistenceId`s that shared their keys in 1.3.0 (the same
-`prefix`, second part, and shard). For the journal, each comes with its highest sequence number and the sequence
+`prefix`, second part, and shard), among the `persistenceId`s that the table holds rows of. For the journal, each comes with its highest sequence number and the sequence
 numbers below it that have no row. A missing number in such a group can be an event that the other `persistenceId`
 replaced up to 1.2.0, or one that a hard delete removed; the table cannot tell them apart, so check the missing numbers
 against your own records. For the snapshot store, which does not save every sequence number, the tool lists the group

@@ -36,7 +36,7 @@ private[dynamodb] final case class VerifySettings(
 ) {
   require(timeout >= 1.second, "--verify-timeout must be at least 1 second")
   require(segments >= 1, "--segments must be at least 1")
-  require(maxRate.forall(_ > 0), "--max-rate must be positive")
+  maxRate.foreach(MaxRate.check)
   require(scanPageSize.forall(_ >= 1), "--scan-page-size must be at least 1")
 }
 
@@ -251,6 +251,12 @@ private[dynamodb] object KeyVerification {
       lines += s"[verify] these persistence ids share their keys in 1.3.0, so their writes collide after the rollback: " +
       group.mkString(", ")
     }
+    // The check sees only the ids that have rows: an id whose rows were all deleted can still collide (#1028).
+    if (direction == "reverse")
+      lines += "[verify] the shared keys of 1.3.0 are checked for only the persistence ids that the table holds rows of; " +
+      "after the rollback to 1.3.0, a write of an id without rows that shares its keys with another id fails as a " +
+      "conflict when the other id holds a row of the same sequence number; a release up to 1.2.0 replaces that row " +
+      "instead (#1009)"
     if (report.verified) {
       lines += "[verify] matched: when it was checked, every row was under the key it belongs under and the index " +
       "showed the rows of the table. The index is eventually consistent, so this does not prove that a later read sees " +

@@ -11,6 +11,13 @@ gh release create v1.4.0 --target <SHA> --generate-notes
 
 Replace `v1.4.0` and `<SHA>` with the approved version and commit. If the lookup returns no rows, continue. For a lightweight tag, compare the SHA on its row with `<SHA>`; for an annotated tag, compare the SHA on the `^{}` row. Continue only on a match; otherwise stop. `--target` selects the commit only when `gh release create` creates a missing tag. Confirm that the `publish` workflow succeeds. Tag pushes publish the artifacts to Maven Central automatically. After the new version is on Maven Central, set `mimaPreviousVersion` in `build.sbt` to that version in a pull request, and remove the `mimaBinaryIssueFilters` entries for changes that the new version contains. MiMa in CI compares each published module with that version, so do not set it before the artifacts resolve.
 
+## Unreleased
+
+- Key migration tools (#1028): `--max-rate` must be a finite number of at least 0.001; a lower value made the rate
+  limiter stop pacing after its first request, and `Infinity` did not limit at all. A row under an unknown key names
+  the default format locale among the possible causes, and `--reverse --verify` says that it checks the shared keys of
+  1.3.0 only for the `persistenceId`s that the table holds rows of.
+
 ## 1.4.0
 
 ```{admonition} Experimental key format and key migration tools; the defaults do not change

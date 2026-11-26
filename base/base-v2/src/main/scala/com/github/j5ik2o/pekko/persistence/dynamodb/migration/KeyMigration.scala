@@ -127,9 +127,23 @@ private[dynamodb] final case class MigrationSettings(
 ) {
   require(segments >= 1, "--segments must be at least 1")
   require(parallelism >= 1, "--parallelism must be at least 1")
-  require(maxRate.forall(_ > 0), "--max-rate must be positive")
+  maxRate.foreach(MaxRate.check)
   require(scanPageSize.forall(_ >= 1), "--scan-page-size must be at least 1")
   require(maxAttempts >= 1, "the number of attempts must be at least 1")
+}
+
+/** The values that `--max-rate` takes, for the moves and for `--verify` (issue #1028). */
+private[dynamodb] object MaxRate {
+
+  /** One request every 1,000 seconds. The interval, 1e12 nanoseconds, fits a Long with room for the slots. */
+  val Minimum: Double = 0.001
+
+  /** A rate below `Minimum`, or one that is not finite, would overflow the interval or not limit at all. */
+  def check(rate: Double): Unit =
+    require(
+      java.lang.Double.isFinite(rate) && rate >= Minimum,
+      s"--max-rate must be a finite number of at least $Minimum: $rate"
+    )
 }
 
 /** A row that is stored under another key than the one it belongs under. */
@@ -454,6 +468,7 @@ private[dynamodb] object KeyMigration {
   }
 
   private[migration] final class RateLimiter(perSecond: Double) {
+    MaxRate.check(perSecond)
     private val intervalNanos = (1e9 / perSecond).toLong
     private var next          = System.nanoTime()
 
