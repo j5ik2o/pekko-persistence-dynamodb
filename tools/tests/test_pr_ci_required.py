@@ -80,7 +80,8 @@ class PrCiRequiredTests(unittest.TestCase):
                         GITHUB_RUN_ID="1", GITHUB_RUN_ATTEMPT="1", CHANGES_RESULT="success",
                         RUN_SCALA="true", LINT_RESULT="success", MIMA_RESULT="success",
                         MATRIX_RESULT="success",
-                        RUN_TOOLS="false", TOOLS_RESULT="skipped")
+                        RUN_TOOLS="false", TOOLS_RESULT="skipped",
+                        RUN_QUINT="false", QUINT_RESULT="skipped")
 
     def answer(self, *reads):
         for n, jobs in enumerate(reads, start=1):
@@ -211,6 +212,54 @@ class PrCiRequiredTests(unittest.TestCase):
         result, reads = self.run_step(RUN_SCALA="false", LINT_RESULT="skipped", MIMA_RESULT="success")
         self.assertEqual(result.returncode, 1)
         self.assertEqual(reads, 0)
+
+    def test_passes_when_the_quint_job_ran_and_passed(self):
+        self.answer(passed_jobs() + [job("quint", "Check the Quint specs")])
+        result, reads = self.run_step(RUN_QUINT="true", QUINT_RESULT="success")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(reads, 1)
+
+    def test_passes_with_only_the_quint_job_when_scala_is_out_of_scope(self):
+        self.answer([job("changes", "Select PR checks"), job("quint", "Check the Quint specs")] +
+                    [job(name, "Validate CI selection") for name in MATRIX])
+        result, reads = self.run_step(RUN_SCALA="false", LINT_RESULT="skipped", MIMA_RESULT="skipped",
+                                      RUN_QUINT="true", QUINT_RESULT="success")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(reads, 1)
+
+    def test_fails_without_reading_the_api_when_the_quint_job_did_not_pass(self):
+        self.answer(passed_jobs() + [job("quint", "Check the Quint specs")])
+        for quint in ("failure", "cancelled", "skipped"):
+            with self.subTest(quint=quint):
+                self.calls.unlink(missing_ok=True)
+                result, reads = self.run_step(RUN_QUINT="true", QUINT_RESULT=quint)
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(reads, 0)
+                self.assertIn("::error::The quint job did not complete as expected.", result.stdout)
+
+    def test_fails_without_reading_the_api_when_the_quint_job_ran_but_was_not_selected(self):
+        self.answer(passed_jobs() + [job("quint", "Check the Quint specs")])
+        result, reads = self.run_step(RUN_QUINT="false", QUINT_RESULT="success")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(reads, 0)
+        self.assertIn("::error::The quint job did not complete as expected.", result.stdout)
+
+    def test_fails_when_the_quint_check_step_did_not_succeed(self):
+        for step_conclusion in ("failure", "skipped"):
+            with self.subTest(step=step_conclusion):
+                self.calls.unlink(missing_ok=True)
+                self.answer(passed_jobs() + [job("quint", "Check the Quint specs", conclusion="success",
+                                                 step_conclusion=step_conclusion)])
+                result, reads = self.run_step(RUN_QUINT="true", QUINT_RESULT="success")
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(reads, 6)
+                self.assertIn("::error::A required job or step did not succeed.", result.stdout)
+
+    def test_fails_when_the_quint_job_is_missing(self):
+        self.answer(passed_jobs())
+        result, reads = self.run_step(RUN_QUINT="true", QUINT_RESULT="success")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(reads, 6)
 
 
 if __name__ == "__main__":

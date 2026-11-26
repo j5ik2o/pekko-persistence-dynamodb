@@ -42,6 +42,8 @@ jobs:
       bundle: ${{ steps.resolve.outputs.bundle_name }}
       scala: ${{ steps.select.outputs.scala }}
       tools: ${{ steps.select.outputs.tools }}
+      quint: ${{ steps.select.outputs.quint }}
+      quint_code_files: ${{ steps.select.outputs.quint_code_files }}
     steps:
       - name: Checkout the event merge commit
         id: event-merge
@@ -85,8 +87,13 @@ jobs:
         run: |
           scala=true
           tools=false
+          quint=true
+          # The code that specs/ describes (docs/design/key-migration.md, section 8.3).
+          quint_code=()
+          specs_changed=false
           if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
             scala=false
+            quint=false
             paths=$(mktemp)
             git diff --no-renames --name-only -z "$BASE_SHA...$HEAD_SHA" -- > "$paths"
             while IFS= read -r -d '' path; do
@@ -98,9 +105,36 @@ jobs:
               case "$path" in
                 tools/*|.github/workflows/tools-tests.yml|.github/scripts/*) tools=true ;;
               esac
+              case "$path" in
+                specs/*) quint=true; specs_changed=true ;;
+                tools/quint-check-specs.sh|package.json|package-lock.json|.github/workflows/ci.yml) quint=true ;;
+                base/base-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/migration/*|\
+                journal/journal-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/migration/*|\
+                snapshot/snapshot-v2/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/snapshot/migration/*|\
+                journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/store/JournalRowStore.scala|\
+                journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/aggregate/JournalAggregateStore.scala|\
+                base/base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/model/PersistenceIdKeyParts.scala|\
+                journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/PartitionKeyResolver.scala|\
+                journal/journal-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/journal/SortKeyResolver.scala|\
+                snapshot/snapshot-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/snapshot/PartitionKeyResolver.scala|\
+                snapshot/snapshot-base/src/main/scala/com/github/j5ik2o/pekko/persistence/dynamodb/snapshot/SortKeyResolver.scala)
+                  quint=true
+                  # A path is one line of a multiline output, so a path with a line break
+                  # could write other outputs; such a path is not listed.
+                  if [[ "$path" != *$'\n'* && "$path" != *$'\r'* ]]; then quint_code+=("$path"); fi ;;
+              esac
             done < "$paths"
           fi
-          printf 'scala=%s\ntools=%s\n' "$scala" "$tools" | tee -a "$GITHUB_OUTPUT"
+          printf 'scala=%s\ntools=%s\nquint=%s\n' "$scala" "$tools" "$quint" | tee -a "$GITHUB_OUTPUT"
+          # The quint job points out code that the specs describe when specs/ did not change.
+          if [[ ${#quint_code[@]} -gt 0 && "$specs_changed" == false ]]; then
+            delimiter="QUINT_CODE_FILES_$(openssl rand -hex 16)"
+            {
+              echo "quint_code_files<<$delimiter"
+              printf '%s\n' "${quint_code[@]}"
+              echo "$delimiter"
+            } | tee -a "$GITHUB_OUTPUT"
+          fi
   lint:
     needs: changes
     if: needs.changes.outputs.scala == 'true'
@@ -313,9 +347,163 @@ jobs:
       checkout_ref: ${{ needs.changes.outputs.checkout_ref }}
       test_merge: ${{ needs.changes.outputs.test_merge }}
       bundle: ${{ needs.changes.outputs.bundle }}
+  # Every specs/<dir>/*.qnt is typechecked, every *_test.qnt is run as tests, and
+  # every quint run of specs/<dir>/ci-runs.txt is run with its fixed seed
+  # (tools/quint-check-specs.sh). This checks the specs only; whether the Scala
+  # code keeps their properties is checked by the Scala tests. Design:
+  # docs/design/quint-in-ci.md.
+  quint:
+    needs: changes
+    if: needs.changes.outputs.quint == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.changes.outputs.checkout_ref }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        if: needs.changes.outputs.bundle != ''
+        with:
+          name: ${{ needs.changes.outputs.bundle }}
+          path: ${{ runner.temp }}/pr-test-merge
+      # Every job checks the commit and parents that the changes job verified.
+      - name: Check out the verified test merge
+        if: github.event_name == 'pull_request'
+        env:
+          TEST_MERGE: ${{ needs.changes.outputs.test_merge }}
+          BUNDLE: ${{ needs.changes.outputs.bundle }}
+        run: |
+          if [[ -n "$BUNDLE" ]]; then
+            git fetch --quiet --no-tags "$RUNNER_TEMP/pr-test-merge/pr-test-merge.bundle" refs/pr-ci/merge
+            git checkout --quiet --detach FETCH_HEAD
+          fi
+          # A shallow checkout hides parents from %P; the commit object keeps them.
+          actual="$(git rev-parse HEAD)$(git cat-file commit HEAD | awk '!NF { exit } $1 == "parent" { printf " %s", $2 }')"
+          echo "Checked out test merge (SHA, base, head): $actual"
+          if [[ -z "$TEST_MERGE" || "$actual" != "$TEST_MERGE" ]]; then
+            echo "::error::Expected test merge ${TEST_MERGE:-missing}"
+            exit 1
+          fi
+      # A pull request that changes the code that specs/ describes, and not specs/,
+      # gets a warning: the specs may no longer describe the code. It does not fail.
+      - name: Point out code that the specs describe
+        if: needs.changes.outputs.quint_code_files != ''
+        env:
+          FILES: ${{ needs.changes.outputs.quint_code_files }}
+        run: |
+          # shellcheck disable=SC2016 # The backquotes are Markdown, not commands.
+          {
+            echo '### Code that the Quint specs describe changed'
+            echo
+            echo 'This pull request changes code that `specs/` describes and does not change `specs/`.'
+            echo 'Check the correspondence in `docs/design/key-migration.md`, section 8.3, and update the specs or say in the pull request why they need no change.'
+            echo
+            while IFS= read -r file; do
+              if [[ -n "$file" ]]; then echo "- \`$file\`"; fi
+            done <<< "$FILES"
+          } >> "$GITHUB_STEP_SUMMARY"
+          while IFS= read -r file; do
+            if [[ -n "$file" ]]; then
+              echo "::warning file=$file::specs/ describes this file, and this pull request does not change specs/. See docs/design/key-migration.md, section 8.3."
+            fi
+          done <<< "$FILES"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      # Worst case of the waits between retries: 10 + 60 + 60 seconds.
+      - name: npm ci
+        run: npm ci --no-audit --no-fund --fetch-retries=3 --fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=60000
+      # quint's default backend is a Rust evaluator that quint downloads on first
+      # use through the unauthenticated GitHub releases API, and only from the
+      # first page of that listing. The evaluator is cached here, and fetched with
+      # the job token on a cache miss, so quint finds it and never calls the API.
+      # quint looks in $QUINT_HOME, else ~/.quint; this job does not set QUINT_HOME.
+      # The release assets are mutable, so the archive and the executable are
+      # checked against sha256 digests pinned per evaluator version.
+      #
+      # To upgrade quint: change package.json and run npm install; read
+      # QUINT_EVALUATOR_VERSION from node_modules/@informalsystems/quint/dist/src/rust/binaryManager.js;
+      # if it changed, download quint_evaluator-x86_64-unknown-linux-gnu.tar.gz of
+      # evaluator/<version> with gh release download, and add the sha256 of the
+      # archive and of the extracted quint_evaluator below; then run
+      # tools/quint-check-specs.sh and update the counts in ci-runs.txt, because a
+      # new evaluator can draw other random choices from the same seed.
+      - name: Rust evaluator version
+        id: evaluator
+        run: |
+          if [ "$RUNNER_OS" != Linux ] || [ "$RUNNER_ARCH" != X64 ]; then
+            echo "::error::the evaluator digests below are for x86_64 Linux, not $RUNNER_OS $RUNNER_ARCH"
+            exit 1
+          fi
+          version=$(node -p "require('@informalsystems/quint/dist/src/rust/binaryManager.js').QUINT_EVALUATOR_VERSION")
+          case $version in
+            v0.6.0)
+              archive_sha256=61755a09d5052d93a4e75e840059edfd0d3674aeda164b9d2464be3d6e21b1c2
+              executable_sha256=b2efdeac5713d153e41bf2143b94ed75d888fdd5637f4a5d61a04c695313510a
+              ;;
+            *)
+              echo "::error::no pinned digests for Rust evaluator $version; add them to ci.yml"
+              exit 1
+              ;;
+          esac
+          {
+            echo "version=$version"
+            echo "dir=$HOME/.quint/rust-evaluator-$version"
+            echo "archive_sha256=$archive_sha256"
+            echo "executable_sha256=$executable_sha256"
+          } >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        id: evaluator_cache
+        with:
+          path: ${{ steps.evaluator.outputs.dir }}
+          key: quint-evaluator-${{ runner.os }}-${{ runner.arch }}-${{ steps.evaluator.outputs.version }}-${{ steps.evaluator.outputs.executable_sha256 }}
+      # A failed download is tried again; a digest that does not match is not,
+      # because the asset changed.
+      - name: Fetch the Rust evaluator
+        if: steps.evaluator_cache.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.evaluator.outputs.version }}
+          DIR: ${{ steps.evaluator.outputs.dir }}
+          ARCHIVE_SHA256: ${{ steps.evaluator.outputs.archive_sha256 }}
+          FETCH_ATTEMPTS: '3'
+          FETCH_RETRY_DELAY: '30'
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/quint_evaluator.tar.gz"
+          for (( attempt = 1; ; attempt++ )); do
+            # A failed attempt can leave part of the archive.
+            rm -f "$archive"
+            if gh release download "evaluator/$VERSION" --repo informalsystems/quint \
+                 --pattern quint_evaluator-x86_64-unknown-linux-gnu.tar.gz --output "$archive" --clobber; then
+              break
+            fi
+            if (( attempt >= FETCH_ATTEMPTS )); then
+              echo "::error::Could not download the Rust evaluator $VERSION after $attempt attempts."
+              exit 1
+            fi
+            delay=$(( attempt * FETCH_RETRY_DELAY ))
+            echo "::warning::Attempt $attempt to download the Rust evaluator failed; retrying in ${delay}s."
+            sleep "$delay"
+          done
+          echo "$ARCHIVE_SHA256  $archive" | sha256sum -c -
+          mkdir -p "$DIR"
+          tar -xzf "$archive" -C "$DIR"
+      - name: Check the Rust evaluator
+        env:
+          DIR: ${{ steps.evaluator.outputs.dir }}
+          EXECUTABLE_SHA256: ${{ steps.evaluator.outputs.executable_sha256 }}
+        run: |
+          set -euo pipefail
+          test -x "$DIR/quint_evaluator"
+          echo "$EXECUTABLE_SHA256  $DIR/quint_evaluator" | sha256sum -c -
+      - name: Check the Quint specs
+        run: bash tools/quint-check-specs.sh
   required:
     name: ${{ github.base_ref == 'main' && 'PR CI Required' || 'CI Summary (other refs)' }}
-    needs: [changes, lint, mima, test, tools]
+    needs: [changes, lint, mima, test, tools, quint]
     if: always() && github.base_ref == 'main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -329,16 +517,22 @@ jobs:
       MATRIX_RESULT: ${{ needs.test.result }}
       RUN_TOOLS: ${{ needs.changes.outputs.tools }}
       TOOLS_RESULT: ${{ needs.tools.result }}
+      RUN_QUINT: ${{ needs.changes.outputs.quint }}
+      QUINT_RESULT: ${{ needs.quint.result }}
     steps:
       - name: Verify required results
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          echo "changes=$CHANGES_RESULT scala=$RUN_SCALA lint=$LINT_RESULT mima=$MIMA_RESULT matrix=$MATRIX_RESULT tools=$RUN_TOOLS/$TOOLS_RESULT"
+          echo "changes=$CHANGES_RESULT scala=$RUN_SCALA lint=$LINT_RESULT mima=$MIMA_RESULT matrix=$MATRIX_RESULT tools=$RUN_TOOLS/$TOOLS_RESULT quint=$RUN_QUINT/$QUINT_RESULT"
           case "$CHANGES_RESULT:$RUN_SCALA:$LINT_RESULT:$MIMA_RESULT:$MATRIX_RESULT:$RUN_TOOLS:$TOOLS_RESULT" in
             success:true:success:success:success:true:success|success:true:success:success:success:false:skipped|success:false:skipped:skipped:success:false:skipped) ;;
             *) echo '::error::Required jobs did not complete as expected.'; exit 1 ;;
+          esac
+          case "$RUN_QUINT:$QUINT_RESULT" in
+            true:success|false:skipped) ;;
+            *) echo '::error::The quint job did not complete as expected.'; exit 1 ;;
           esac
 
           # A matrix has one needs.result. Verify each named job in this run,
@@ -359,14 +553,15 @@ jobs:
             (if $scala == "true" then
               all(["2.12.20", "2.13.16", "3.6.4"][]; passed("mima (\(.))"; "sbt mimaReportBinaryIssues"))
             else true end) and
-            (if $tools == "true" then passed("tools / tools-tests"; "Check the test counts") else true end)'
+            (if $tools == "true" then passed("tools / tools-tests"; "Check the test counts") else true end) and
+            (if $quint == "true" then passed("quint"; "Check the Quint specs") else true end)'
           # needs.* already reported every job as passed, but the jobs API can show
           # a job that has just finished as still running, so read it a few times.
           # A read counts only when gh succeeds and jq prints true: jq 1.6 exits 0
           # with -e on empty input, so its exit status alone is not enough.
           for n in 1 2 3 4 5 6; do
             if jobs=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?filter=all&per_page=100") &&
-               verdict=$(jq --arg scala "$RUN_SCALA" --arg tools "$RUN_TOOLS" --argjson attempt "$GITHUB_RUN_ATTEMPT" \
+               verdict=$(jq --arg scala "$RUN_SCALA" --arg tools "$RUN_TOOLS" --arg quint "$RUN_QUINT" --argjson attempt "$GITHUB_RUN_ATTEMPT" \
                  "$program" <<< "$jobs") &&
                [[ "$verdict" == true ]]; then
               echo "Every required job and step succeeded (read $n)."

@@ -1,0 +1,26 @@
+# The quint runs of this directory that CI runs (tools/quint-check-specs.sh).
+# One run per line: <pass|violation> <file> <arguments of quint run>.
+# Every line needs --seed, --max-samples (2 or more), --max-steps, and
+# --invariant or --invariants; the check adds --verbosity=2.
+#
+# --witnesses lists the witnesses that the run must see at least once. List
+# only witnesses that the fixed seed sees 4 times or more, so that a change of
+# the spec that only shifts the random choices does not drop one to 0. When a
+# witness drops to 0, find out whether the spec lost the path or the run has
+# too few samples, before you remove the witness or raise --max-samples.
+#
+# The counts and times: docs/design/quint-in-ci.md, "key-migration の run".
+
+# 1. No writers, any table: every invariant but idempotent.
+pass keyMigration.qnt --invariant safety --max-samples 400 --max-steps 120 --seed 0x7 --witnesses wMoved wMerged wBlocked wConflict wRejected wGaveUp wProgress wFinishedAfterStop wRoundTrip wVerifyForward wVerifyReverse wIndexLag wMergedAfterLost wCycleRemaining wFinishedForward
+# 2. The shared target h130, where the winner gives up or DynamoDB rejects it.
+pass keyMigration.qnt --init initSharedPair --invariant safety --max-samples 2000 --max-steps 60 --seed 0x7 --witnesses wGaveUpShared wRejectedShared wFinishedAfterStop
+# 3 and 4. idempotent, which safety leaves out because it computes the reference run.
+pass keyMigration.qnt --invariant idempotent --max-samples 300 --max-steps 60 --seed 0x7
+pass keyMigration.qnt --init initSharedPair --invariant idempotent --max-samples 500 --max-steps 60 --seed 0x7
+# 5. The application that follows the documentation; the index catches up monotonically.
+pass keyMigrationWriters.qnt --main keyMigrationWriters --init initG --step stepG --invariants noLossW noDuplicateW deletedStayGone verifySoundW --max-samples 2000 --max-steps 80 --seed 0x7 --witnesses wAppStarted
+# 6. The same with reads that can return an earlier value, and the JournalHead enabled.
+pass keyMigrationWriters.qnt --main keyMigrationWriters --init initGStaleHead --step stepGForward --invariants noLossW noDuplicateW deletedStayGone verifySoundW --max-samples 5000 --max-steps 80 --seed 0x7 --witnesses wAppStarted
+# 7. Negative control: without the JournalHead, a stale read lets a recovery overwrite a moved row (A1).
+violation keyMigrationWriters.qnt --main keyMigrationWriters --init initGStale --step stepG --invariant noLossW --max-samples 2000 --max-steps 80 --seed 0x7

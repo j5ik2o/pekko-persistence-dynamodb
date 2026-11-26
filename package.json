@@ -6,6 +6,7 @@
     "test:aislop": "node scripts/aislop-check-bootstrap.mjs test"
   },
   "devDependencies": {
+    "@informalsystems/quint": "0.32.0",
     "aislop": "0.20.1"
   }
 }
