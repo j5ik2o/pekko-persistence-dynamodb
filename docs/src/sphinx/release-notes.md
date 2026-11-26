@@ -95,7 +95,7 @@ the scan and each read of the dry-run. Each tool warns at the start that it cann
 (with `--execute`), that it does not go through DAX (with a DAX `client-version`), and, for the journal, that the
 JournalHead is disabled. `--execute` exits with 1 when a
 selected row is left. `--verify` checks the whole table and its `persistence-id` index, comparing the rows of each persistence id as
-SHA-256 digests (a probabilistic comparison), and is
+sums of 128 bits of their SHA-256 digests (a probabilistic comparison), and is
 the check that the migration ends with; what it reports is what it observed, because the index is eventually
 consistent, and the documentation says what to do before the application starts (#1026 tracks a guard on the write
 side). The
