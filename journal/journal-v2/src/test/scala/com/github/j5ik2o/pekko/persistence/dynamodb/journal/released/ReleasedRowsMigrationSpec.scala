@@ -40,13 +40,14 @@ object ReleasedRowsMigrationSpec extends DockerAssignedPort {
   final case class Plugin(label: String, classpath: String, plainText: Boolean)
 }
 
-/** The key migration tools on the rows that the published JARs of 1.0.59 and 1.3.0 wrote (issue #1027).
+/** The key migration tools on the rows that the published JARs of 1.0.59, 1.3.0, and 1.4.0 wrote (issue #1027).
   *
   * The published plugins have the package and the class names of this code base, so each runs in its own JVM with the
   * classpath that a user of that release resolves (`project/ReleasedPlugins.scala`), and writes, through Pekko
   * Persistence, events, a soft delete, and a snapshot to DynamoDB Local (`ReleasedRowsDriver`). The tools of this code
   * base then move the rows forward, the plugin of this code base with the PlainText resolvers reads and changes them,
-  * the tools move them back with `--reverse`, and the published plugin of 1.3.0 reads and changes them again.
+  * the tools move them back with `--reverse`, and the published plugin of 1.3.0 reads and changes them again. The rows
+  * of 1.4.0 are read and changed by the published 1.4.0 instead, with the PlainText resolvers and then its defaults.
   *
   * The persistence ids hold no separator, one, and two; no two of them share their keys of 1.3.0.
   */
@@ -60,7 +61,7 @@ final class ReleasedRowsMigrationSpec extends AnyWordSpec with Matchers with Dyn
 
   // --- the plugins -------------------------------------------------------------------------------------------------
 
-  private def released(version: String): Plugin = {
+  private def released(version: String, plainText: Boolean = false): Plugin = {
     val property = s"pekko-persistence-dynamodb.released-classpath.$version"
     val jars = sys.props.getOrElse(
       property,
@@ -68,7 +69,8 @@ final class ReleasedRowsMigrationSpec extends AnyWordSpec with Matchers with Dyn
     )
     val driver = Paths.get(ReleasedRowsDriver.getClass.getProtectionDomain.getCodeSource.getLocation.toURI).toString
     // The published JARs come first, so that no class of this code base replaces one of them.
-    Plugin(s"the published $version", jars + File.pathSeparator + driver, plainText = false)
+    val resolvers = if (plainText) " with the PlainText resolvers" else ""
+    Plugin(s"the published $version$resolvers", jars + File.pathSeparator + driver, plainText)
   }
 
   private val current = Plugin("this code base", sys.props("java.class.path"), plainText = true)
@@ -205,6 +207,8 @@ final class ReleasedRowsMigrationSpec extends AnyWordSpec with Matchers with Dyn
       dryRun.cycles shouldBe empty
       dryRun.conflictingCopies shouldBe empty
       dryRun.sharedKeyGroups shouldBe empty
+      // Every item of the table is a row whose key the tool recognizes: under the key it belongs under, or to move.
+      dryRun.scannedRows shouldBe dryRun.inPlaceRows + dryRun.candidates.size
     }
     val executed = run(direction ++ Seq("--execute", "--writers-stopped"), toolConfig, out)
     withClue(s"$name --execute: ") {
@@ -212,7 +216,10 @@ final class ReleasedRowsMigrationSpec extends AnyWordSpec with Matchers with Dyn
       executed.moved shouldBe dryRun.candidates.size.toLong
     }
     withClue(s"$name --verify: ") {
-      verify(direction ++ Seq("--verify", "--verify-timeout", "60"), toolConfig, out).verified shouldBe true
+      val verified = verify(direction ++ Seq("--verify", "--verify-timeout", "60"), toolConfig, out)
+      verified.notRows shouldBe 0
+      verified.scannedRows shouldBe dryRun.scannedRows
+      verified.verified shouldBe true
     }
     dryRun.candidates.map(_.persistenceId).toSet
   }
@@ -279,15 +286,18 @@ final class ReleasedRowsMigrationSpec extends AnyWordSpec with Matchers with Dyn
 
   // --- the scenario ------------------------------------------------------------------------------------------------
 
-  /** Writes with `writer`, moves forward, reads and changes with this code base, moves back, and reads and changes with
-    * the published 1.3.0. `forwardMovers` are the persistence ids whose rows the forward run moves.
+  /** Writes with `writer`, moves forward, reads and changes with `forwardReader` (this code base with the PlainText
+    * resolvers), moves back, and reads and changes with `reverseReader` (the published 1.3.0). `forwardMovers` are the
+    * persistence ids whose rows the forward run moves.
     */
   private def scenario(
       writer: Plugin,
       locale: Option[Locale],
       ids: Seq[String],
       forwardMovers: Set[String],
-      reverseMovers: Set[String]
+      reverseMovers: Set[String],
+      forwardReader: Plugin = current,
+      reverseReader: Plugin = released("1.3.0")
   ): Unit = {
     deleteTable()
     createTable()
@@ -313,14 +323,14 @@ final class ReleasedRowsMigrationSpec extends AnyWordSpec with Matchers with Dyn
     shapes(journalTableName) shouldBe journalShapes
     shapes(snapshotTableName) shouldBe snapshotShapes
 
-    drive(current, locale, "read,mutate,read", ids) shouldBe written(ids) ++ mutatedOnce(ids)
+    drive(forwardReader, locale, "read,mutate,read", ids) shouldBe written(ids) ++ mutatedOnce(ids)
     // The rows that this code base wrote have the names and the types of the rows of the release.
     shapes(journalTableName) shouldBe journalShapes
     shapes(snapshotTableName) shouldBe snapshotShapes
 
     migrateBothKeepingValues(locale, reverse = true) shouldBe ((reverseMovers, reverseMovers))
 
-    drive(released("1.3.0"), locale, "read,mutate,read", ids) shouldBe mutatedOnce(ids) ++ mutatedTwice(ids)
+    drive(reverseReader, locale, "read,mutate,read", ids) shouldBe mutatedOnce(ids) ++ mutatedTwice(ids)
     shapes(journalTableName) shouldBe journalShapes
     shapes(snapshotTableName) shouldBe snapshotShapes
   }
@@ -338,6 +348,21 @@ final class ReleasedRowsMigrationSpec extends AnyWordSpec with Matchers with Dyn
     "move under the locale ar-EG, whose digits the keys hold, when the tools run with the same locale" in {
       val pids = ids("arab")
       scenario(released("1.3.0"), Some(Arabic), pids, Set(pids(2)), Set(pids(2)))
+    }
+  }
+
+  "the rows that the published 1.4.0 wrote with its default resolvers" should {
+    "move forward, stay readable and writable by the published 1.4.0 with the PlainText resolvers, and move back" in {
+      val pids = ids("v140")
+      scenario(
+        released("1.4.0"),
+        None,
+        pids,
+        Set(pids(2)),
+        Set(pids(2)),
+        forwardReader = released("1.4.0", plainText = true),
+        reverseReader = released("1.4.0")
+      )
     }
   }
 

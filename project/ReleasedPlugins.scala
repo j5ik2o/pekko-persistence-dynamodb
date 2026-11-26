@@ -12,7 +12,7 @@ import sbt.librarymanagement.{ ModuleDescriptorConfiguration, UnresolvedWarningC
   */
 object ReleasedPlugins {
 
-  val versions: Seq[String] = Seq("1.0.59", "1.3.0")
+  val versions: Seq[String] = Seq("1.0.59", "1.3.0", "1.4.0")
 
   def property(version: String): String = s"pekko-persistence-dynamodb.released-classpath.$version"
 

@@ -140,6 +140,7 @@ journal と snapshot の表の行の、主キー（`pkey`, `skey`）だけを変
 | `--reverse` は、1.3.0 がキーを作れるときに 1.3.0 のキーへ `Move`、作れなければ `Unmovable`。自分自身のキーへは動かない | 同上 | 同上 |
 | #831 の行は両方向で、両形式が与えるキーへ移る。ゼロの無い番号は認めない | `KeyMigrationPlanSpec`、`ReleasedKeysSpec` | `Plain123` など固定の id |
 | 公開版が書いたキー（1.0.2〜1.0.59、1.3.0） | `ReleasedKeysSpec` | 固定値。区切り `-`、shard 数 1024 と 64 |
+| 公開版の JAR（1.0.59、1.3.0、1.4.0）が実際に書いた行を、順方向と逆向きに移した後も、プラグインが replay・最高番号・snapshot の読み出し・削除・書き込みを正しく行う。移動の前後で、キー以外の属性の値は変わらない | `ReleasedRowsMigrationSpec` | 区切りが0・1・2個の id を1つずつ。イベント3件、ソフト削除1件、snapshot 1件。1.3.0 は ar-EG のロケールでも試す |
 | 長さの境界（2,048 バイトと 1,024 バイト）とハッシュの形 | `KeyMigrationSpec`、`KeyMigrationPlanSpec` | `あ`、`€` を並べた固定の id |
 
 ほかは例によるテスト（`KeyMigrationSpec` 約40件、`JournalKeyMigrationSpec` 約20件）で、1回の実行、順序つきの移動、循環、ふさがれた行、まとめ（journal、snapshot）、応答の消失、途中停止（停止点は1つか2つ）、ほかの書き手の兆候、`--verify` の各条件を確かめている。
@@ -222,7 +223,7 @@ Quint のキーは文字列の名前で、リゾルバの計算はしない。�
 - GSI の結果整合。`--verify` の一致は見た時点のもの。2回の一致を間を空けて取ることをドキュメントは勧めるが、遅れが無いことの証明にはならない。DynamoDB がインデックスを更新する時間は測っていない。本体のモデル（`keyMigration.qnt`）のインデックスは、キーごとに古い値から新しい値へ一度だけ変わる（単調）。読むたびに古い値と新しい値が入れ替わる読み取りは、本体のモデルには入れていない。書き手のモデル（`keyMigrationWriters.qnt`）の `staleReads` では、読み取りがインデックスの持ったことのあるどの値でも返しうる（単調でない）。8.5 の `initGStale` がこれを扱う。
 - JournalHead を有効にしていれば、復旧で番号を取り違えた上書きは起きない（ドキュメント）。無効なら起きる。書き込み側の守りは [#1026](https://github.com/j5ik2o/pekko-persistence-dynamodb/issues/1026) で追っている。
 - DAX。ツールは DAX を通らない（v2 のクライアントを作り直す）。アプリは起動前に DAX の項目キャッシュとクエリキャッシュを捨てる必要がある。DAX では測っていない。
-- DynamoDB Local でしか測っていない。公開版の JAR が書いた行での試験は [#1032](https://github.com/j5ik2o/pekko-persistence-dynamodb/issues/1032) と [#1027](https://github.com/j5ik2o/pekko-persistence-dynamodb/issues/1027)。
+- DynamoDB Local でしか測っていない。公開版の JAR が書いた行での試験（`ReleasedRowsMigrationSpec`、[#1032](https://github.com/j5ik2o/pekko-persistence-dynamodb/issues/1032)、[#1027](https://github.com/j5ik2o/pekko-persistence-dynamodb/issues/1027)）では、キーを共有する id の組、JournalHead、タグ、ハード削除、1.0.60〜1.2.0 を扱っていない。
 - 二重起動を防ぐ仕組みは無い（5節）。
 - 循環は手で解く。ツールは入れ替えない。
 
