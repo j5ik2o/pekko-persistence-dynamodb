@@ -5,13 +5,53 @@
 After the owner approves a release, confirm that the selected commit's CI has passed, then create the tag and GitHub release from that exact commit:
 
 ```bash
-git ls-remote --tags origin "refs/tags/v1.2.0" "refs/tags/v1.2.0^{}"
-gh release create v1.2.0 --target <SHA> --generate-notes
+git ls-remote --tags origin "refs/tags/v1.4.0" "refs/tags/v1.4.0^{}"
+gh release create v1.4.0 --target <SHA> --generate-notes
 ```
 
-Replace `v1.2.0` and `<SHA>` with the approved version and commit. If the lookup returns no rows, continue. For a lightweight tag, compare the SHA on its row with `<SHA>`; for an annotated tag, compare the SHA on the `^{}` row. Continue only on a match; otherwise stop. `--target` selects the commit only when `gh release create` creates a missing tag. Confirm that the `publish` workflow succeeds. Tag pushes publish the artifacts to Maven Central automatically. After the new version is on Maven Central, set `mimaPreviousVersion` in `build.sbt` to that version in a pull request, and remove the `mimaBinaryIssueFilters` entries for changes that the new version contains. MiMa in CI compares each published module with that version, so do not set it before the artifacts resolve.
+Replace `v1.4.0` and `<SHA>` with the approved version and commit. If the lookup returns no rows, continue. For a lightweight tag, compare the SHA on its row with `<SHA>`; for an annotated tag, compare the SHA on the `^{}` row. Continue only on a match; otherwise stop. `--target` selects the commit only when `gh release create` creates a missing tag. Confirm that the `publish` workflow succeeds. Tag pushes publish the artifacts to Maven Central automatically. After the new version is on Maven Central, set `mimaPreviousVersion` in `build.sbt` to that version in a pull request, and remove the `mimaBinaryIssueFilters` entries for changes that the new version contains. MiMa in CI compares each published module with that version, so do not set it before the artifacts resolve.
 
-## Unreleased
+## 1.4.0
+
+```{admonition} Experimental key format and key migration tools; the defaults do not change
+:class: warning
+
+1.4.0 adds a new key format (the `PlainText` key resolvers) and the key migration tools that move the rows of 1.3.0 to
+it. Both are experimental.
+
+The defaults are those of 1.3.0. If you do not change your configuration, the keys and the stored rows stay as they are,
+byte for byte, and no extra request is sent. This also holds when your configuration names the resolvers of 1.3.0,
+`PartitionKeyResolver$PersistenceIdBased` and `SortKeyResolver$PersistenceIdWithSeqNr`, explicitly. The other settings
+keep their names.
+
+If you select the new resolvers and migrate, note these limits:
+
+- The migration is offline. Every application that writes to or recovers from the tables must be stopped while it
+  runs; `--execute` requires `--writers-stopped`.
+- A move reaches DynamoDB Streams and Kinesis Data Streams as an insert and a remove, which a consumer can receive in
+  either order, also after it resumes; a consumer identifies the events by `persistenceId` and sequence number, or
+  rebuilds its data from the table. With a global table, run `--verify` in every region, compare its numbers of rows
+  with the region that ran the tools, and wait for the replication, before the application starts in any.
+- The `persistence-id` index is eventually consistent, so `--verify` only says that the rows matched when it checked
+  them. {ref}`Before you start the application <key-migration-restart>` says what to do before the application starts.
+- The resolvers and the tools were measured on DynamoDB Local only. They were not measured on DynamoDB in AWS or with
+  DAX.
+- No test has moved rows that the published JARs actually wrote. The keys of the releases are checked as fixed values
+  that the key functions of the published sources give.
+- With the JournalHead disabled (the default), stopping the application and running `--verify` twice, some minutes
+  apart, lowers the risk that a recovery replaces a moved event, and does not remove it (#1026). The journal tool warns
+  about it at the start.
+
+{ref}`Moving the old rows <key-migration>` gives the steps. The follow-up work is tracked in
+[#1026](https://github.com/j5ik2o/pekko-persistence-dynamodb/issues/1026) (a guard on the write side against stale
+reads of the index), [#1027](https://github.com/j5ik2o/pekko-persistence-dynamodb/issues/1027) (a test with rows that
+the published JARs wrote), [#1028](https://github.com/j5ik2o/pekko-persistence-dynamodb/issues/1028) (the output and
+the argument checks of the tools), and [#1014](https://github.com/j5ik2o/pekko-persistence-dynamodb/issues/1014) (the
+key format and the migration).
+
+The 13 published modules are binary compatible with 1.3.0. MiMa against the 1.3.0 artifacts on Maven Central found no
+problem in them for Scala 2.12, 2.13, and 3.
+```
 
 ### Experimental: resolvers that give every persistence id a key of its own
 
@@ -20,8 +60,9 @@ in 1.3.0, byte for byte, and no extra request is sent. This holds for the defaul
 `PartitionKeyResolver$PersistenceIdBased` and `SortKeyResolver$PersistenceIdWithSeqNr` explicitly, as the examples of
 1.3.0 did.
 
-The new `PartitionKeyResolver$PlainTextPersistenceIdBased` and `SortKeyResolver$PlainTextPersistenceIdWithSeqNr`
-(journal and snapshot) split a `persistenceId` at the first `persistence-id-separator`, matched as plain text (#1009,
+The new `PartitionKeyResolver$PlainTextPersistenceIdBased` and `SortKeyResolver$PlainTextPersistenceIdWithSeqNr`, one
+pair in `com.github.j5ik2o.pekko.persistence.dynamodb.journal` and one in
+`com.github.j5ik2o.pekko.persistence.dynamodb.snapshot`, split a `persistenceId` at the first `persistence-id-separator`, matched as plain text (#1009,
 #1014). You select them by these class names. Two `persistenceId`s no
 longer get the same key, so the `persistenceId`s that fail with `KeyConflict` in 1.3.0 because they share a key can be
 written, and so can `persistenceId`s that 1.3.0 could not write at all, such as `order-` or any `persistenceId` with the
@@ -44,21 +85,30 @@ These resolvers are experimental. {ref}`The new key format <key-format-change>` 
 
 ### Experimental: key migration tools for the rows of 1.3.0
 
-`JournalKeyMigration` (`journal-v2`) and `SnapshotKeyMigration` (`snapshot-v2`) move the journal and snapshot rows
+`com.github.j5ik2o.pekko.persistence.dynamodb.journal.migration.JournalKeyMigration` (`journal-v2`) and
+`com.github.j5ik2o.pekko.persistence.dynamodb.snapshot.migration.SnapshotKeyMigration` (`snapshot-v2`), each run by its
+`main`, move the journal and snapshot rows
 that 1.3.0 wrote to the keys of the PlainText resolvers (#1014). You need them only after you select those resolvers;
 with the default resolvers the keys do not change. The migration is offline: `--execute` requires
 `--writers-stopped`, and every application that writes to or recovers from the tables must be stopped while it runs,
 because the `persistence-id` index is updated asynchronously. Both tools run as a dry-run unless you pass `--execute`, move each
 row in one `TransactWriteItems` (a conditional `Put` under the new key and a conditional `Delete` under the old key),
 and can be run again after a stop. `--reverse` moves the rows back to the keys of 1.3.0 before a rollback, and lists the
-rows that cannot go back. `--max-rate`, `--parallelism`, `--segments`, and `--persistence-id` limit the run. `--execute` exits with 1 when a
+rows that cannot go back. `--max-rate`, `--parallelism`, `--segments`, and `--persistence-id` limit the run; `--max-rate` also paces each page of
+the scan and each read of the dry-run. Each tool warns at the start that it cannot check that the writers are stopped
+(with `--execute`), that it does not go through DAX (with a DAX `client-version`), and, for the journal, that the
+JournalHead is disabled. `--execute` exits with 1 when a
 selected row is left. `--verify` checks the whole table and its `persistence-id` index, comparing the rows of each persistence id as
-SHA-256 digests (a probabilistic comparison), and is
+sums of 128 bits of their SHA-256 digests (a probabilistic comparison), and is
 the check that the migration ends with; what it reports is what it observed, because the index is eventually
 consistent, and the documentation says what to do before the application starts (#1026 tracks a guard on the write
 side). The
 tools do not swap rows that hold each other's new keys, and do not merge copies of the same row whose contents differ;
-they list them. `--execute` also exits with 1 when it sees a sign of another writer. The rows
+they list them. When two rows need the same key, the one that the dry-run names gets it; when that row does not reach
+the key in a run (DynamoDB rejects it, or the tool gives up), the other row is not moved in that run, so a later run
+ends as one uninterrupted run would. An item without a `persistence-id` string or a whole `sequence-nr` is listed as an
+item that is not a row, and a move to its key is listed as blocked; `--verify` lists such items too, and does not
+match while the table holds one (#1035). `--execute` also exits with 1 when it sees a sign of another writer. The rows
 of issue #831 (`skey` is the sequence number alone in 19 digits, written up to 1.0.59) move too, also with the default resolvers. The dry-run lists the
 `persistenceId`s that shared keys in 1.3.0 with the sequence numbers that have no row, which may be events that were
 replaced up to 1.2.0; the tools cannot restore them. {ref}`Moving the old rows <key-migration>` gives the steps and the

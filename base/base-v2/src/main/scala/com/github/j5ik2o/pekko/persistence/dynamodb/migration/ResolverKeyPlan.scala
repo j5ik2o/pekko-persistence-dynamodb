@@ -98,7 +98,7 @@ private[dynamodb] object MigrationOptions {
 
   val usage: String =
     "options: [--execute --writers-stopped] [--reverse] [--progress] [--persistence-id <id>]... [--segments <n>] " +
-    "[--parallelism <n>] [--max-rate <rows per second>] [--scan-page-size <items>], or " +
+    "[--parallelism <n>] [--max-rate <rows, scan pages, and reads per second>] [--scan-page-size <items>], or " +
     "--verify [--reverse] [--verify-timeout <seconds>] [--segments <n>] [--max-rate <requests per second>]"
 
   /** The tool moves rows only while nothing else writes to or recovers from the table (issue #1014). */

@@ -857,6 +857,31 @@ final class KeyMigrationSpec extends AnyWordSpec with Matchers with DynamoDBCont
       report.verified shouldBe false
     }
 
+    "fail while the index still shows an item that is not a row after the table removed it (review of #1036)" in {
+      // A@1 and A@2 with an item of sequence-nr 1.5 between them, removed from the table; the index still shows it.
+      val table = newTable(index = true)
+      putRow(table, k(1), "A", 1)
+      putRow(table, k(2), "A", 2)
+      val ghost = Map(
+        "pkey"           -> s("p9"),
+        "skey"           -> s("s9"),
+        "persistence-id" -> s("A"),
+        "sequence-nr"    -> AttributeValue.builder().n("1.5").build(),
+        "deleted"        -> b(false)
+      ).asJava
+      val c = hooked(
+        indexScan = r => r.toBuilder.items((r.items().asScala :+ ghost).asJava).build(),
+        query = r =>
+          if (r.expressionAttributeValues().values().asScala.head.s() == "A")
+            Some(QueryResponse.builder().items((allRows(table).map(_.asJava) :+ ghost).asJava).build())
+          else None
+      )
+      val report = verify(table, plan(), c)
+      report.indexMismatch shouldBe Seq("A")
+      report.verified shouldBe false
+      verify(table, plan()).verified shouldBe true
+    }
+
     "check every persistence id, also those that an earlier run moved, after a lagging run and a filtered one" in {
       val table = newTable(index = true)
       putRow(table, k(1), "A", 1)
@@ -948,6 +973,391 @@ final class KeyMigrationSpec extends AnyWordSpec with Matchers with DynamoDBCont
       an[IllegalArgumentException] should be thrownBy MigrationOptions.parse(Seq("--verify-timeout", "1"))
       an[IllegalArgumentException] should be thrownBy MigrationOptions.parse(Seq("--verify", "--verify-timeout", "0"))
       MigrationOptions.parse(Seq("--verify", "--verify-timeout", "1")).verify.map(_.timeout) shouldBe Some(1.second)
+    }
+
+    def putItem(table: String, key: StoredKey, attributes: Map[String, AttributeValue]): Unit = {
+      client.putItem(
+        PutItemRequest
+          .builder().tableName(table).item(
+            (Map("pkey" -> s(key.partitionKey), "skey" -> s(key.sortKey)) ++ attributes).asJava
+          )
+          .build()
+      )
+      ()
+    }
+
+    "list an item that is not a row instead of stopping, and not pass while the table holds one (#1035)" in {
+      // The index has persistence-id (S) and sequence-nr (N) as its keys, so DynamoDB refuses an item that holds either
+      // of another type in an indexed table; those two cases run on a table without the index.
+      val others: Seq[(String, Boolean, Map[String, AttributeValue])] = Seq(
+        ("no persistence id and no sequence number", true, Map("note" -> s("written by hand"))),
+        ("no sequence number", true, Map("persistence-id" -> s("A"))),
+        ("no persistence id", true, Map("sequence-nr" -> n(1))),
+        (
+          "a sequence number beyond Long",
+          true,
+          Map("persistence-id" -> s("A"), "sequence-nr" -> AttributeValue.builder().n("99999999999999999999").build())
+        ),
+        (
+          "a fractional sequence number",
+          true,
+          Map("persistence-id" -> s("A"), "sequence-nr" -> AttributeValue.builder().n("1.5").build())
+        ),
+        ("a negative sequence number", true, Map("persistence-id" -> s("A"), "sequence-nr" -> n(-1))),
+        ("a persistence id number", false, Map("persistence-id" -> n(7), "sequence-nr" -> n(1))),
+        ("a sequence number string", false, Map("persistence-id" -> s("A"), "sequence-nr" -> s("1")))
+      )
+      others.foreach { case (clue, indexed, attributes) =>
+        withClue(s"$clue: ") {
+          val table = newTable(index = indexed)
+          putRow(table, k(1), "A", 1)
+          putItem(table, k(9), attributes)
+          val report   = verify(table, plan())
+          val rendered = KeyVerification.render(report, "test", None).mkString("\n")
+          report.notRows shouldBe 1
+          report.scannedRows shouldBe 1
+          report.persistenceIds shouldBe 1
+          report.verified shouldBe false
+          rendered should include(s"an item that is not a row ${k(9)}")
+          rendered should include("[verify] not matched")
+          rendered should not include "@-1"
+          if (indexed) {
+            // The rows match; only the item keeps the check from passing.
+            report.toMove shouldBe 0
+            report.notMovable shouldBe 0
+            report.indexProblems shouldBe empty
+            report.indexMismatch shouldBe empty
+            report.indexErrors shouldBe empty
+            report.stoppedBy shouldBe empty
+            client.deleteItem(
+              DeleteItemRequest
+                .builder().tableName(table).key(Map("pkey" -> s("p9"), "skey" -> s("s9")).asJava).build()
+            )
+            verify(table, plan()).verified shouldBe true
+          }
+        }
+      }
+    }
+
+    "check the rows next to items that are not rows, and a table of such items alone (#1035)" in {
+      val table = newTable(index = true)
+      putRow(table, k(1), "A", 1, "sequence-nr" -> AttributeValue.builder().n("1.0").build()) // a row, as 1
+      putRow(table, k(2), "B", 1)
+      putItem(table, k(8), Map("persistence-id" -> s("B"), "sequence-nr" -> AttributeValue.builder().n("2.5").build()))
+      putItem(table, k(9), Map("note" -> s("written by hand")))
+      val mixed = verify(table, plan(("B", 1L) -> k(12)))
+      mixed.scannedRows shouldBe 2
+      mixed.notRows shouldBe 2
+      mixed.toMove shouldBe 1
+      mixed.indexMismatch shouldBe empty
+      mixed.verified shouldBe false
+
+      val alone = newTable(index = true)
+      putItem(alone, k(9), Map("note" -> s("written by hand")))
+      val report = verify(alone, plan())
+      report.scannedRows shouldBe 0
+      report.persistenceIds shouldBe 0
+      report.notRows shouldBe 1
+      report.verified shouldBe false
+    }
+
+    "list the keys of the items that are not rows apart from the rows to move, 20 of each (review of #1036)" in {
+      val table = newTable(index = true)
+      (1 to 25).foreach(i => putRow(table, k(i), s"P$i", 1))
+      (1 to 22).foreach(i => putItem(table, k(100 + i), Map("note" -> s("written by hand"))))
+      val report = verify(table, plan((1 to 25).map(i => (s"P$i", 1L) -> k(50 + i)): _*))
+      report.toMove shouldBe 25
+      report.notRows shouldBe 22
+      report.examples.count(_.startsWith("an item that is not a row")) shouldBe 20
+      report.examples.count(_.contains("should be under")) shouldBe 20
+    }
+
+    "report the moved rows after a run with --persistence-id, next to an item that is not a row (#1035)" in {
+      // The example of the review of #1033: the run moves A@1, and --verify then reports the index of A.
+      val table = newTable(index = true)
+      putRow(table, k(1), "A", 1)
+      putItem(table, k(9), Map("note" -> s("written by hand")))
+      val p = plan(("A", 1L) -> k(11))
+      run(journal(table), p, execute = true, settings = _.copy(persistenceIds = Some(Set("A")))).moved shouldBe 1
+      val report = verify(table, p)
+      report.scannedRows shouldBe 1
+      report.toMove shouldBe 0
+      report.indexMismatch shouldBe empty
+      report.notRows shouldBe 1
+      report.verified shouldBe false
+    }
+  }
+
+  // The regressions of the fixes before 1.4.0 (docs/design/key-migration-fix-before-1.4.0.md). Each fails on the code
+  // of main (a5d28a3d / edfce815) and passes after the fix.
+  "the fixes before 1.4.0" should {
+
+    /** A client whose TransactWriteItems that put a row of `failing` fail without writing, as under throttling. */
+    def failingMovesOf(
+        failing: String,
+        sent: AtomicInteger,
+        error: () => Throwable = () => SdkClientException.create("throttled")
+    ): DynamoDbClient =
+      Proxy
+        .newProxyInstance(
+          classOf[DynamoDbClient].getClassLoader,
+          Array(classOf[DynamoDbClient]),
+          new InvocationHandler {
+            override def invoke(proxy: Any, method: Method, args: Array[AnyRef]): AnyRef = {
+              args.headOption.foreach {
+                case r: TransactWriteItemsRequest
+                    if r
+                      .transactItems().asScala.exists(i =>
+                        Option(i.put()).exists(_.item().get("persistence-id").s() == failing)
+                      ) =>
+                  sent.incrementAndGet()
+                  throw error()
+                case _ =>
+              }
+              try method.invoke(client, Option(args).getOrElse(Array.empty[AnyRef]): _*)
+              catch { case e: InvocationTargetException => throw e.getCause }
+            }
+          }
+        )
+        .asInstanceOf[DynamoDbClient]
+
+    def ownersOf(table: String): Set[(String, String)] =
+      allRows(table).map(r => r("skey").s() -> r("persistence-id").s()).toSet
+
+    "keep a shared target key for its winner when the tool gives up on the winner, so that the next run ends as one uninterrupted run (C-F1)" in {
+      // A and B need key 9 (two ids that share their key of 1.3.0, with --reverse); A has the smaller stored key.
+      val p = plan(("A", 1L) -> k(9), ("B", 1L) -> k(9))
+      // The reference: one run without faults gives key 9 to A and lists B.
+      val reference = newTable()
+      putRow(reference, k(1), "A", 1)
+      putRow(reference, k(2), "B", 1)
+      run(journal(reference), p, execute = true).remaining.map(_._1.persistenceId) shouldBe Seq("B")
+      ownersOf(reference) shouldBe Set("s9" -> "A", "s2" -> "B")
+
+      val table = newTable()
+      putRow(table, k(1), "A", 1)
+      putRow(table, k(2), "B", 1)
+      val sent = new AtomicInteger()
+      // Run 1: every move of A fails for a while, and the tool gives up on A after its attempts.
+      val first =
+        run(journal(table), p, execute = true, c = failingMovesOf("A", sent), settings = _.copy(maxAttempts = 2))
+      sent.get() shouldBe 2
+      first.incomplete shouldBe true
+      // Key 9 stays free for A: B is not moved in the run that gave up on A, and both are listed.
+      owner(table, k(9)) shouldBe None
+      ownersOf(table) shouldBe Set("s1" -> "A", "s2" -> "B")
+      first.remaining.map(_._1.persistenceId).toSet shouldBe Set("A", "B")
+      // Run 2, without faults, ends as the reference.
+      val second = run(journal(table), p, execute = true)
+      second.remaining.map(_._1.persistenceId) shouldBe Seq("B")
+      ownersOf(table) shouldBe ownersOf(reference)
+    }
+
+    "keep a shared target key for its winner when DynamoDB rejects the winner, in every run (C-F1, R3)" in {
+      val p     = plan(("A", 1L) -> k(9), ("B", 1L) -> k(9))
+      val table = newTable()
+      putRow(table, k(1), "A", 1)
+      putRow(table, k(2), "B", 1)
+      // DynamoDB rejects every move of A, as it rejects an item beyond 400 KB under the target key.
+      def rejecting = failingMovesOf(
+        "A",
+        new AtomicInteger(),
+        () =>
+          DynamoDbException
+            .builder()
+            .message("Item size has exceeded the maximum allowed size")
+            .awsErrorDetails(
+              software.amazon.awssdk.awscore.exception.AwsErrorDetails
+                .builder().errorCode("ValidationException").errorMessage(
+                  "Item size has exceeded the maximum allowed size"
+                )
+                .build()
+            )
+            .build()
+      )
+      (1 to 2).foreach { n =>
+        withClue(s"run $n: ") {
+          val report  = run(journal(table), p, execute = true, c = rejecting)
+          val reasons = report.remaining.map { case (c, reason) => c.persistenceId -> reason }.toMap
+          reasons.keySet shouldBe Set("A", "B")
+          reasons("A") should include("DynamoDB rejected the request")
+          reasons("B") should include("kept for A@1")
+          ownersOf(table) shouldBe Set("s1" -> "A", "s2" -> "B")
+        }
+      }
+    }
+
+    "pace the pages of the scan and every read of a dry-run with --max-rate (C-F3)" in {
+      val table = newTable()
+      // A and B have copies under both keys, so the dry-run also reads both copies to compare them.
+      putRow(table, k(1), "A", 1)
+      putRow(table, k(11), "A", 1)
+      putRow(table, k(2), "B", 1)
+      putRow(table, k(12), "B", 1)
+      // D has two copies that need the free key 19, so the dry-run also reads the copy of the other candidate.
+      putRow(table, k(3), "D", 1)
+      putRow(table, k(4), "D", 1)
+      (5 to 6).foreach(i => putRow(table, k(i), s"C$i", 1))
+      val sentAt = new java.util.concurrent.ConcurrentLinkedQueue[java.lang.Long]()
+      val timed = Proxy
+        .newProxyInstance(
+          classOf[DynamoDbClient].getClassLoader,
+          Array(classOf[DynamoDbClient]),
+          new InvocationHandler {
+            override def invoke(proxy: Any, method: Method, args: Array[AnyRef]): AnyRef = {
+              if (method.getName == "scan" || method.getName == "getItem") sentAt.add(System.nanoTime())
+              try method.invoke(client, Option(args).getOrElse(Array.empty[AnyRef]): _*)
+              catch { case e: InvocationTargetException => throw e.getCause }
+            }
+          }
+        )
+        .asInstanceOf[DynamoDbClient]
+      val rate = 5.0 // one request every 200 ms
+      val report = run(
+        journal(table),
+        plan(("A", 1L) -> k(11), ("B", 1L) -> k(12), ("D", 1L) -> k(19)),
+        execute = false,
+        c = timed,
+        settings = _.copy(maxRate = Some(rate), scanPageSize = Some(2), parallelism = 1)
+      )
+      report.duplicates should have size 3
+      val times = sentAt.asScala.toVector.map(_.longValue()).sorted
+      // the pages of the scan, the target checks of the 4 candidates, and the reads that compare the copies: both
+      // copies of A and of B, and the copy of D, the target key of D, and the copy of the other candidate of D
+      times.size should be >= 4 + 4 + 7
+      // Each request takes its own slot, so the last one is sent at least (n - 1) intervals after the first, however
+      // late a request is. A request without a slot shortens that by one interval; 100 ms leave room for the first.
+      val elapsedMillis = (times.last - times.head) / 1000000L
+      elapsedMillis should be >= ((times.size - 1) * 1000 / rate).toLong - 100
+      // With one move at a time, a request waits for its slot after the one before it returned, so two requests are at
+      // least about one interval apart; a request without a slot follows the one before it within milliseconds. Half
+      // the interval leaves room for a pause of the JVM between the slot and the request.
+      val gaps = times.zip(times.tail).map { case (a, b) => (b - a) / 1000000L }
+      all(gaps) should be >= (1000 / rate / 2).toLong
+    }
+
+    "block a move whose target key holds an item without a persistence id or sequence number, in the dry-run and in --execute alike (C-F4)" in {
+      val table = newTable()
+      putRow(table, k(1), "A", 1)
+      // An item that no plugin wrote: the keys only.
+      client.putItem(
+        PutItemRequest
+          .builder()
+          .tableName(table)
+          .item(Map("pkey" -> s("p9"), "skey" -> s("s9"), "note" -> s("written by hand")).asJava)
+          .build()
+      )
+      val p   = plan(("A", 1L) -> k(9))
+      val dry = run(journal(table), p, execute = false)
+      dry.directMoves shouldBe 0
+      dry.blocked.map(_.candidate.persistenceId) shouldBe Seq("A")
+      dry.unmovable.map(_.stored) shouldBe Seq(k(9))
+      val sent   = new AtomicInteger()
+      val report = run(journal(table), p, execute = true, c = hooked(before = _ => { sent.incrementAndGet(); () }))
+      report.moved shouldBe 0
+      report.remaining.map(_._1.persistenceId) shouldBe Seq("A")
+      report.remaining.head._2 should not include "gave up"
+      sent.get() shouldBe 1 // one refused transaction, not one per attempt
+      report.incomplete shouldBe true
+      rowAt(table, k(1)).flatMap(_.get("persistence-id")) shouldBe Some(s("A"))
+      rowAt(table, k(9)).flatMap(_.get("note")) shouldBe Some(s("written by hand"))
+    }
+
+    "list the rows that need the target key of a winner that the target blocks as blocked by the same row or item, in the dry-run and in --execute alike (C-F4)" in {
+      // A@1 has two copies and B@1 one, and all three need key 9, which holds X@1 (it does not move) or an item.
+      Seq[(String, Map[String, AttributeValue])](
+        "a row"   -> Map("persistence-id" -> s("X"), "sequence-nr" -> n(1)),
+        "an item" -> Map("note" -> s("written by hand"))
+      ).foreach { case (clue, attributes) =>
+        withClue(s"$clue: ") {
+          val table = newTable()
+          putRow(table, k(1), "A", 1)
+          putRow(table, k(2), "A", 1)
+          putRow(table, k(3), "B", 1)
+          client.putItem(
+            PutItemRequest
+              .builder().tableName(table).item((Map("pkey" -> s("p9"), "skey" -> s("s9")) ++ attributes).asJava)
+              .build()
+          )
+          val p   = plan(("A", 1L) -> k(9), ("B", 1L) -> k(9), ("X", 1L) -> k(9))
+          val dry = run(journal(table), p, execute = false)
+          dry.duplicates shouldBe empty
+          dry.blocked.map(b => b.candidate.from -> b.occupantPersistenceId).toSet shouldBe
+          Set(k(1), k(2), k(3)).map(_ -> (if (clue == "a row") "X" else ""))
+          val report = run(journal(table), p, execute = true)
+          report.moved shouldBe 0
+          report.merged shouldBe 0
+          report.remaining.map(_._1.from).toSet shouldBe Set(k(1), k(2), k(3))
+          all(report.remaining.map(_._2)) should include(if (clue == "a row") "holds X@1" else "not a row")
+        }
+      }
+    }
+
+    "treat an item whose persistence id or sequence number is of another type or out of range as an item that is not a row, with or without --persistence-id (C-F4, R2)" in {
+      val others: Seq[(String, Map[String, AttributeValue])] = Seq(
+        "a sequence number beyond Long" -> Map(
+          "persistence-id" -> s("X"),
+          "sequence-nr"    -> AttributeValue.builder().n("99999999999999999999").build()
+        ),
+        "a fractional sequence number" -> Map(
+          "persistence-id" -> s("X"),
+          "sequence-nr"    -> AttributeValue.builder().n("1.5").build()
+        ),
+        "a negative sequence number" -> Map("persistence-id" -> s("X"), "sequence-nr" -> n(-1)),
+        "a persistence id number"    -> Map("persistence-id" -> n(7), "sequence-nr" -> n(1)),
+        "a sequence number string"   -> Map("persistence-id" -> s("X"), "sequence-nr" -> s("1"))
+      )
+      others.foreach { case (clue, attributes) =>
+        withClue(s"$clue: ") {
+          val table = newTable()
+          putRow(table, k(1), "A", 1)
+          client.putItem(
+            PutItemRequest
+              .builder().tableName(table).item((Map("pkey" -> s("p9"), "skey" -> s("s9")) ++ attributes).asJava)
+              .build()
+          )
+          val p   = plan(("A", 1L) -> k(9))
+          val dry = run(journal(table), p, execute = false)
+          dry.blocked.map(b => (b.candidate.persistenceId, b.outsideSelection)) shouldBe Seq("A" -> false)
+          dry.unmovable.map(_.stored) shouldBe Seq(k(9))
+          KeyMigration.render(dry, "test").mkString("\n") should not include "@-1"
+          // With --persistence-id the item is counted but not listed, and no id that is selected makes it move.
+          val selected = run(journal(table), p, execute = false, settings = _.copy(persistenceIds = Some(Set("A"))))
+          selected.blocked.map(b => (b.candidate.persistenceId, b.outsideSelection)) shouldBe Seq("A" -> false)
+          selected.unmovable shouldBe empty
+          val rendered = KeyMigration.render(selected, "test").mkString("\n")
+          rendered should include("is blocked by an item that is not a row")
+          rendered should not include "outside --persistence-id"
+          rendered should not include "@-1"
+          val sent   = new AtomicInteger()
+          val report = run(journal(table), p, execute = true, c = hooked(before = _ => { sent.incrementAndGet(); () }))
+          report.moved shouldBe 0
+          report.remaining.map(_._1.persistenceId) shouldBe Seq("A")
+          report.remaining.head._2 should include("not a row")
+          sent.get() shouldBe 1
+          rowAt(table, k(1)).flatMap(_.get("persistence-id")) shouldBe Some(s("A"))
+          rowAt(table, k(9)).map(_ -- Seq("pkey", "skey")) shouldBe Some(attributes)
+        }
+      }
+    }
+
+    "read a sequence number as the plugin does: 1.0 is the row of sequence number 1, and a snapshot of sequence number 0 is a row (R2)" in {
+      val table = newTable()
+      putRow(table, k(1), "A", 1, "sequence-nr" -> AttributeValue.builder().n("1.0").build())
+      // A snapshot saved before the first event has the sequence number 0.
+      putRow(table, k(2), "S", 0)
+      val p   = plan(("A", 1L) -> k(11), ("S", 0L) -> k(12))
+      val dry = run(snapshots(table), p, execute = false)
+      dry.unmovable shouldBe empty
+      dry.candidates.map(c => c.persistenceId -> c.sequenceNr).toSet shouldBe Set("A" -> 1L, "S" -> 0L)
+      dry.directMoves shouldBe 2
+      val report = run(snapshots(table), p, execute = true)
+      report.moved shouldBe 2
+      report.remaining shouldBe empty
+      rowAt(table, k(11)).flatMap(_.get("persistence-id")) shouldBe Some(s("A"))
+      owner(table, k(12)) shouldBe Some("S" -> 0L)
+      rowAt(table, k(1)) shouldBe None
+      rowAt(table, k(2)) shouldBe None
     }
   }
 
