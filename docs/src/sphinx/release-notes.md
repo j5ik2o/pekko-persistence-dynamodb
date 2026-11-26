@@ -21,7 +21,9 @@ Replace `v1.4.0` and `<SHA>` with the approved version and commit. If the lookup
   longer counts a copy as merged when the row that its target waits for does not move, or a row as moved after a
   row that stays because its copy under the target key has other contents. Without a rejection of DynamoDB (400 KB)
   or a row that the tool gives up, it gives the rows that `--execute` moves, merges, and leaves; with them,
-  `--execute` moves fewer. The dry-run reads each target key once, so it sends fewer `GetItem` requests. `--execute`
+  `--execute` moves fewer. The dry-run checks each target key once, however many rows need it (it used to check it once for each of
+  them); a copy of the same row under a target key is still read again to compare the two copies, one request for
+  each copy. `--execute`
   no longer groups every pending row again in each round, so a run where many rows need one key (such as a
   `--reverse` of many `persistenceId`s that share their key of 1.3.0) costs about one step per row.
 - Binary compatibility of `pekko-persistence-dynamodb-base-v2` (#1044): the classes
