@@ -935,18 +935,20 @@ module keyMigration {
   val wConflict: bool = STORES.exists(st => outcomeSeen(tools.get(st), o => o == Conflict))
   val wRejected: bool = STORES.exists(st => outcomeSeen(tools.get(st), o => o == Failed("rejected by DynamoDB")))
   val wGaveUp: bool = STORES.exists(st => tools.get(st).gaveUp)
-  /** C-F1: a reverse run gave up on a candidate of the shared target h130, from a start that holds both h and i. */
+  /** The run has two candidates for the target `k` (both of the shared pair are selected and need it). */
+  pure def sharedInRun(tool: Tool, k: Key): bool =
+    scanCandidates(tool.startTable, tool.params).filter(c => c.dst == k).size() >= 2
+
+  /** C-F1: a reverse run gave up on the winner of the shared target h130, with the other candidate in the run. */
   val wGaveUpShared: bool = STORES.exists(st => and {
     tools.get(st).params.dir == Reverse,
     tools.get(st).outcomes.exists(co => co._1.dst == "h130" and co._2 == Failed("gave up")),
-    presentRows(epochStart.get(st)).contains(("h", 1)),
-    presentRows(epochStart.get(st)).contains(("i", 1)),
+    sharedInRun(tools.get(st), "h130"),
   })
-  /** R3: DynamoDB rejected the winner of the shared target h130, from a start that holds both h and i. */
+  /** R3: DynamoDB rejected the winner of the shared target h130, with the other candidate in the run. */
   val wRejectedShared: bool = STORES.exists(st => and {
     tools.get(st).outcomes.exists(co => co._1.dst == "h130" and co._2 == Failed("rejected by DynamoDB")),
-    presentRows(epochStart.get(st)).contains(("h", 1)),
-    presentRows(epochStart.get(st)).contains(("i", 1)),
+    sharedInRun(tools.get(st), "h130"),
   })
   /** The clean run after a run that gave up, in the same epoch (review R6: `epochGaveUp`, not the start table). */
   val wCleanAfterGaveUp: bool = STORES.exists(st => tools.get(st).phase == Finished and not(tools.get(st).gaveUp) and tools.get(st).epochGaveUp)

@@ -58,7 +58,8 @@ module keyMigrationWriters {
   /**
    * Write (id, 1) under `key` with sameRowOrNone, after a recovery that saw no event in the index. With the
    * JournalHead (the PlainText node only), the recovery takes the larger of the index and the head item, which
-   * holds the event, so it writes the next sequence number instead and replaces nothing.
+   * holds the event, so it writes the next sequence number instead and replaces nothing. The model only disables
+   * the write with the same number; it does not model the write of the next number.
    */
   action recoverAndWrite(l: LRow, key: Key): bool = {
     val t = tables.get(Journal)

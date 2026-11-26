@@ -307,7 +307,7 @@ Quint のキーは文字列の名前で、リゾルバの計算はしない。�
 | :-- | :-- | :-- |
 | インデックスが単調に追いつく（`initG`） | `noLossW`、`noDuplicateW`、`deletedStayGone`、`verifySoundW` が成り立つ | 予想どおり（結果の文書） |
 | インデックスの読み取りが、前に持っていたどの値でも返しうる（`initGStale`、JournalHead 無効） | `--verify` が2回一致した後でも、復旧が移った行を上書きする（A1） | 予想どおり。決まった筋書き `staleReadAfterTwoMatchesTest` |
-| 同じ、JournalHead 有効（`initGStaleHead`、PlainText のノード） | 上書きは起きない（復旧が head の番号を読む） | 予想どおり。`staleReadWithHeadTest` |
+| 同じ、JournalHead 有効（`initGStaleHead`、PlainText のノード） | 上書きは起きない（復旧が head の番号を読む） | 予想どおり。`staleReadWithHeadTest`。モデルは同じ番号での書き込みを起こさないだけで、次の番号での書き込みは表していない |
 
 文書の「2回の一致は確率を下げるだけで、遅れが無いことの証明ではない」と、「JournalHead が有効なら、この上書きは起きない」は、このモデルの結果と合う。
 

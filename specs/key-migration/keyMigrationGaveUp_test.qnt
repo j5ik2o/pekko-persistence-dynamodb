@@ -77,19 +77,34 @@ module keyMigrationGaveUp_test {
         keep,
       })
 
-  // ---- Scenario 2 (C-F1, the trace of review C 4.2): run 1 stops after the next round, run 2 continues.
+  // ---- Scenario 2 (C-F1, the trace of review C 4.2): the run goes on after giving up, stops before it ends, and
+  // runs again. b and a move too, so the run has a round after the one that gave up on h.
+
+  pure val START2: Table = START.put("bP", row("b")).put("b130", row("a"))
+  pure val CLEAN_END2: Table = CLEAN_END.put("b130", row("b")).put("a130", row("a"))
+  pure val A: Cand = { id: "a", seq: 1, src: "b130", dst: "a130" }
 
   run stopThenRerunTest =
-    gaveUpOnH
-      .then(2.reps(_ => drive(Journal)))
-      .then(all { assert(withinReference), assert(wGaveUpShared), keep })
-      .then(if (tools.get(Journal).phase == Running) stop(Journal) else keep)
+    initWith(START2, false)
+      .then(startRun(Journal, REV))
+      .then(nextRound(Journal))
+      .then(all { assert(tools.get(Journal).round == Set(H, A)), keep })
+      .then(attemptOk(Journal, A))
+      .then(attemptTransient(Journal, H))
+      .then(attemptTransient(Journal, H))
+      .then(settle(Journal, H))
+      // the next round (b into b130, which a left); one attempt of it, and the process stops before the run ends
+      .then(nextRound(Journal))
+      .then(drive(Journal))
+      .then(all { assert(tools.get(Journal).phase == Running), assert(withinReference), assert(wGaveUpShared), keep })
+      .then(stop(Journal))
+      .then(all { assert(tools.get(Journal).phase == Idle), assert(withinReference), keep })
       .then(startRun(Journal, REV))
       .then(10.reps(_ => drive(Journal)))
       .then(all {
         assert(tools.get(Journal).phase == Finished),
         assert(converges),
-        assert(tables.get(Journal) == CLEAN_END),
+        assert(tables.get(Journal) == CLEAN_END2),
         keep,
       })
 

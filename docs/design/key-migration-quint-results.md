@@ -27,7 +27,7 @@ Quint 0.32.0、2026-11-26、Apple Silicon の手元の機械（ほかの作業�
 | テスト | 筋書き | 確かめること |
 | :-- | :-- | :-- |
 | `finishThenRerunTest`（O-F6） | h が2回とも書かずに失敗し、あきらめる。実行1を最後まで流し、流し直す | 実行1の後：`withinReference`、`finishedWithinReference`、表が起点のまま、残りが h と i。実行2の後：`converges`、`wCleanAfterGaveUp`、表が `{h130: h, iP: i}` |
-| `stopThenRerunTest`（C-F1） | 同じあきらめの後、2歩で止め、流し直す | 途中で `withinReference`、`wGaveUpShared`。最後に `converges` と表 |
+| `stopThenRerunTest`（C-F1） | b と a も動く表（`START2`）。h があきらめた後の次のラウンド（b を b130 へ）の途中で止め、流し直す | 止める前と後に `withinReference`、`wGaveUpShared`。最後に `converges` と表 `CLEAN_END2` |
 | `rejectedOnSharedTargetTest`（R3） | DynamoDB が h を h130 で拒否する（`rejectShared`）。実行1と、流し直しの実行2 | 2回とも：i が動かず、表が起点のまま、残りが h と i。`withinReference`、`finishedWithinReference`、`converges` |
 | `cleanRunTest` | 純粋な基準 | 拒否なしでは `{h130: h, iP: i}`、拒否ありでは起点のまま |
 
@@ -37,7 +37,7 @@ Quint 0.32.0、2026-11-26、Apple Silicon の手元の機械（ほかの作業�
 
 | 写し | `reserves` | 結果 |
 | :-- | :-- | :-- |
-| 直しの前の規則 | 常に偽（予約しない） | 4件とも落ちた。`finishThenRerunTest` と `stopThenRerunTest` は `assert(withinReference)`、`rejectedOnSharedTargetTest` は `assert(tables.get(Journal) == START)`（i が h130 に入った）、`cleanRunTest` は拒否ありの基準 |
+| 直しの前の規則 | 常に偽（予約しない） | 4件とも落ちた。`finishThenRerunTest` と `stopThenRerunTest` は `assert(withinReference)`（`stopThenRerunTest` は、次のラウンドで i が先に動いた試行で）、`rejectedOnSharedTargetTest` は `assert(tables.get(Journal) == START)`（i が h130 に入った）、`cleanRunTest` は拒否ありの基準 |
 | 案 A′（あきらめと `Gone` だけ予約） | `gave up`、`outcome unknown`、`Gone` | `rejectedOnSharedTargetTest` と `cleanRunTest` が落ちた。あきらめの2件は通った |
 
 `rejectedOnSharedTargetTest` が落ちるのは不変条件ではなく表の比較で、直しの前の規則では基準の実行も同じ規則で i を h130 に入れるので、モジュールの不変条件はどれもこの違いを見ない。違いは「dry-run の示す勝者と `--execute` の結果が合う」ことで、dry-run は仕様に入れていない（設計 8.4 の6、C-F8 で別件）。
@@ -73,8 +73,8 @@ Quint 0.32.0、2026-11-26、Apple Silicon の手元の機械（ほかの作業�
 
 | 条件 | 結果 |
 | :-- | :-- |
-| `init`、1,000 × 120、`--invariant safety` | 違反なし（112秒） |
-| `initSharedPair`、3,000 × 60、`--invariant safety` | 違反なし（61秒） |
+| `init`、1,000 × 120、`--invariant safety` | 違反なし（108秒） |
+| `initSharedPair`、3,000 × 60、`--invariant safety` | 違反なし（55秒） |
 | `init`、500 × 60、`--invariant idempotent` | 違反なし（20秒） |
 
 witness は、その経路をいくつのトレースが通ったかの数で、その経路を広く確かめたという意味ではない。
@@ -87,8 +87,8 @@ witness は、その経路をいくつのトレースが通ったかの数で、
 | `wConflict` | 311 | 0 |
 | `wRejected` | 729 | 707 |
 | `wGaveUp` | 13 | 34 |
-| `wGaveUpShared` | 2 | 22 |
-| `wRejectedShared` | 0 | 707 |
+| `wGaveUpShared` | 0 | 18 |
+| `wRejectedShared` | 0 | 702 |
 | `wCleanAfterGaveUp` | 2 | 5 |
 | `wProgress` | 487 | 2,034 |
 | `wFinishedAfterStop` | 33 | 134 |
@@ -97,8 +97,8 @@ witness は、その経路をいくつのトレースが通ったかの数で、
 | `wVerifyReverse` | 440 | 0 |
 | `wIndexLag` | 1,000 | 2,936 |
 
-- `wGaveUpShared` と `wCleanAfterGaveUp` は、レビュー R6 で定義を直した。`wGaveUpShared` は起点の表に h と i の両方があることを、`wCleanAfterGaveUp` は同じ起点の前の実行があきらめたこと（`epochGaveUp`）を条件にする。直す前の定義の数（設計 7.6）は、狙った経路より広いものを数えていた。
-- この2つが少ない一因は、`attemptOk` に試みの上限が無く、試みが上限に着いた後も成功しうること（C-F7、別件）。どちらの経路も決まった筋書きが必ず通す。
+- `wGaveUpShared` と `wCleanAfterGaveUp` は、レビュー R6 で定義を直した。`wGaveUpShared`（と `wRejectedShared`）はその実行の候補に h130 を求めるものが2つあること（`--persistence-id h` だけの実行は数えない、#1034 のレビュー）を、`wCleanAfterGaveUp` は同じ起点の前の実行があきらめたこと（`epochGaveUp`）を条件にする。直す前の定義の数（設計 7.6）は、狙った経路より広いものを数えていた。
+- `init` の 1,000 トレースは、共有の行き先であきらめる経路（`wGaveUpShared`）を一度も通らなかった。何でもありの表に頼ると見逃す経路で、`initSharedPair` と決まった筋書きで通している。この2つが少ない一因は、`attemptOk` に試みの上限が無く、試みが上限に着いた後も成功しうること（C-F7、別件）。どちらの経路も決まった筋書きが必ず通す。
 - `rejectShared`（DynamoDB が h を h130 で拒否する）は `initSharedPair` の4回に1回だけ真で、`init` では偽。`progress` と `roundTrip` の前提が「h は 1.3.0 のキーへ戻れる」だからで、`init` での `wRejectedShared` は 0。共有の行き先での拒否は、`initSharedPair` と `rejectedOnSharedTargetTest` で確かめた。
 
 `quint verify` は流していない。`fullRun` の範囲が定数でなく、Apalache が受け付けない（C-F7、別件）。
@@ -118,6 +118,8 @@ witness は、その経路をいくつのトレースが通ったかの数で、
 - `guardedStartTest`：両方の表を移し、インデックスが追いつき、`--verify` が2回一致した後に起動すると、どの読み取りも b を見るので、上書きは起きない。
 - `staleReadAfterTwoMatchesTest`：同じ手順の後でも、古い値を返す読み取りで復旧すると、移った b@1 を上書きする（A1）。文書の「2回の一致は確率を下げるだけで、遅れが無いことの証明ではない」と合う。
 - `staleReadWithHeadTest`：JournalHead が有効なら、同じ読み取りでも上書きは起きない。文書の「With the JournalHead enabled, … this replacement does not happen」と合う。
+
+JournalHead が有効なときのモデルは、PlainText のノードの復旧の書き込み（同じ番号での書き込み）を起こさないだけで、次の番号で正しく書けることは表していない。確かめたのは「head の番号を読む復旧は、移った行を同じ番号で上書きしない」ことまで。`staleReadWithHeadTest` も、起動の後に書き込みをしない（#1034 のレビュー）。
 
 ### 起動の条件の「その後にツールが走っていない」
 

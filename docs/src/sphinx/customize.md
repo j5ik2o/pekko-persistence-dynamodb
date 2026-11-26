@@ -329,8 +329,10 @@ application runs meanwhile:
 A move also reaches the consumers of DynamoDB Streams and of Kinesis Data Streams for DynamoDB, as an insert under the
 new key and a remove under the old key: two changes to two items. DynamoDB Streams keeps the order of the changes of
 one item only, and Kinesis Data Streams can deliver the changes out of order and more than once, so a consumer can
-receive the remove before the insert. Stop the consumers that treat a remove as the deletion of an event or a snapshot
-while the tools run, or let them skip a remove whose `persistenceId` and sequence number the table still holds.
+receive the remove before the insert. Stopping a consumer while the tools run does not help: when it resumes, it reads
+the removes from where it stopped. Let the consumers that treat a remove as the deletion of an event or a snapshot skip
+a remove whose `persistenceId` and sequence number the table still holds, or rebuild their data from the table after
+the migration.
 
 The tool cannot prevent these, so the migration is offline. `--execute` looks for some signs of another writer: a row
 that left its key without reaching the target key, a row that changed after the tool read it, or a target key that
@@ -443,7 +445,10 @@ the tool cannot bring them back.
 
 With a global table, run both tools against one region, and run `--verify` of both tools against the endpoint of every
 region before you start the application in any region. A transaction is atomic in the region that runs it; DynamoDB
-replicates its items one by one, so another region can show a move half applied while it replicates. A global table
+replicates its items one by one, so another region can show a move half applied while it replicates. `--verify` checks
+the keys of the rows that a region holds, not that every row reached it: a region where the remove under the old key
+arrived before the insert under the new key matches without that row. In each region, check also that `--verify`
+reports the same number of rows and of `persistenceId`s as in the region that ran the tools. A global table
 with multi-Region strong consistency does not take `TransactWriteItems`, so the tools cannot move its rows.
 
 The steps:
