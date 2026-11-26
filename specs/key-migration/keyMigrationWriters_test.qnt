@@ -2,7 +2,8 @@
 /**
  * The counterexamples of keyMigrationWriters.qnt as fixed traces: each takes only steps that the
  * model allows (the tool, the asynchronous index, the application), and ends in a state that breaks
- * the invariant named in the test. `quint test` passes when the invariant IS broken.
+ * the invariant named in the test. `quint test` passes when the invariant IS broken. The test of the Gone branch
+ * (`deleteBeforeAttemptGoneTest`) is the other way round: it passes when the invariants hold.
  */
 module keyMigrationWriters_test {
   import keyMigration.* from "./keyMigration"
@@ -80,6 +81,34 @@ module keyMigrationWriters_test {
       .then(tool(attemptOk(Journal, B_CAND)))       // the tool moves b130 -> bP
       .then(hardDeleteLegacy(("b", 1)))            // b130: nothing there any more
       .expect(not(deletedStayGone))
+
+  // ---- The Gone branch (these pass when the invariants HOLD)
+
+  pure val H_CAND: Cand = { id: "h", seq: 1, src: "hP", dst: "h130" }
+  pure val REV: Params = { dir: Reverse, form: FPlain, sel: IDS }
+
+  /** A hard delete removes h@1 after the scan of a --reverse run: h is Gone, h130 stays reserved, i is left. */
+  run deleteBeforeAttemptGoneTest =
+    initD
+      .then(tool(startRun(Journal, REV)))
+      .then(tool(nextRound(Journal)))
+      .then(all { assert(tools.get(Journal).round == Set(H_CAND)), keepAll })
+      .then(hardDeleteCurrent(("h", 1)))
+      .then(tool(attemptOk(Journal, H_CAND)))
+      .then(all {
+        assert(tools.get(Journal).outcomes == Set((H_CAND, Gone))),
+        assert(tools.get(Journal).reserved == Set("h130")),
+        assert(outcomesTruthful),
+        assert(reservedRespected),
+        keepAll,
+      })
+      .then(tool(nextRound(Journal)))
+      .expect(and {
+        tools.get(Journal).phase == Finished,
+        tools.get(Journal).remaining.map(c => c.id) == Set("i"),
+        tables.get(Journal) == START_D.keys().exclude(Set("hP")).mapBy(k => START_D.get(k)),
+        outcomesTruthful, reservedRespected, noLossW, noDuplicate,
+      })
 
   // ---- O-F3: the application that follows the documentation
 
