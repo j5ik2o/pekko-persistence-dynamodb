@@ -737,8 +737,14 @@ private[dynamodb] object KeyMigration {
       val successors: Map[Candidate, Either[Candidate, Occupant]] = occupants.map { case (c, occupant) =>
         val first = winners(c.to)
         if (first == c) c -> occupant
-        else if (c.persistenceId == first.persistenceId && c.sequenceNr == first.sequenceNr) c -> Right(SameRow)
-        else c -> Right(OtherRow(first.persistenceId, first.sequenceNr))
+        else
+          occupants(first) match {
+            // The target holds a row or an item that blocks the winner, and the key is not kept for it: --execute
+            // tries the others after it, and what the target holds blocks them too (or is their own row).
+            case Right(OtherRow(_, _)) | Right(OtherItem)                                        => c -> occupant
+            case _ if c.persistenceId == first.persistenceId && c.sequenceNr == first.sequenceNr => c -> Right(SameRow)
+            case _ => c -> Right(OtherRow(first.persistenceId, first.sequenceNr))
+          }
       }
       // Each candidate has at most one successor, the candidate whose row holds its target key.
       sealed trait Resolution

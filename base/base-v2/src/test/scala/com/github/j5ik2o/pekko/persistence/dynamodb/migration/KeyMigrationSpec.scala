@@ -1092,6 +1092,11 @@ final class KeyMigrationSpec extends AnyWordSpec with Matchers with DynamoDBCont
       // late a request is. A request without a slot shortens that by one interval; 100 ms leave room for the first.
       val elapsedMillis = (times.last - times.head) / 1000000L
       elapsedMillis should be >= ((times.size - 1) * 1000 / rate).toLong - 100
+      // With one move at a time, a request waits for its slot after the one before it returned, so two requests are at
+      // least about one interval apart; a request without a slot follows the one before it within milliseconds. Half
+      // the interval leaves room for a pause of the JVM between the slot and the request.
+      val gaps = times.zip(times.tail).map { case (a, b) => (b - a) / 1000000L }
+      all(gaps) should be >= (1000 / rate / 2).toLong
     }
 
     "block a move whose target key holds an item without a persistence id or sequence number, in the dry-run and in --execute alike (C-F4)" in {
@@ -1119,6 +1124,36 @@ final class KeyMigrationSpec extends AnyWordSpec with Matchers with DynamoDBCont
       report.incomplete shouldBe true
       rowAt(table, k(1)).flatMap(_.get("persistence-id")) shouldBe Some(s("A"))
       rowAt(table, k(9)).flatMap(_.get("note")) shouldBe Some(s("written by hand"))
+    }
+
+    "list the rows that need the target key of a winner that the target blocks as blocked by the same row or item, in the dry-run and in --execute alike (C-F4)" in {
+      // A@1 has two copies and B@1 one, and all three need key 9, which holds X@1 (it does not move) or an item.
+      Seq[(String, Map[String, AttributeValue])](
+        "a row"   -> Map("persistence-id" -> s("X"), "sequence-nr" -> n(1)),
+        "an item" -> Map("note" -> s("written by hand"))
+      ).foreach { case (clue, attributes) =>
+        withClue(s"$clue: ") {
+          val table = newTable()
+          putRow(table, k(1), "A", 1)
+          putRow(table, k(2), "A", 1)
+          putRow(table, k(3), "B", 1)
+          client.putItem(
+            PutItemRequest
+              .builder().tableName(table).item((Map("pkey" -> s("p9"), "skey" -> s("s9")) ++ attributes).asJava)
+              .build()
+          )
+          val p   = plan(("A", 1L) -> k(9), ("B", 1L) -> k(9), ("X", 1L) -> k(9))
+          val dry = run(journal(table), p, execute = false)
+          dry.duplicates shouldBe empty
+          dry.blocked.map(b => b.candidate.from -> b.occupantPersistenceId).toSet shouldBe
+          Set(k(1), k(2), k(3)).map(_ -> (if (clue == "a row") "X" else ""))
+          val report = run(journal(table), p, execute = true)
+          report.moved shouldBe 0
+          report.merged shouldBe 0
+          report.remaining.map(_._1.from).toSet shouldBe Set(k(1), k(2), k(3))
+          all(report.remaining.map(_._2)) should include(if (clue == "a row") "holds X@1" else "not a row")
+        }
+      }
     }
 
     "treat an item whose persistence id or sequence number is of another type or out of range as an item that is not a row, with or without --persistence-id (C-F4, R2)" in {
