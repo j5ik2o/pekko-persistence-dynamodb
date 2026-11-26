@@ -54,7 +54,7 @@ journal と snapshot の表の行の、主キー（`pkey`, `skey`）だけを変
 
 ### 2.3 dry-run（`dryRun`）
 
-書き込まない。候補ごとに行き先のキーを GetItem で読み、行き先を持つ行をたどって、直接移せる・別の移動の後・循環・同じ行の写し（まとめる）・ほかの id の動かない行にふさがれている・ふさがれた行を待つ、に分ける。同じ行き先を複数の候補が求めるときは、今のキーが最も小さいもの（`winnerOf`）が行き先を得る。写しの中身が違えば「まとめない」として一覧に出す。
+書き込まない。候補ごとに行き先のキーを GetItem で読み、行き先を持つ行をたどって、直接移せる・別の移動の後・循環・同じ行の写し（まとめる）・ほかの id の動かない行にふさがれている・ふさがれた行を待つ、に分ける。同じ行き先を複数の候補が求めるときは、今のキーが最も小さいもの（`winnerOf`）が行き先を得る。ほかの候補は、勝者にふさがれる（同じ行の写しならまとめる）とする。ただし勝者の行き先がほかの行か行でない項目にふさがれているときは、`--execute` は勝者のために行き先を予約せず、ほかの候補を後で試すので、ほかの候補も行き先が実際に持つものでふさがれる（自分の行ならまとめる）とする（#1033 のレビューの指摘）。写しの中身が違えば「まとめない」として一覧に出す。
 
 ### 2.4 実行（`execute`、`--execute --writers-stopped`）
 
@@ -254,14 +254,14 @@ Quint のキーは文字列の名前で、リゾルバの計算はしない。�
 | `is831` | `ResolverKeyPlan.isIssue831Key`（:47-48）。Quint は `pkey` の比較をせず、#831 のキーを行ごとに与える |
 | `GROUP`、`sharedGroupsPresent` | `ResolverKeyPlan.sharedKeyGroup`（:80-84）、`KeyVerification.run` の `shared`（KeyVerification.scala:136-145） |
 | `scanCandidates`、`scanUnmovable` | `Session.scanTable`（KeyMigration.scala:611-、#1033 の後の行番号。以下同じ） |
-| `winnerOf` | `Session.winnerOf`（:825-826） |
-| `readyOf` | `execute` の `ready`（:855-861）。予約した行き先を外す |
-| `reserves`、`Tool.reserved` | `execute` の `reserved`（:834）と、結果の処理（`Failed`、`Gone`） |
-| `nextRound` | `execute` のループと、残りを予約待ち・循環・待ちとする部分（:830-920） |
-| `attempt` | `moveOne` の1回の試み（:1125-1191）と、`put`・`delete` の条件 |
-| `mergeTx` | `merge`（:1224-）、`markDeleted`（:1055-） |
-| `differ` | `differences`（:1110-） |
-| `tooBig` | `ValidationException` の `Failed`（:1185-1186）。`BIG_SHARED` は `--reverse` の 1.3.0 のキーへの超過 |
+| `winnerOf` | `Session.winnerOf`（:831-832） |
+| `readyOf` | `execute` の `ready`（:861-867）。予約した行き先を外す |
+| `reserves`、`Tool.reserved` | `execute` の `reserved`（:840）と、結果の処理（`Failed`、`Gone`） |
+| `nextRound` | `execute` のループと、残りを予約待ち・循環・待ちとする部分（:836-930） |
+| `attempt` | `moveOne` の1回の試み（:1131-1197）と、`put`・`delete` の条件 |
+| `mergeTx` | `merge`（:1230-）、`markDeleted`（:1061-） |
+| `differ` | `differences`（:1116-） |
+| `tooBig` | `ValidationException` の `Failed`（:1191-1192）。`BIG_SHARED` は `--reverse` の 1.3.0 のキーへの超過 |
 | `attemptLost` | `transact` の `Left`（応答が無い）と、次の試みで元が無いときの分岐（:1067-1069、:1076-1081） |
 | `settleOutcome` | `settle`（:1098-1110） |
 | `MAX_ATTEMPTS` | `MigrationSettings.maxAttempts`（:110）。Quint は 2、コードは 10 |
