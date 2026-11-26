@@ -26,6 +26,7 @@ import scala.collection.mutable
 import scala.concurrent.duration._
 import scala.concurrent.{ Await, ExecutionContext, Future }
 import scala.jdk.CollectionConverters._
+import scala.util.Try
 import scala.util.control.NonFatal
 
 /** The primary key of a journal or snapshot row. */
@@ -133,7 +134,17 @@ private[dynamodb] final case class UnmovableRow(
     sequenceNr: Long,
     stored: StoredKey,
     reason: String
-)
+) {
+
+  /** The item has no persistence id string or sequence number that the tool reads, so it is not a row of the table. */
+  def notARow: Boolean = sequenceNr < 0
+}
+
+private[dynamodb] object UnmovableRow {
+
+  /** An item without a persistence id or a sequence number. A row never has a negative sequence number. */
+  def notARow(stored: StoredKey, reason: String): UnmovableRow = UnmovableRow("", -1L, stored, reason)
+}
 
 private[dynamodb] final case class BlockedMove(
     candidate: Candidate,
@@ -141,7 +152,18 @@ private[dynamodb] final case class BlockedMove(
     occupantSequenceNr: Long,
     // the occupant belongs to a persistence id that --persistence-id left out, so it may move when it is selected
     outsideSelection: Boolean = false
-)
+) {
+
+  /** The target key holds an item that is not a row of the table. */
+  def byItem: Boolean = occupantSequenceNr < 0
+}
+
+private[dynamodb] object BlockedMove {
+
+  /** The target key of `candidate` holds an item that is not a row. No --persistence-id makes that item move. */
+  def byItem(candidate: Candidate): BlockedMove =
+    BlockedMove(candidate, "", -1L, outsideSelection = false)
+}
 
 /** The rows of one persistence id in a group of ids that shared keys in 1.3.0. `missingSequenceNrs` counts the sequence
   * numbers from 1 to the highest one without a row. A missing number can be an event that another id of the group
@@ -234,6 +256,34 @@ private[dynamodb] object KeyMigration {
     finally session.close()
   }
 
+  /** The warnings that the tools print at the start, after the line of the locale.
+    *
+    * @param clientVersion
+    *   the client-version of the plugin, before the tool replaces it with v2
+    * @param execute
+    *   true with `--execute`
+    * @param journalHeadDisabled
+    *   true for the journal tool when `head.enabled` is false
+    */
+  private[dynamodb] def startWarnings(
+      clientVersion: String,
+      execute: Boolean,
+      journalHeadDisabled: Boolean
+  ): Seq[String] =
+    Seq(
+      Some(
+        s"warning: client-version is $clientVersion; the tool reads and writes without DAX, so drop the DAX item " +
+        "and query caches before you start the application"
+      ).filter(_ => clientVersion.endsWith("-dax")),
+      Some(
+        "warning: the JournalHead is disabled; an actor that recovers while the index lags can overwrite a moved " +
+        "event (see #1026). Keep the application stopped until --verify matches twice, some minutes apart; two " +
+        "matches make a lag less likely and do not prove that there is none"
+      ).filter(_ => journalHeadDisabled),
+      Some("warning: the tool cannot check that the writers are stopped; --writers-stopped states it")
+        .filter(_ => execute)
+    ).flatten
+
   /** The lines that the CLIs print for a report. */
   def render(report: MigrationReport, direction: String): Seq[String] = {
     val prefix                   = if (report.execute) "" else "[dry-run] "
@@ -255,10 +305,13 @@ private[dynamodb] object KeyMigration {
         s"copy of the same row, ${report.blocked.size} blocked, ${report.waiting.size} waiting for a blocked row"
       )
       list("rows whose target key holds a row of another persistence id that does not move:", report.blocked) { b =>
-        val outside =
-          if (b.outsideSelection) " (outside --persistence-id; that row may move when its persistence id is selected)"
-          else ""
-        s"${b.candidate.describe} is blocked by ${b.occupantPersistenceId}@${b.occupantSequenceNr}$outside"
+        if (b.byItem) s"${b.candidate.describe} is blocked by an item that is not a row of this table"
+        else {
+          val outside =
+            if (b.outsideSelection) " (outside --persistence-id; that row may move when its persistence id is selected)"
+            else ""
+          s"${b.candidate.describe} is blocked by ${b.occupantPersistenceId}@${b.occupantSequenceNr}$outside"
+        }
       }
       list("rows that hold each other's target keys (the tool does not swap them; move them by hand):", report.cycles) {
         cycle =>
@@ -290,7 +343,8 @@ private[dynamodb] object KeyMigration {
         )
     }
     list("rows that are not moved:", report.unmovable) { u =>
-      s"${u.persistenceId}@${u.sequenceNr} ${u.stored}: ${u.reason}"
+      if (u.notARow) s"an item that is not a row ${u.stored}: ${u.reason}"
+      else s"${u.persistenceId}@${u.sequenceNr} ${u.stored}: ${u.reason}"
     }
     if (report.sharedKeyGroups.nonEmpty && report.sharedKeyGroups.head.ids.head.missingSequenceNrs >= 0)
       list(
@@ -463,12 +517,16 @@ private[dynamodb] object KeyMigration {
   private case object Free extends Occupant
   private case object SameRow extends Occupant
   private final case class OtherRow(persistenceId: String, sequenceNr: Long) extends Occupant
+  // an item without a persistence id or a sequence number that the tool reads
+  private case object OtherItem extends Occupant
 
   private sealed trait Outcome
   private case object Moved extends Outcome
   private case object Merged extends Outcome
   private case object Gone extends Outcome
   private final case class Blocked(persistenceId: String, sequenceNr: Long) extends Outcome
+  // the target key holds an item that is not a row of the table
+  private case object BlockedByItem extends Outcome
   private final case class Failed(reason: String) extends Outcome
   private final case class Conflict(detail: String) extends Outcome
 
@@ -580,28 +638,37 @@ private[dynamodb] object KeyMigration {
           if (settings.segments > 1) builder.segment(segment).totalSegments(settings.segments)
           settings.scanPageSize.foreach(limit => builder.limit(limit))
           startKey.foreach(builder.exclusiveStartKey)
+          limiter.foreach(_.acquire())
           val response = client.scan(builder.build())
           usage.record("Scan", Option(response.consumedCapacity()).toList)
           val items = response.items().asScala.toVector
           lock.synchronized {
             items.foreach { item =>
-              val persistenceId = item.get(table.persistenceIdColumn).s()
-              val sequenceNr    = item.get(table.sequenceNrColumn).n().toLong
-              val stored        = StoredKey(item.get(table.partitionKeyColumn).s(), item.get(table.sortKeyColumn).s())
+              val stored = StoredKey(item.get(table.partitionKeyColumn).s(), item.get(table.sortKeyColumn).s())
               rows += 1
-              val s = stats.getOrElseUpdate(persistenceId, new IdStats)
-              s.rows += 1
-              s.highest = math.max(s.highest, sequenceNr)
-              s.sequenceNrs.add(sequenceNr)
-              // Only the rows of the selected ids are placed and counted.
-              if (selected(persistenceId)) {
-                plan.placement(persistenceId, sequenceNr, stored) match {
-                  case Placement.InPlace => inPlace += 1
-                  case Placement.Move(target, from) =>
-                    candidates += Candidate(persistenceId, sequenceNr, stored, target, from)
-                  case Placement.Unmovable(reason) =>
-                    unmovable += UnmovableRow(persistenceId, sequenceNr, stored, reason)
-                }
+              identity(item.asScala.toMap) match {
+                case None =>
+                  // An item that no plugin wrote. It is listed only when every id is selected.
+                  if (settings.persistenceIds.isEmpty)
+                    unmovable += UnmovableRow.notARow(
+                      stored,
+                      "the item has no persistence-id string or sequence-nr number; the tool does not move it"
+                    )
+                case Some((persistenceId, sequenceNr)) =>
+                  val s = stats.getOrElseUpdate(persistenceId, new IdStats)
+                  s.rows += 1
+                  s.highest = math.max(s.highest, sequenceNr)
+                  s.sequenceNrs.add(sequenceNr)
+                  // Only the rows of the selected ids are placed and counted.
+                  if (selected(persistenceId)) {
+                    plan.placement(persistenceId, sequenceNr, stored) match {
+                      case Placement.InPlace => inPlace += 1
+                      case Placement.Move(target, from) =>
+                        candidates += Candidate(persistenceId, sequenceNr, stored, target, from)
+                      case Placement.Unmovable(reason) =>
+                        unmovable += UnmovableRow(persistenceId, sequenceNr, stored, reason)
+                    }
+                  }
               }
             }
           }
@@ -670,8 +737,14 @@ private[dynamodb] object KeyMigration {
       val successors: Map[Candidate, Either[Candidate, Occupant]] = occupants.map { case (c, occupant) =>
         val first = winners(c.to)
         if (first == c) c -> occupant
-        else if (c.persistenceId == first.persistenceId && c.sequenceNr == first.sequenceNr) c -> Right(SameRow)
-        else c -> Right(OtherRow(first.persistenceId, first.sequenceNr))
+        else
+          occupants(first) match {
+            // The target holds a row or an item that blocks the winner, and the key is not kept for it: --execute
+            // tries the others after it, and what the target holds blocks them too (or is their own row).
+            case Right(OtherRow(_, _)) | Right(OtherItem)                                        => c -> occupant
+            case _ if c.persistenceId == first.persistenceId && c.sequenceNr == first.sequenceNr => c -> Right(SameRow)
+            case _ => c -> Right(OtherRow(first.persistenceId, first.sequenceNr))
+          }
       }
       // Each candidate has at most one successor, the candidate whose row holds its target key.
       sealed trait Resolution
@@ -699,6 +772,10 @@ private[dynamodb] object KeyMigration {
               successors(current) match {
                 case Right(Free)    => resolved.update(current, Direct); end = true
                 case Right(SameRow) => resolved.update(current, Duplicate); end = true
+                case Right(OtherItem) =>
+                  blocked += BlockedMove.byItem(current)
+                  resolved.update(current, Stuck("blocked by an item that is not a row"))
+                  end = true
                 case Right(OtherRow(id, seq)) =>
                   blocked += BlockedMove(current, id, seq, outsideSelection = !selected(id))
                   resolved.update(current, Stuck(s"blocked by $id@$seq"))
@@ -720,15 +797,19 @@ private[dynamodb] object KeyMigration {
           resolved.update(c, resolution)
         }
       }
-      // A copy of the same row merges only when every other attribute is equal.
+      // A copy of the same row merges only when every other attribute is equal. Each read takes a slot of --max-rate.
+      def pacedRead(key: StoredKey): Option[Item] = {
+        limiter.foreach(_.acquire())
+        read(key, projected = false)
+      }
       val duplicates = resolved.collect { case (c, Duplicate) => c }.toVector
       val conflicting = duplicates.flatMap { c =>
-        val source = read(c.from, projected = false)
-        val target = read(c.to, projected = false)
+        val source = pacedRead(c.from)
+        val target = pacedRead(c.to)
           .filter(isRowOf(_, c)).orElse(
             base.candidates
               .find(o => o != c && o.to == c.to && o.persistenceId == c.persistenceId && o.sequenceNr == c.sequenceNr)
-              .flatMap(o => read(o.from, projected = false))
+              .flatMap(o => pacedRead(o.from))
           )
         (for {
           s <- source
@@ -754,6 +835,9 @@ private[dynamodb] object KeyMigration {
 
     private def execute(base: MigrationReport): MigrationReport = {
       val pending = mutable.LinkedHashMap(base.candidates.map(c => c.from -> c): _*)
+      // The target keys whose winner did not reach them (Failed, Gone), with that winner. No other row gets such a key
+      // in this run, so the next run gives it to the same row, as one uninterrupted run does.
+      val reserved = mutable.LinkedHashMap.empty[StoredKey, Candidate]
       mergedRows.clear()
       val remaining = mutable.ArrayBuffer.empty[(Candidate, String)]
       val moved     = new AtomicLong()
@@ -772,10 +856,11 @@ private[dynamodb] object KeyMigration {
       while (pending.nonEmpty && progressMade) {
         progressMade = false
         // A row whose target is held by a pending row waits until that row has moved. Of the rows that need the same
-        // target, only the one that the dry-run names goes first; the others are tried after it.
+        // target, only the one that the dry-run names goes first; the others are tried after it, and not at all in this
+        // run when that row did not reach the target.
         val ready = pending.values
           .groupBy(_.to)
-          .values
+          .collect { case (to, group) if !reserved.contains(to) => group }
           .map(winnerOf)
           .filterNot(c => pending.contains(c.to))
           .toVector
@@ -808,7 +893,13 @@ private[dynamodb] object KeyMigration {
                                    else s"the target key holds $id@$seq, which does not move")
                 if (unseenByScan(id, seq))
                   sign(s"${c.describe}: the target key holds $id@$seq, which the scan did not see")
-              case Failed(reason) => remaining += c -> reason
+              case BlockedByItem =>
+                remaining += c -> "the target key holds an item that is not a row of this table; move or remove it by hand"
+              case Failed(reason) =>
+                remaining += c -> reason
+                reserved.update(c.to, c)
+              case Gone =>
+                reserved.update(c.to, c)
               case Conflict(detail) =>
                 remaining += c -> s"the target key holds a copy of the same row with other contents ($detail); choose one by hand"
               case _ =>
@@ -821,9 +912,14 @@ private[dynamodb] object KeyMigration {
       // wait for them.
       val inCycles = findCycles(pending).flatten.toSet
       pending.values.foreach { c =>
-        remaining += c -> (if (inCycles.contains(c))
-                             "in a cycle of rows that hold each other's target keys; the tool does not swap them"
-                           else "waits for a row that did not move")
+        remaining += c -> (reserved.get(c.to) match {
+          case Some(winner) =>
+            s"the target key is kept for ${winner.persistenceId}@${winner.sequenceNr}, which did not reach it in this " +
+            "run (its reason is listed); resolve that, then run again"
+          case None if inCycles.contains(c) =>
+            "in a cycle of rows that hold each other's target keys; the tool does not swap them"
+          case None => "waits for a row that did not move"
+        })
       }
       base.copy(
         moved = moved.get(),
@@ -871,10 +967,12 @@ private[dynamodb] object KeyMigration {
         .consistentRead(true)
         .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
       if (projected) {
+        // The keys are projected too, so that an item without the other two attributes is not read as no item.
         val expression = new Expression
         builder
           .projectionExpression(
-            Seq(table.persistenceIdColumn, table.sequenceNrColumn).map(expression.name).mkString(", ")
+            Seq(table.partitionKeyColumn, table.sortKeyColumn, table.persistenceIdColumn, table.sequenceNrColumn)
+              .map(expression.name).mkString(", ")
           )
           .expressionAttributeNames(expression.javaNames)
       }
@@ -883,19 +981,26 @@ private[dynamodb] object KeyMigration {
       if (response.hasItem && !response.item().isEmpty) Some(response.item().asScala.toMap) else None
     }
 
+    /** The persistence id and the sequence number of a row, read as the plugin reads them. None for an item that is not
+      * a row: an attribute is missing or of another type, or the number is not a whole number from 0 to Long.MaxValue.
+      */
     private def identity(item: Item): Option[(String, Long)] =
       for {
         id <- item.get(table.persistenceIdColumn).flatMap(v => Option(v.s()))
-        seq <- item.get(table.sequenceNrColumn).flatMap(v => Option(v.n())).map(_.toLong)
+        seq <- item
+          .get(table.sequenceNrColumn).flatMap(v => Option(v.n()))
+          .flatMap(n => Try(BigDecimal(n).toLongExact).toOption)
+          .filter(_ >= 0)
       } yield (id, seq)
 
     private def isRowOf(item: Item, c: Candidate): Boolean = identity(item).contains((c.persistenceId, c.sequenceNr))
 
     private def occupantOf(c: Candidate, item: Option[Item]): Occupant =
-      item.flatMap(identity) match {
-        case None                                                            => Free
-        case Some((id, seq)) if id == c.persistenceId && seq == c.sequenceNr => SameRow
-        case Some((id, seq))                                                 => OtherRow(id, seq)
+      item.map(identity) match {
+        case None                                                                  => Free
+        case Some(None)                                                            => OtherItem
+        case Some(Some((id, seq))) if id == c.persistenceId && seq == c.sequenceNr => SameRow
+        case Some(Some((id, seq)))                                                 => OtherRow(id, seq)
       }
 
     /** The row under its key is still `item`: every attribute has the value that was read, and the optional columns
@@ -1069,7 +1174,9 @@ private[dynamodb] object KeyMigration {
                           result = Some(if (merging) mergedAfterLostResponse(c) else Moved)
                       }
                     case Some(target) =>
-                      identity(target).foreach { case (id, seq) => result = Some(Blocked(id, seq)) }
+                      result = Some(identity(target).fold[Outcome](BlockedByItem) { case (id, seq) =>
+                        Blocked(id, seq)
+                      })
                     case None => // the source changed or the transaction raced; try again
                   }
               }

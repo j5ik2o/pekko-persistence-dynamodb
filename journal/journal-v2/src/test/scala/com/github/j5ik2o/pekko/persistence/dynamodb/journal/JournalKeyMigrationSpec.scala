@@ -827,6 +827,134 @@ final class JournalKeyMigrationSpec extends AnyWordSpec with Matchers with Dynam
     }
   }
 
+  // The regressions of the fixes before 1.4.0 (docs/design/key-migration-fix-before-1.4.0.md). Each fails on the code
+  // of main (a5d28a3d / edfce815) and passes after the fix.
+  "the fixes before 1.4.0" should {
+
+    "give the shared key of 1.3.0 to the same id after a --reverse run that gave up on it, as one uninterrupted run does (C-F1)" in {
+      // Two ids that share their keys of 1.3.0, written under the new keys.
+      val prefix = unique("Gave")
+      val pair = Iterator
+        .from(0)
+        .map(n => s"$prefix-X-$n")
+        .take(5000)
+        .toVector
+        .groupBy(id => journalKey(v130, id, 1))
+        .collectFirst { case (_, group) if group.size >= 2 => group.take(2) }
+        .get
+      pair.foreach(persistOk(plain, _, "p1"))
+      // The winner is the id with the smaller stored key; the dry-run names it.
+      val winner   = pair.minBy(id => journalKey(plain, id, 1))
+      val loser    = pair.filterNot(_ == winner).head
+      val (dry, _) = migrate(plain, pair.toSet, execute = false, reverse = true, snapshots = false)
+      dry.blocked.map(b => (b.candidate.persistenceId, b.occupantPersistenceId)) shouldBe Seq(loser -> winner)
+      // Run 1: the moves of the winner fail without writing (throttling) until the tool gives up on it.
+      val failing = Proxy
+        .newProxyInstance(
+          classOf[V2DynamoDbClient].getClassLoader,
+          Array(classOf[V2DynamoDbClient]),
+          new InvocationHandler {
+            override def invoke(proxy: Any, method: Method, args: Array[AnyRef]): AnyRef = {
+              args.headOption.foreach {
+                case r: software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsRequest
+                    if r
+                      .transactItems().asScala.exists(i =>
+                        Option(i.put()).exists(_.item().get("persistence-id").s() == winner)
+                      ) =>
+                  throw SdkClientException.create("throttled")
+                case _ =>
+              }
+              try method.invoke(v2Client, Option(args).getOrElse(Array.empty[AnyRef]): _*)
+              catch { case e: InvocationTargetException => throw e.getCause }
+            }
+          }
+        )
+        .asInstanceOf[V2DynamoDbClient]
+      val (first, _) = migrate(
+        plain,
+        pair.toSet,
+        execute = true,
+        reverse = true,
+        client = failing,
+        settings = _.copy(maxAttempts = 2),
+        snapshots = false
+      )
+      first.incomplete shouldBe true
+      // The loser stays under its new key: the shared key of 1.3.0 is kept for the winner.
+      rows(journalTableName, loser).map(r => (r.pkey, r.skey)) shouldBe Vector(journalKey(plain, loser, 1))
+      rows(journalTableName, winner).map(r => (r.pkey, r.skey)) shouldBe Vector(journalKey(plain, winner, 1))
+      // Run 2, without faults: the winner goes back, the loser is listed, as in one uninterrupted run.
+      val (second, _) = migrate(plain, pair.toSet, execute = true, reverse = true, snapshots = false)
+      second.remaining.map(_._1.persistenceId) shouldBe Seq(loser)
+      rows(journalTableName, winner).map(r => (r.pkey, r.skey)) shouldBe Vector(journalKey(v130, winner, 1))
+      rows(journalTableName, loser).map(r => (r.pkey, r.skey)) shouldBe Vector(journalKey(plain, loser, 1))
+    }
+
+    "warn at the start that the tool bypasses DAX, that the JournalHead is disabled, and that it cannot check the stopped writers (C-F2)" in {
+      val id = changedId("Warn")
+      writtenBy130(id)
+      Seq(ClientVersion.V1Dax, ClientVersion.V2Dax).foreach { version =>
+        withClue(s"client-version $version: ") {
+          // ConfigHelper sets the client-version of the journal and the state plugin; the snapshot plugin gets it here.
+          val dax = ConfigFactory
+            .parseString(s"""j5ik2o.dynamo-db-snapshot.dynamo-db-client.client-version = "$version"""")
+            .withFallback(config(plain.copy(clientVersion = version.toString)))
+          val journal = scala.collection.mutable.ArrayBuffer.empty[String]
+          val snap    = scala.collection.mutable.ArrayBuffer.empty[String]
+          JournalKeyMigration.run(Seq("--persistence-id", id), dax, journal += _)
+          SnapshotKeyMigration.run(Seq("--persistence-id", id), dax, snap += _)
+          journal.exists(_.contains("without DAX")) shouldBe true
+          snap.exists(_.contains("without DAX")) shouldBe true
+          val verified = scala.collection.mutable.ArrayBuffer.empty[String]
+          JournalKeyMigration.verify(Seq("--verify", "--verify-timeout", "1"), dax, verified += _)
+          verified.exists(_.contains("without DAX")) shouldBe true
+          val snapVerified = scala.collection.mutable.ArrayBuffer.empty[String]
+          SnapshotKeyMigration.verify(Seq("--verify", "--verify-timeout", "1"), dax, snapVerified += _)
+          snapVerified.exists(_.contains("without DAX")) shouldBe true
+        }
+      }
+      // DAX selected through j5ik2o.dynamo-db-defaults alone, in a configuration that is not resolved yet: the client
+      // of each plugin takes it from reference.conf (R5).
+      val defaultsOnly = ConfigFactory
+        .parseString("""j5ik2o.dynamo-db-defaults.dynamo-db-client.client-version = "v2-dax"""")
+        .withFallback(
+          config(plain)
+            .withoutPath("j5ik2o.dynamo-db-journal.dynamo-db-client.client-version")
+            .withoutPath("j5ik2o.dynamo-db-snapshot.dynamo-db-client.client-version")
+        )
+        .withFallback(ConfigFactory.parseResourcesAnySyntax("reference"))
+      val journalDefaults = scala.collection.mutable.ArrayBuffer.empty[String]
+      val snapDefaults    = scala.collection.mutable.ArrayBuffer.empty[String]
+      JournalKeyMigration.run(Seq("--persistence-id", id), defaultsOnly, journalDefaults += _)
+      SnapshotKeyMigration.run(Seq("--persistence-id", id), defaultsOnly, snapDefaults += _)
+      journalDefaults.exists(_.contains("client-version is v2-dax")) shouldBe true
+      snapDefaults.exists(_.contains("client-version is v2-dax")) shouldBe true
+      // plain has the JournalHead disabled, the default
+      val lines = scala.collection.mutable.ArrayBuffer.empty[String]
+      JournalKeyMigration.run(Seq("--persistence-id", id), config(plain), lines += _)
+      lines.exists(l => l.contains("JournalHead is disabled") && l.contains("apart")) shouldBe true
+      lines.exists(_.contains("without DAX")) shouldBe false
+      val executed = scala.collection.mutable.ArrayBuffer.empty[String]
+      JournalKeyMigration.run(
+        Seq("--execute", "--writers-stopped", "--persistence-id", id),
+        config(plain),
+        executed += _
+      )
+      executed.exists(_.contains("cannot check that the writers are stopped")) shouldBe true
+      val snapExecuted = scala.collection.mutable.ArrayBuffer.empty[String]
+      SnapshotKeyMigration.run(
+        Seq("--execute", "--writers-stopped", "--persistence-id", id),
+        config(plain),
+        snapExecuted += _
+      )
+      snapExecuted.exists(_.contains("cannot check that the writers are stopped")) shouldBe true
+      snapExecuted.exists(_.contains("JournalHead")) shouldBe false
+      val withHead = scala.collection.mutable.ArrayBuffer.empty[String]
+      JournalKeyMigration.run(Seq("--persistence-id", id), config(plain.copy(headEnabled = true)), withHead += _)
+      withHead.exists(_.contains("JournalHead is disabled")) shouldBe false
+    }
+  }
+
   "the command line" should {
 
     "run a dry-run by default and move the rows with --execute, for the journal and the snapshot store" in {
