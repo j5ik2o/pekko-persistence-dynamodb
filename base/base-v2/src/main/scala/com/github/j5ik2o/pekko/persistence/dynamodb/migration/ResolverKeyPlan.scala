@@ -37,7 +37,8 @@ private[dynamodb] final class ResolverKeyPlan(
 
   private val unknown =
     "the stored key is neither the key of 1.3.0, of issue #831, nor of the new key format; it may come from another " +
-    "shard-count, persistence-id-separator, or key resolver"
+    "shard-count, persistence-id-separator, or key resolver, or from an application whose default format locale " +
+    "has other digits than the one of this run"
 
   /** The key that releases before issue #831 (up to 1.0.59) gave an id without the separator: the same partition key,
     * and the sequence number alone in 19 digits, `"%019d".format(sequenceNr)` with the default format locale, as the
