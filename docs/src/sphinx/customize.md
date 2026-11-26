@@ -326,6 +326,27 @@ application runs meanwhile:
 - a soft delete can miss the event: it deletes the events that a query of the index returns with `deleted = false`
   (`WriteJournalDaoImpl.deleteMessages`), so an event that the index does not show at that moment stays undeleted.
 
+A move also reaches the consumers of DynamoDB Streams and of Kinesis Data Streams for DynamoDB, as an insert under the
+new key and a remove under the old key: two changes to two items, with the same `persistenceId` and sequence number. A
+merge sends a remove of the old copy and, when it changes `deleted`, an update of the kept row. DynamoDB Streams keeps
+the order of the changes of one item only, and Kinesis Data Streams can deliver the changes out of order and more than
+once, so a consumer can receive the remove before the insert. Stopping a consumer while the tools run does not help:
+when it resumes, it reads the changes of the migration from where it stopped. A consumer that treats a remove as the
+deletion of an event or a snapshot, or an insert as a new one, needs one of these:
+
+- Identify the events by `persistenceId` and sequence number. Skip a remove whose `persistenceId` and sequence number
+  the table still holds, and treat an insert of a `persistenceId` and sequence number that the consumer already
+  processed as a duplicate.
+- Rebuild the data of the consumer from the table after the migration, and apply to it only the changes that the
+  application makes after it starts. The changes of the migration are older than the start of the application, which
+  stayed stopped while the tools ran: skip the records whose `ApproximateCreationDateTime` is before the start.
+  DynamoDB Streams rounds that time down to the second, so start the application at least a second after the last
+  run of the tools (the steps below run `--verify` in between). This boundary also holds when Kinesis Data Streams
+  delivers records out of order or twice; the position where the rebuild ended does not.
+
+DynamoDB Streams keeps a record for 24 hours. A consumer of DynamoDB Streams that stays stopped longer cannot read the
+changes it missed, those of the migration and any others, and has to rebuild its data from the table.
+
 The tool cannot prevent these, so the migration is offline. `--execute` looks for some signs of another writer: a row
 that left its key without reaching the target key, a row that changed after the tool read it, or a target key that
 holds a row the scan did not see (a sequence number above the highest one of its `persistenceId`). It prints a warning
@@ -453,6 +474,19 @@ against your own records. For the snapshot store, which does not save every sequ
 with the number of snapshots of each `persistenceId`. Events and snapshots that were replaced are not in the table, and
 the tool cannot bring them back.
 
+With a global table, run both tools against one region, and run `--verify` of both tools against the endpoint of every
+region before you start the application in any region. A transaction is atomic in the region that runs it; DynamoDB
+replicates its items one by one, so another region can show a move half applied while it replicates. `--verify` checks
+the keys of the rows that a region holds, not that every row reached it: a region where the remove under the old key
+arrived before the insert under the new key matches without that row. In each region, check also that `--verify`
+reports the same number of rows and of `persistenceId`s as in the region that ran the tools. These checks do not see
+every change that has not arrived yet: a merge removes the old copy and can set `deleted` on the kept row, and a region
+where the remove arrived first holds the kept row with its old `deleted` while the numbers and `--verify` match.
+Before you start the application, wait until the global table has replicated the changes of the migration to every
+region (for example, watch the `ReplicationLatency` metric of each replica), and run the checks of each region again.
+The tools cannot confirm the replication. A global table with multi-Region strong consistency does not take
+`TransactWriteItems`, so the tools cannot move its rows.
+
 The steps:
 
 1. Upgrade every node to this release and select the PlainText resolvers on every node. While a node of 1.3.0 still
@@ -466,7 +500,9 @@ The steps:
 5. Run both tools with `--verify`. If one does not match, keep the application stopped: run `--execute` again for the
    rows to move, resolve the blocked rows, the cycles, and the rows that are not movable, or run `--verify` again later
    when only the index does not match yet.
-6. When both match, follow {ref}`before you start the application <key-migration-restart>`, and start it.
+6. When both match, follow {ref}`before you start the application <key-migration-restart>`, and start it. If you run
+   a tool after that `--verify`, run `--verify` again: a table that a run changed and changed back can look the same
+   while its index still lags.
 7. Set `legacy-keys-enabled = false` only after a forward `--verify` of both tools matched. A blocked row or a row that is
    not movable stays under an old key, and with `false` deletes and updates do not reach it.
 
