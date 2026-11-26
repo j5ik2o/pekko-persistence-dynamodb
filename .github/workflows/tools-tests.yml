@@ -65,7 +65,7 @@ jobs:
       - name: Check the test counts
         if: steps.run-tests.outcome == 'success'
         run: |
-          expected=270
+          expected=283
           summary=$(grep -E '^Ran [0-9]+ tests? in ' "$RUNNER_TEMP/tools-tests.log" | tail -n 1)
           if [ -z "$summary" ]; then
             echo "::error::Could not find the unittest summary line in the test output."
