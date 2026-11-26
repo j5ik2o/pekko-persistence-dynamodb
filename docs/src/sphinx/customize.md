@@ -459,10 +459,15 @@ the old key as moved. Running the tool again after it finished moves nothing.
   from 0 up (missing, of another type, a fraction, negative, or beyond a `Long`), is listed as an item that is not a row
   and is not moved. With `--persistence-id`, such items are counted but not listed. A row whose new key holds such an
   item is listed as blocked, in the dry-run and in `--execute` alike; move or remove the item by hand. `--verify` counts
-  such items, lists their keys, and checks the rows around them, but it does not match, and exits with 1, while the
-  table holds one: it cannot check an item that is not a row. The index has `persistence-id` and `sequence-nr` as its
-  keys, so it also holds such an item when both attributes are there (for example a fractional `sequence-nr`); `--verify`
-  leaves it out of the rows of that `persistenceId` on both sides. Move or remove these items, and run `--verify` again.
+  such items and checks the rows around them, but it does not match, and exits with 1, while the table holds one: it
+  cannot check an item that is not a row. The key of such an item is printed in two cases only: by the dry-run and
+  `--execute` without `--persistence-id`, which list every such item, and by `--verify`, which lists the first 20 in
+  the order of its scan, apart from the 20 rows to move or not movable that it lists. Beyond those 20, `--verify` prints
+  only their number; run the dry-run without `--persistence-id` for the full list. The index has `persistence-id` and
+  `sequence-nr` as its keys, so it also holds such an item when both attributes are there (for example a fractional
+  `sequence-nr`). `--verify` leaves an item that the table holds under the same key out of the rows of that
+  `persistenceId` on both sides; an item that only the index still shows, after it was removed from the table, makes its
+  `persistenceId` not match until the index drops it. Move or remove these items, and run `--verify` again.
 - The dry-run does not read the items, so it cannot tell whether an item exceeds the 400 KB of DynamoDB under the key
   it moves to (the new key, or with `--reverse` the longer key of 1.3.0). `--execute` lists such a row as remaining with the error of DynamoDB, and leaves it under the old key.
 - The JournalHead table is keyed by the `persistenceId` alone, so its items do not move and do not change.

@@ -116,13 +116,19 @@ private[dynamodb] object KeyVerification {
     var notMovable = 0L
     val examples   = mutable.ArrayBuffer.empty[String]
     val expected   = mutable.HashMap.empty[String, Digest]
+    // the keys under which the table holds an item that is not a row
+    val notRowKeys = mutable.HashSet.empty[StoredKey]
+    def storedKeyOf(item: Map[String, AttributeValue]): StoredKey =
+      StoredKey(item(table.partitionKeyColumn).s(), item(table.sortKeyColumn).s())
     val tableDone = scan(client, table.tableName, None, settings, deadline, usage, limiter) { item =>
-      val stored = StoredKey(item(table.partitionKeyColumn).s(), item(table.sortKeyColumn).s())
+      val stored = storedKeyOf(item)
       table.rowIdentity(item) match {
         case None =>
-          // An item that no plugin wrote is not checked, so the check does not pass while the table holds it.
+          // An item that no plugin wrote is not checked, so the check does not pass while the table holds it. Its keys
+          // are listed apart from the rows, so that rows to move do not hide them.
           notRows += 1
-          if (examples.size < 20)
+          notRowKeys += stored
+          if (notRows <= 20)
             examples += s"an item that is not a row $stored: it has no ${table.persistenceIdColumn} string or no " +
             s"${table.sequenceNrColumn} that is a whole number from 0; move or remove it by hand"
         case Some((id, seq)) =>
@@ -131,10 +137,10 @@ private[dynamodb] object KeyVerification {
             case Placement.InPlace => ()
             case Placement.Move(target, _) =>
               toMove += 1
-              if (examples.size < 20) examples += s"$id@$seq $stored should be under $target"
+              if (toMove + notMovable <= 20) examples += s"$id@$seq $stored should be under $target"
             case Placement.Unmovable(reason) =>
               notMovable += 1
-              if (examples.size < 20) examples += s"$id@$seq $stored: $reason"
+              if (toMove + notMovable <= 20) examples += s"$id@$seq $stored: $reason"
           }
           expected.update(id, expected.getOrElse(id, Digest.empty) + projected(item))
       }
@@ -155,13 +161,18 @@ private[dynamodb] object KeyVerification {
           .sortBy(_.head)
 
     // The index, read once, and then the persistence ids that differ, one by one until they match.
+    // The index holds the items that are not rows but have its keys, such as a fractional sequence-nr. One that the
+    // table holds under the same key is counted by the table side, so neither side adds it to the rows of its id. Any
+    // other item of the index counts for its id: an item that the table removed but the index still shows (review of
+    // #1036) makes the id differ until the index drops it.
+    def compared(item: Map[String, AttributeValue]): Boolean =
+      table.rowIdentity(item).nonEmpty || !notRowKeys.contains(storedKeyOf(item))
     val observed = mutable.HashMap.empty[String, Digest]
     val indexDone =
       tableDone && indexProblems.isEmpty &&
       scan(client, table.tableName, Some(indexName), settings, deadline, usage, limiter) { item =>
-        // The index holds the items that are not rows but have its keys, such as a fractional sequence-nr; the table
-        // side counts them, so neither side adds them to the rows of a persistence id.
-        table.rowIdentity(item).foreach { case (id, _) =>
+        if (compared(item)) {
+          val id = item(table.persistenceIdColumn).s()
           observed.update(id, observed.getOrElse(id, Digest.empty) + projected(item))
         }
       }
@@ -179,7 +190,7 @@ private[dynamodb] object KeyVerification {
       Thread.sleep(math.min(math.min(1000L, 100L * round), math.max(0L, (deadline - System.nanoTime()) / 1000000L)))
       mismatch = mismatch.filterNot { id =>
         System.nanoTime() < deadline && {
-          query(client, table, indexName, id, deadline, usage, limiter, projected) match {
+          query(client, table, indexName, id, deadline, usage, limiter, projected, compared) match {
             case Right(Some(digest)) =>
               errors.remove(id)
               !differs(id, Some(digest))
@@ -408,7 +419,8 @@ private[dynamodb] object KeyVerification {
       deadline: Long,
       usage: KeyMigration.UsageCounter,
       limiter: Option[KeyMigration.RateLimiter],
-      projected: Map[String, AttributeValue] => (Long, Long)
+      projected: Map[String, AttributeValue] => (Long, Long),
+      compared: Map[String, AttributeValue] => Boolean
   ): Either[String, Option[Digest]] = {
     var digest   = Digest.empty
     var startKey = Option.empty[java.util.Map[String, AttributeValue]]
@@ -431,7 +443,7 @@ private[dynamodb] object KeyVerification {
         startKey.foreach(builder.exclusiveStartKey)
         val response = client.query(builder.build())
         usage.record("Query", Option(response.consumedCapacity()).toList)
-        response.items().asScala.map(_.asScala.toMap).filter(table.rowIdentity(_).nonEmpty).foreach { item =>
+        response.items().asScala.map(_.asScala.toMap).filter(compared).foreach { item =>
           digest = digest + projected(item)
         }
         startKey = Option(response.lastEvaluatedKey()).filterNot(_.isEmpty)

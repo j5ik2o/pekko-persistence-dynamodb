@@ -78,7 +78,7 @@ journal と snapshot の表の行の、主キー（`pkey`, `skey`）だけを変
 
 ### 2.5 確かめ（`KeyVerification.run`、`--verify`）
 
-`--persistence-id` を受け付けない。インデックスの定義（キーと型、ACTIVE、読まれる属性の射影）を確かめ、表全体を Scan して全行を判定し、インデックス全体を Scan して、persistence id ごとに表とインデックスの行を要約（行の数と、各行の SHA-256 の先頭 128 ビットを 64 ビットずつ足したもの）で比べる。区切り（`--segments`）は順に読む。行でない項目（識別の属性を持たない項目）は、移すツールと同じ `MigrationTable.rowIdentity` で見分け、数えてキーを一覧に出し、ほかの行の確かめを続ける。表に1つでもあれば一致としない（`VerifyReport.notRows`、[#1035](https://github.com/j5ik2o/pekko-persistence-dynamodb/issues/1035)）。インデックスの Scan と Query でも同じ関数で外す（小数の `sequence-nr` などは、インデックスのキーを持つのでインデックスにも載る）。違う id は `--verify-timeout` まで Query し直す。`--reverse` では、1.3.0 でキーを共有する id が2つ以上表にあれば一致としない。一致は「見た時点で」の観察で、後の読み取りが同じものを見ることは保証しない。
+`--persistence-id` を受け付けない。インデックスの定義（キーと型、ACTIVE、読まれる属性の射影）を確かめ、表全体を Scan して全行を判定し、インデックス全体を Scan して、persistence id ごとに表とインデックスの行を要約（行の数と、各行の SHA-256 の先頭 128 ビットを 64 ビットずつ足したもの）で比べる。区切り（`--segments`）は順に読む。行でない項目（識別の属性を持たない項目）は、移すツールと同じ `MigrationTable.rowIdentity` で見分け、数えてキーを一覧に出し、ほかの行の確かめを続ける。表に1つでもあれば一致としない（`VerifyReport.notRows`、[#1035](https://github.com/j5ik2o/pekko-persistence-dynamodb/issues/1035)）。インデックスの Scan と Query では、表が同じキーに行でない項目として持つものだけを外す（小数の `sequence-nr` などは、インデックスのキーを持つのでインデックスにも載る）。表から消えたのにインデックスにまだ残る項目は、その id の行として数え、インデックスが追いつくまでその id を不一致とする（#1036 のレビュー）。行でない項目のキーは、移す行・動かせない行とは別に、先頭の 20 件を出す。違う id は `--verify-timeout` まで Query し直す。`--reverse` では、1.3.0 でキーを共有する id が2つ以上表にあれば一致としない。一致は「見た時点で」の観察で、後の読み取りが同じものを見ることは保証しない。
 
 ## 3. 守る不変条件
 
@@ -253,7 +253,7 @@ Quint のキーは文字列の名前で、リゾルバの計算はしない。�
 | :-- | :-- |
 | `placement` | `ResolverKeyPlan.placement`（ResolverKeyPlan.scala:50-77） |
 | `is831` | `ResolverKeyPlan.isIssue831Key`（:47-48）。Quint は `pkey` の比較をせず、#831 のキーを行ごとに与える |
-| `GROUP`、`sharedGroupsPresent` | `ResolverKeyPlan.sharedKeyGroup`（:80-84）、`KeyVerification.run` の `shared`（KeyVerification.scala:146-155） |
+| `GROUP`、`sharedGroupsPresent` | `ResolverKeyPlan.sharedKeyGroup`（:80-84）、`KeyVerification.run` の `shared`（KeyVerification.scala:152-161） |
 | `scanCandidates`、`scanUnmovable` | `Session.scanTable`（KeyMigration.scala:625-、#1035 の後の行番号。以下同じ） |
 | `winnerOf` | `Session.winnerOf`（:845-846） |
 | `readyOf` | `execute` の `ready`（:875-881）。予約した行き先を外す |
@@ -266,7 +266,7 @@ Quint のキーは文字列の名前で、リゾルバの計算はしない。�
 | `attemptLost` | `transact` の `Left`（応答が無い、:1104-1106）と、次の試みで元が無いときの分岐（:1186-1191）。Quint は、元のキーに行があり、試みが書いたときだけ応答を失わせる |
 | `settleOutcome` | `settle`（:1208-1220） |
 | `MAX_ATTEMPTS` | `MigrationSettings.maxAttempts`（:125）。Quint は 2、コードは 10 |
-| `verifyPass` | `KeyVerification.run` と `VerifyReport.verified`（KeyVerification.scala:72-74、:93-219） |
+| `verifyPass` | `KeyVerification.run` と `VerifyReport.verified`（KeyVerification.scala:72-74、:93-230） |
 | `propagate` | DynamoDB の GSI の非同期の更新（コードには無い） |
 | `recoverAndWrite` | `JournalRowStore.writeRows` の条件 `sameRowOrNone`（JournalRowStore.scala:222-223、:347-348）と、`highestSequenceNr` がインデックスを読むこと（:118-140） |
 | `hardDeleteCurrent`、`hardDeleteLegacy` | `JournalRowStore.delete` = `deleteRows` の後に `deleteLegacyRows`（:288-340） |

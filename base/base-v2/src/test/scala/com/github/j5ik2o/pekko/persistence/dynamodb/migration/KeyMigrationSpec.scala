@@ -857,6 +857,31 @@ final class KeyMigrationSpec extends AnyWordSpec with Matchers with DynamoDBCont
       report.verified shouldBe false
     }
 
+    "fail while the index still shows an item that is not a row after the table removed it (review of #1036)" in {
+      // A@1 and A@2 with an item of sequence-nr 1.5 between them, removed from the table; the index still shows it.
+      val table = newTable(index = true)
+      putRow(table, k(1), "A", 1)
+      putRow(table, k(2), "A", 2)
+      val ghost = Map(
+        "pkey"           -> s("p9"),
+        "skey"           -> s("s9"),
+        "persistence-id" -> s("A"),
+        "sequence-nr"    -> AttributeValue.builder().n("1.5").build(),
+        "deleted"        -> b(false)
+      ).asJava
+      val c = hooked(
+        indexScan = r => r.toBuilder.items((r.items().asScala :+ ghost).asJava).build(),
+        query = r =>
+          if (r.expressionAttributeValues().values().asScala.head.s() == "A")
+            Some(QueryResponse.builder().items((allRows(table).map(_.asJava) :+ ghost).asJava).build())
+          else None
+      )
+      val report = verify(table, plan(), c)
+      report.indexMismatch shouldBe Seq("A")
+      report.verified shouldBe false
+      verify(table, plan()).verified shouldBe true
+    }
+
     "check every persistence id, also those that an earlier run moved, after a lagging run and a filtered one" in {
       val table = newTable(index = true)
       putRow(table, k(1), "A", 1)
@@ -1034,6 +1059,17 @@ final class KeyMigrationSpec extends AnyWordSpec with Matchers with DynamoDBCont
       report.persistenceIds shouldBe 0
       report.notRows shouldBe 1
       report.verified shouldBe false
+    }
+
+    "list the keys of the items that are not rows apart from the rows to move, 20 of each (review of #1036)" in {
+      val table = newTable(index = true)
+      (1 to 25).foreach(i => putRow(table, k(i), s"P$i", 1))
+      (1 to 22).foreach(i => putItem(table, k(100 + i), Map("note" -> s("written by hand"))))
+      val report = verify(table, plan((1 to 25).map(i => (s"P$i", 1L) -> k(50 + i)): _*))
+      report.toMove shouldBe 25
+      report.notRows shouldBe 22
+      report.examples.count(_.startsWith("an item that is not a row")) shouldBe 20
+      report.examples.count(_.contains("should be under")) shouldBe 20
     }
 
     "report the moved rows after a run with --persistence-id, next to an item that is not a row (#1035)" in {
