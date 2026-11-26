@@ -169,7 +169,7 @@ Quint 0.32.0 の既定の評価器（Rust、v0.6.0）は npm の包みに入っ�
 
 ## 必須のチェックに入れる
 
-入れる。必須にしないと、仕様が落ちていてもマージできる。ブランチの保護の必須のチェックは `PR CI Required` と9本の test と `Check unresolved comments` で、`quint` は `PR CI Required` の確かめに入れる。ブランチの保護の設定は変えない。
+入れる。必須にしないと、仕様が落ちていてもマージできる。ブランチの保護の必須のチェックは `PR CI Required` と9本の test と `Check unresolved comments` で、`quint` は `PR CI Required` の確認の段に入れる。ブランチの保護の設定は変えない。
 
 `required` ジョブに足すもの：
 
