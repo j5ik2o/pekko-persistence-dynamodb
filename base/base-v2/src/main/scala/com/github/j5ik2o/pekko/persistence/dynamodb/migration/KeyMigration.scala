@@ -135,11 +135,11 @@ private[dynamodb] final case class MigrationSettings(
 /** The values that `--segments` and `--parallelism` take (issue #1041). */
 private[dynamodb] object ThreadCount {
 
-  /** The moves and the dry-run start one thread for each segment, and one for each of `--parallelism`. A thousand
-    * threads is far above what the connections of the client serve at the same time, and far below the 1,000,000
-    * segments that a DynamoDB Scan takes, so a larger value only exhausts the memory of the JVM before the first
-    * request. `--verify` reads the segments one after another, and takes the same range, so that `--segments` means one
-    * range.
+  /** The moves and the dry-run scan the table with one thread for each segment, all started at once, and after the scan
+    * move or check the rows with up to `--parallelism` threads. A thousand threads is far above what the connections of
+    * the client serve at the same time, and far below the 1,000,000 segments that a DynamoDB Scan takes; a larger value
+    * can exhaust the memory of the JVM while it starts the threads. `--verify` reads the segments one after another,
+    * and takes the same range, so that `--segments` means one range.
     */
   val Maximum: Int = 1000
 

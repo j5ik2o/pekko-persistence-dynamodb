@@ -17,8 +17,9 @@ Replace `v1.4.0` and `<SHA>` with the approved version and commit. If the lookup
   limiter stop pacing after its first request, and `Infinity` did not limit at all. A row under an unknown key names
   the default format locale among the possible causes, and `--reverse --verify` says that it checks the shared keys of
   1.3.0 only for the `persistenceId`s that the table holds rows of.
-- Key migration tools (#1041): `--segments` and `--parallelism` must be whole numbers from 1 to 1000; the moves and the
-  dry-run start one thread for each, so a larger value could exhaust the memory of the JVM before the first request.
+- Key migration tools (#1041): `--segments` and `--parallelism` must be whole numbers from 1 to 1000. The scan of the
+  moves and of the dry-run starts one thread for each segment at once, and the rows are then moved or checked with up
+  to `--parallelism` threads, so a larger value could exhaust the memory of the JVM while it starts the threads.
 
 ## 1.4.0
 
