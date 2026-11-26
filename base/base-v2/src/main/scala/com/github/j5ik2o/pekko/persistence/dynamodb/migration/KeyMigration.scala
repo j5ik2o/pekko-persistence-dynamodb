@@ -532,6 +532,45 @@ private[dynamodb] object KeyMigration {
       )
   }
 
+  /** The rounds of `execute`, which the dry-run plays too (#1028). A round gives, of the pending rows that need the
+    * same target, the one with the smallest stored key (the one that the dry-run names), when the target is not
+    * reserved and no pending row holds it. Only the targets that the rows of the round before touched can change: a row
+    * that leaves `pending` gives its target another first row, and frees its stored key for the rows that need it. So a
+    * run costs about as many steps as it has rows, also when many rows need one target (review of #1044).
+    */
+  private[migration] final class Rounds(candidates: Seq[Candidate]) {
+    private def order(c: Candidate): (String, String) = (c.from.partitionKey, c.from.sortKey)
+
+    val pending: mutable.LinkedHashMap[StoredKey, Candidate] =
+      mutable.LinkedHashMap(candidates.map(c => c.from -> c): _*)
+    private val byTarget = mutable.HashMap.empty[StoredKey, mutable.TreeMap[(String, String), Candidate]]
+    candidates.foreach { c =>
+      byTarget.getOrElseUpdate(c.to, mutable.TreeMap.empty[(String, String), Candidate]).update(order(c), c)
+    }
+    private var touched: mutable.Set[StoredKey] = mutable.HashSet(byTarget.keys.toSeq: _*)
+
+    /** The rows of the next round. Each of them leaves `pending` with `done` before the round after it. */
+    def next(reserved: StoredKey => Boolean): Vector[Candidate] = {
+      val ready = touched.iterator
+        .filterNot(reserved)
+        .flatMap(target => byTarget.get(target).flatMap(_.headOption).map(_._2))
+        .filterNot(c => pending.contains(c.to))
+        .toVector
+        .sortBy(order)
+      touched = mutable.HashSet.empty
+      ready
+    }
+
+    /** The row was tried in this round: it leaves `pending`, whatever its outcome. */
+    def done(c: Candidate): Unit = {
+      pending.remove(c.from)
+      byTarget.get(c.to).foreach(_.remove(order(c)))
+      touched += c.to
+      touched += c.from
+      ()
+    }
+  }
+
   private type Item = Map[String, AttributeValue]
 
   /** Builds the attribute name and value placeholders of one expression. */
@@ -557,12 +596,13 @@ private[dynamodb] object KeyMigration {
       if (values.isEmpty) None else Some(values.toMap.asJava)
   }
 
-  private sealed trait Occupant
-  private case object Free extends Occupant
-  private case object SameRow extends Occupant
-  private final case class OtherRow(persistenceId: String, sequenceNr: Long) extends Occupant
+  /** A key as the dry-run sees it while it plays the rounds of `execute`. */
+  private sealed trait Slot
+  private case object EmptySlot extends Slot
+  // a row whose attributes are those of the item that was read under `origin`
+  private final case class RowSlot(persistenceId: String, sequenceNr: Long, origin: StoredKey) extends Slot
   // an item without a persistence id or a sequence number that the tool reads
-  private case object OtherItem extends Occupant
+  private case object ItemSlot extends Slot
 
   private sealed trait Outcome
   private case object Moved extends Outcome
@@ -753,132 +793,113 @@ private[dynamodb] object KeyMigration {
 
     // --- dry-run -----------------------------------------------------------------------------------------------
 
+    /** Plays the rounds of `execute` without writing (issue #1028): the same `Rounds`, and for each row the outcome
+      * that `moveOne` gives on a table that no other writer changes. So, without a rejection of DynamoDB (400 KB), a
+      * row that the tool gives up, or another writer, the dry-run gives the rows that `--execute` moves, merges, and
+      * leaves; with a rejection or a row given up, `--execute` stops short of it. Within a round the rows touch
+      * different keys (one row per target, and no target that a pending row holds), so their order does not matter.
+      */
     private def dryRun(base: MigrationReport): MigrationReport = {
-      val bySource = base.candidates.map(c => c.from -> c).toMap
-      val checked  = new AtomicLong()
-      val occupants: Map[Candidate, Either[Candidate, Occupant]] =
+      val sources = base.candidates.map(_.from).toSet
+      // The table does not change during a dry-run, so each target that no row leaves is read once.
+      val targets = base.candidates.map(_.to).distinct.filterNot(sources.contains).toVector
+      val checked = new AtomicLong()
+      val read: Map[StoredKey, Slot] =
         Await
           .result(
-            Future.traverse(base.candidates.toVector) { c =>
+            Future.traverse(targets) { key =>
               Future {
-                val occupant = bySource.get(c.to) match {
-                  case Some(other) => Left(other)
-                  case None =>
-                    limiter.foreach(_.acquire())
-                    Right(occupantOf(c, read(c.to, projected = true)))
+                limiter.foreach(_.acquire())
+                val slot = this.read(key, projected = true) match {
+                  case None => EmptySlot
+                  case Some(item) =>
+                    table.rowIdentity(item).fold[Slot](ItemSlot) { case (id, seq) => RowSlot(id, seq, key) }
                 }
                 val n = checked.incrementAndGet()
-                if (n % 1000 == 0) emit(s"phase=check-targets checked=$n of ${base.candidates.size}")
-                c    -> occupant
+                if (n % 1000 == 0) emit(s"phase=check-targets checked=$n of ${targets.size}")
+                key  -> slot
               }
             },
             Duration.Inf
           )
           .toMap
-      // Two rows with the same target key: only the one with the smallest stored key can move there, in the dry-run
-      // and in --execute alike. A copy of the same row merges into it, and the row of another id is blocked by it.
-      val winners = base.candidates.groupBy(_.to).map { case (to, group) => to -> winnerOf(group) }
-      val successors: Map[Candidate, Either[Candidate, Occupant]] = occupants.map { case (c, occupant) =>
-        val first = winners(c.to)
-        if (first == c) c -> occupant
-        else
-          occupants(first) match {
-            // The target holds a row or an item that blocks the winner, and the key is not kept for it: --execute
-            // tries the others after it, and what the target holds blocks them too (or is their own row).
-            case Right(OtherRow(_, _)) | Right(OtherItem)                                        => c -> occupant
-            case _ if c.persistenceId == first.persistenceId && c.sequenceNr == first.sequenceNr => c -> Right(SameRow)
-            case _ => c -> Right(OtherRow(first.persistenceId, first.sequenceNr))
-          }
-      }
-      // Each candidate has at most one successor, the candidate whose row holds its target key.
-      sealed trait Resolution
-      case object Direct extends Resolution
-      case object Duplicate extends Resolution
-      case object After extends Resolution
-      case object InCycle extends Resolution
-      final case class Stuck(reason: String) extends Resolution
-      val resolved = mutable.LinkedHashMap.empty[Candidate, Resolution]
-      val cycles   = Vector.newBuilder[Vector[Candidate]]
-      val blocked  = Vector.newBuilder[BlockedMove]
-      base.candidates.foreach { start =>
-        val path    = mutable.ArrayBuffer.empty[Candidate]
-        var current = start
-        var end     = false
-        while (!end) {
-          resolved.get(current) match {
-            case Some(_) => end = true
-            case None if path.contains(current) =>
-              val cycle = path.drop(path.indexOf(current)).toVector
-              cycle.foreach(resolved.update(_, InCycle))
-              cycles += cycle
-              end = true
-            case None =>
-              successors(current) match {
-                case Right(Free)    => resolved.update(current, Direct); end = true
-                case Right(SameRow) => resolved.update(current, Duplicate); end = true
-                case Right(OtherItem) =>
-                  blocked += BlockedMove.byItem(current)
-                  resolved.update(current, Stuck("blocked by an item that is not a row"))
-                  end = true
-                case Right(OtherRow(id, seq)) =>
-                  blocked += BlockedMove(current, id, seq, outsideSelection = !selected(id))
-                  resolved.update(current, Stuck(s"blocked by $id@$seq"))
-                  end = true
-                case Left(next) =>
-                  path += current
-                  current = next
-              }
-          }
-        }
-        // Each row on the path takes its resolution from the row that holds its target key.
-        path.reverseIterator.filterNot(resolved.contains).foreach { c =>
-          val next = successors(c).left.toOption.get
-          val resolution = resolved(next) match {
-            case InCycle       => Stuck("waits for a row in a cycle, which the tool does not move")
-            case Stuck(reason) => Stuck(s"waits for a row that cannot move ($reason)")
-            case _             => After
-          }
-          resolved.update(c, resolution)
-        }
-      }
-      // A copy of the same row merges only when every other attribute is equal. Each read takes a slot of --max-rate.
+      val slots = mutable.HashMap.empty[StoredKey, Slot] ++= read
+      base.candidates.foreach(c => slots.update(c.from, RowSlot(c.persistenceId, c.sequenceNr, c.from)))
+      // Each read takes a slot of --max-rate.
       def pacedRead(key: StoredKey): Option[Item] = {
         limiter.foreach(_.acquire())
-        read(key, projected = false)
+        this.read(key, projected = false)
       }
-      val duplicates = resolved.collect { case (c, Duplicate) => c }.toVector
-      val conflicting = duplicates.flatMap { c =>
-        val source = pacedRead(c.from)
-        val target = pacedRead(c.to)
-          .filter(isRowOf(_, c)).orElse(
-            base.candidates
-              .find(o => o != c && o.to == c.to && o.persistenceId == c.persistenceId && o.sequenceNr == c.sequenceNr)
-              .flatMap(o => pacedRead(o.from))
-          )
-        (for {
-          s <- source
-          t <- target
-        } yield differences(s, t)).filter(_.nonEmpty).map(c -> _)
+      val outcomes = mutable.HashMap.empty[Candidate, Outcome]
+      val rounds   = new Rounds(base.candidates)
+      // No target is reserved: the dry-run does not foresee a rejection or a row given up.
+      def nextRound(): Vector[Candidate] = rounds.next(_ => false)
+      var ready                          = nextRound()
+      while (ready.nonEmpty) {
+        ready.foreach { c =>
+          val outcome = slots.getOrElse(c.to, EmptySlot) match {
+            case EmptySlot =>
+              slots.update(c.to, RowSlot(c.persistenceId, c.sequenceNr, c.from))
+              slots.update(c.from, EmptySlot)
+              Moved
+            case RowSlot(id, seq, origin) if id == c.persistenceId && seq == c.sequenceNr =>
+              // A copy of the same row merges only when every other attribute is equal. A read that finds no item
+              // (another writer removed it) is taken as no difference, as before.
+              val difference = (for {
+                source <- pacedRead(c.from)
+                target <- pacedRead(origin)
+              } yield differences(source, target)).getOrElse("")
+              if (difference.isEmpty) {
+                slots.update(c.from, EmptySlot)
+                Merged
+              } else Conflict(difference)
+            case RowSlot(id, seq, _) => Blocked(id, seq)
+            case ItemSlot            => BlockedByItem
+          }
+          outcomes.update(c, outcome)
+          rounds.done(c)
+        }
+        ready = nextRound()
       }
+      // The rows left wait for another pending row: rows in cycles, which the tool does not swap, and the rows that
+      // wait for them.
+      val cycles = findCycles(rounds.pending)
+      val cycled = cycles.flatten.toSet
+      // The target is the stored key of a row that did not leave it: the row waits for that row.
+      def keptBySource(key: StoredKey): Boolean =
+        sources.contains(key) && (slots.get(key) match {
+          case Some(RowSlot(_, _, origin)) => origin == key
+          case _                           => false
+        })
+      val blocked = Vector.newBuilder[BlockedMove]
+      val waiting = Vector.newBuilder[Candidate]
+      base.candidates.foreach { c =>
+        outcomes.get(c) match {
+          case Some(Blocked(_, _)) if keptBySource(c.to) => waiting += c
+          case Some(Blocked(id, seq))      => blocked += BlockedMove(c, id, seq, outsideSelection = !selected(id))
+          case Some(BlockedByItem)         => blocked += BlockedMove.byItem(c)
+          case None if !cycled.contains(c) => waiting += c
+          case _                           =>
+        }
+      }
+      val moved = base.candidates.filter(c => outcomes.get(c).contains(Moved))
       base.copy(
-        directMoves = resolved.values.count(_ == Direct),
-        orderedMoves = resolved.values.count(_ == After),
-        cycles = cycles.result(),
-        duplicates = duplicates.filterNot(c => conflicting.exists(_._1 == c)),
-        conflictingCopies = conflicting,
+        directMoves = moved.count(c => !sources.contains(c.to)),
+        orderedMoves = moved.count(c => sources.contains(c.to)),
+        cycles = cycles,
+        duplicates = base.candidates.filter(c => outcomes.get(c).contains(Merged)),
+        conflictingCopies =
+          base.candidates.flatMap(c => outcomes.get(c).collect { case Conflict(difference) => c -> difference }),
         blocked = blocked.result(),
-        waiting = resolved.collect { case (c, Stuck(reason)) if reason.startsWith("waits") => c }.toVector
+        waiting = waiting.result()
       )
     }
-
-    /** The row that gets a target key that several rows need: the one with the smallest stored key. */
-    private def winnerOf(group: Iterable[Candidate]): Candidate =
-      group.minBy(c => (c.from.partitionKey, c.from.sortKey))
 
     // --- execute -----------------------------------------------------------------------------------------------
 
     private def execute(base: MigrationReport): MigrationReport = {
-      val pending = mutable.LinkedHashMap(base.candidates.map(c => c.from -> c): _*)
+      val rounds  = new Rounds(base.candidates)
+      val pending = rounds.pending
       // The target keys whose winner did not reach them (Failed, Gone), with that winner. No other row gets such a key
       // in this run, so the next run gives it to the same row, as one uninterrupted run does.
       val reserved = mutable.LinkedHashMap.empty[StoredKey, Candidate]
@@ -902,13 +923,7 @@ private[dynamodb] object KeyMigration {
         // A row whose target is held by a pending row waits until that row has moved. Of the rows that need the same
         // target, only the one that the dry-run names goes first; the others are tried after it, and not at all in this
         // run when that row did not reach the target.
-        val ready = pending.values
-          .groupBy(_.to)
-          .collect { case (to, group) if !reserved.contains(to) => group }
-          .map(winnerOf)
-          .filterNot(c => pending.contains(c.to))
-          .toVector
-          .sortBy(c => (c.from.partitionKey, c.from.sortKey))
+        val ready = rounds.next(reserved.contains)
         if (ready.nonEmpty) {
           val outcomes = Await.result(
             Future.traverse(ready) { c =>
@@ -928,7 +943,7 @@ private[dynamodb] object KeyMigration {
             Duration.Inf
           )
           outcomes.foreach { case (c, outcome) =>
-            pending.remove(c.from)
+            rounds.done(c)
             progressMade = true
             outcome match {
               case Blocked(id, seq) =>
@@ -1027,14 +1042,6 @@ private[dynamodb] object KeyMigration {
 
     private def isRowOf(item: Item, c: Candidate): Boolean =
       table.rowIdentity(item).contains((c.persistenceId, c.sequenceNr))
-
-    private def occupantOf(c: Candidate, item: Option[Item]): Occupant =
-      item.map(table.rowIdentity) match {
-        case None                                                                  => Free
-        case Some(None)                                                            => OtherItem
-        case Some(Some((id, seq))) if id == c.persistenceId && seq == c.sequenceNr => SameRow
-        case Some(Some((id, seq)))                                                 => OtherRow(id, seq)
-      }
 
     /** The row under its key is still `item`: every attribute has the value that was read, and the optional columns
       * that were absent are still absent.

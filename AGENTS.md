@@ -136,7 +136,7 @@ The README still claims Java 1.8+. CI tests Java 11, 17, and 19. Treat CI as the
 
 ## Docker cost
 
-33 concrete test classes extend `DynamoDBContainerHelper`, directly or through `BaseCounterSpec`, and each one starts an `amazon/dynamodb-local` container on a temporary port with an in-memory database. Each name below works as a `testOnly` pattern of its module, such as `sbt -batch "journal-v2/testOnly *JournalHeadPreflightIntegrationSpec"`.
+34 concrete test classes extend `DynamoDBContainerHelper`, directly or through `BaseCounterSpec`, and each one starts an `amazon/dynamodb-local` container on a temporary port with an in-memory database. Each name below works as a `testOnly` pattern of its module, such as `sbt -batch "journal-v2/testOnly *JournalHeadPreflightIntegrationSpec"`.
 
 | Module | Suites |
 |:--|:--|
@@ -147,12 +147,12 @@ The README still claims Java 1.8+. CI tests Java 11, 17, and 19. Treat CI as the
 | `state-v1` | `DynamoDBStateV1SyncSpec`, `DynamoDBStateV1AsyncSpec` |
 | `state-v2` | `DynamoDBStateV2SyncSpec`, `DynamoDBStateV2AsyncSpec` |
 | `test` | `DynamoDBContainerHelperSpec` |
-| `base-v2` | `KeyMigrationSpec` |
+| `base-v2` | `KeyMigrationSpec`, `KeyMigrationDryRunPropertySpec` |
 | `example` | `CounterV1AsyncSpec`, `CounterV1SyncSpec`, `CounterV2AsyncSpec`, `CounterV2SyncSpec` |
 
 The `example` module declares each Counter suite twice, once in the `softdelete` package and once in the `harddelete` package, so `example/testOnly *CounterV1AsyncSpec` runs two classes. The file `CounterSpec.scala` declares no class named `CounterSpec`, so `example/testOnly *CounterSpec` runs no test. `DockerSuiteReferenceSpec` checks this table and every `testOnly` pattern in Verification commands against the test sources.
 
-Tests do not run in parallel, so the full suite starts and stops the 33 containers one after another. Each start waits for a log message and retries a table check up to 10 times at one second, and table creation and deletion add fixed 500 millisecond sleeps. The full `sbt test` therefore spends minutes in Docker even when the code is correct.
+Tests do not run in parallel, so the full suite starts and stops the 34 containers one after another. Each start waits for a log message and retries a table check up to 10 times at one second, and table creation and deletion add fixed 500 millisecond sleeps. The full `sbt test` therefore spends minutes in Docker even when the code is correct.
 
 The fast gates start no container. Run `schema-check/test`, `lint`, `checkModuleBoundaries`, and the cross-compiles before the Docker-backed suites. Start Docker before any command that names a suite.
 

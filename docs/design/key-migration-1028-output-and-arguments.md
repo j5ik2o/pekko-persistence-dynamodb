@@ -14,7 +14,7 @@
 3. 公開 API は変えない。コマンドの引数の名前、終了コードの意味（成功で 0、`incomplete` または `--verify` の不一致で 1、引数の誤りは例外で終わる）がこれに当たる。`--max-rate` は、これまで通っていた値の一部を引数の誤りとして断る（2.1）。引数の名前と終了コードの意味は変わらない。MiMa の基準（1.4.0）に対して、公開のバイトコードの形も変えない。`MigrationReport`、`VerifyReport`、`KeyVerification.render` の形はそのままにする。
 4. dry-run と `--execute` の関係を、次の2つの性質で決める。どちらも、1回の `--execute` を、同じ表と同じ引数の dry-run と比べる。
    - **P1 一致。** 3つの集合 E1〜E3 のどれも起きない実行では、dry-run が「動かす」と数える候補の集合は、`--execute` が動かす候補の集合と同じになる。「統合する」と数える候補の集合は、統合する候補の集合と同じになる。残りの候補の集合も、`--execute` の残りの集合と同じになる。応答の消失と、上限より前に治まる一時的な失敗は、E に入らない。`moveOne` が両方のキーを読み直して結果を決めるので、どちらも P1 の中で起こす。
-   - **P2 安全側。** E1 か E2 が起きる実行（他の書き手はいない）では、`--execute` は dry-run の予測の手前で止まり、ほかへは行かない。式で書くと次の4つになる。`exec.moved ⊆ dry.moved`、`exec.merged ⊆ dry.merged`、`dry.remaining ⊆ exec.remaining`、`(dry.moved ∪ dry.merged) \ (exec.moved ∪ exec.merged) ⊆ exec.remaining`。動かなかった候補は、どれも元のキーに読んだときの中身のまま残る。
+   - **P2 安全側。** E1 か E2 が起きる実行（他の書き手はいない）では、`--execute` は dry-run の予測の手前で止まり、ほかへは行かない。式で書くと次の4つになる。`exec.moved ⊆ dry.moved`、`exec.merged ⊆ dry.merged`、`dry.remaining ⊆ exec.remaining`、`(dry.moved ∪ dry.merged) \ (exec.moved ∪ exec.merged) ⊆ exec.remaining`。動かなかった候補は、どれも元のキーに読んだときの中身のまま残る。最初の2つの式は、計画が (id, 番号) ごとの行き先を持つとき（ツールが作る唯一の形）に限る。元のキーごとの計画では、2つの代わりに `exec.moved ∪ exec.merged ⊆ dry.moved ∪ dry.merged` を確かめる（9.1）。
    - **E1** は、DynamoDB が 400 KB の超過で `Put` を断る候補（`ValidationException` で `Failed`）。項目の大きさと新しいキーの長さだけで決まり、同じ表なら毎回起きる。dry-run は項目の本体を読まないので、これを予測しない。`customize.md` の限界の節に書いてある。
    - **E2** は、一時的な失敗が試みの上限まで続いてあきらめた候補（`settle` の `Failed`）。
    - **E3** は、ツールの外の書き手（`Gone`、`writerSigns`）。`--writers-stopped` の契約の外にある。`--execute` は兆しとして `writerSigns` に出し、`incomplete` にする。この場合の振る舞いは `specs/key-migration/keyMigrationWriters.qnt` が受け持ち、P1 と P2 は前提にしない。
@@ -283,3 +283,94 @@ PR-B（2.2、2.3）：
 | D#7 比べる読み取りの空、検証の手順のずれ | 直す（実装の中） | 2.2 の手順4に、読み取りが空のときは例外にせず違い無しとして扱う（今のコードと同じ）と書いた。6節の検証を、journal-v2 の4つのテスト、3つの Scala の版での MiMa、`./tools/quint-check-specs.sh` に直した |
 | D#8 `--segments` と `--parallelism` の上限 | 別件（依頼元の決定） | [#1041](https://github.com/j5ik2o/pekko-persistence-dynamodb/issues/1041) を立て、5節にリンクを書いた |
 | D#9 dry-run の段落にも、行がある id だけが対象と書く | 直す（意見を採る） | 2.5 に、`customize.md` の dry-run の段落へ1句足すことを書いた |
+
+## 9. 実装で変えたこと（PR-B）
+
+実装の中で、設計の性質が2か所で成り立たないことが分かった。どちらも元帥の判断を受けて、名指しした範囲だけを狭めた。コードの振る舞いは変えていない。
+
+### 9.1 P2：元のキーごとの計画での、移動と統合の入れ替わり
+
+**見つけたもの。** P2 の性質テストが、直したコードで `exec.merged ⊆ dry.merged` を破った（種 271061123）。計画は元のキーごとに行き先を決める形（3.1 の2割の側）で、同じ行 C@2 の写しが k2、k4、k6 にある。k2 と k4 は k8 へ、k6 は k4 へ移る。dry-run は k2 を移動、k4 を k2 の写しとの統合、k6 を k4 への移動と数える。`--execute` で k4 をあきらめさせる（E2）と、k6 は k4 に残った C@2 の写しと統合される。dry-run では移動の候補が、`--execute` では統合になる。動いた行の集合は予測の中にあり、行はほかのキーへ行かない。
+
+**狭めた範囲。** 除外の集合は「元のキーごとの計画で、移動と統合が入れ替わること」。その計画では、`exec.moved ⊆ dry.moved` と `exec.merged ⊆ dry.merged` の代わりに、`exec.moved ∪ exec.merged ⊆ dry.moved ∪ dry.merged` を確かめる。残りの2つの式、表全体の照合、行が消えないこと、各写しが元のキーか dry-run の予測のキーにあることは、どの計画でも確かめる。(id, 番号) ごとの計画では、4つの式をそのまま確かめる。
+
+**ツールが元のキーごとの計画を作らないこと（コードの経路）。**
+
+- `KeyPlan` と `KeyMigration` は `private[dynamodb]` で、利用者が呼べる入口は `JournalKeyMigration.main` と `SnapshotKeyMigration.main` だけ。
+- 本体のコードで `KeyPlan` を作るのは `JournalKeyMigration.plan` と `SnapshotKeyMigration.plan` だけで、どちらも `ResolverKeyPlan` を `release130Key` と `plainTextKey` から作る。この2つは、persistence id、番号、`persistence-id-separator`、`shard-count` だけの関数である。
+- `configuredForm` は、既定の resolver provider と、1.3.0 の resolver か PlainText の resolver の組だけを受け付け、ほかは例外で断る。利用者の独自の resolver は、移行ツールに届かない。
+- `ResolverKeyPlan.placement` の行き先は、forward では設定の形の関数を (id, 番号) に当てた値、`--reverse` では `release130` を (id, 番号) に当てた値で、元のキーは「その場にある」「どの形から動く」「動かせない」を選ぶことにしか使わない。
+
+**確かめ。** `journal-v2` の `ResolverKeyPlanPropertySpec` が、本物の `release130Key` と `plainTextKey`（journal と snapshot）で、3,000 通りの id、番号、区切り、shard の数、向き、設定の形について、次の2つを確かめる。
+
+- 同じ行のどの元のキーから動いても、行き先は1つ。
+- 行き先のキーでは、その行は「その場にある」。つまり、同じ行の写しの1つが、別の写しの行き先にはならない。
+
+`ResolverKeyPlan` を元のキーごとの行き先にする変異（#831 の行の行き先を変える）を入れると、このテストは落ちた。Quint では `planTargetsByRow` が、宇宙のすべての行、向き、形について同じことを確かめる。
+
+**決まった筋書き。** `KeyMigrationDryRunPropertySpec` の「only swap a move and a merge, and go nowhere else, when a plan per stored key loses a row (P2, seed 271061123)」が、この形を毎回通す。確かめるのは、和の式、残りの2つの式、表全体の照合、行が消えないこと、各写しが元のキーか予測のキーにあること、それに k6 の候補が dry-run では移動で `--execute` では統合であること。
+
+### 9.2 Quint：`withinReference` を写しごとの形にした
+
+**見つけたもの。** 行 `n` を宇宙に足すと、既存の不変条件 `withinReference` が破れた（ci-runs.txt の run 1、種 0x7）。反例は実行の途中の状態で、勝者 n130 が k130 へ移った直後、n831 はまだ保留中だった。`withinReference` は、各行の写しの集合が始めと同じか参照の実行の終わりと同じであることを求めるので、この間の状態を許さない。止まっても次の実行が n831 を統合するので、コードは正しい。今までの宇宙には、同じ行の2つの写しが別々の回で動く行が無かった。
+
+**狭めた範囲。** 弱めたのは、「同じ行の2つ以上の写しが、別々の回で動く途中の状態」だけ。`rowWithin` は、写しごとに次を求める。
+
+- 始めにあったキーで、始めの中身のまま。または、参照の実行がその行に与えるキーで、参照の中身か、元のキーを離れた写しの中身。
+- 始めに無かったキーにある写しの数は、元のキーを離れた写しの数を超えない。
+- 始めにあった行は、写しを1つは持つ。
+
+写しが1つの行では、元の形と同じ判定になる。終わった実行は、今までどおり `finishedWithinReference` が厳密に確かめる。
+
+**緩みが入れ替わりの途中の形だけに閉じていることの確かめ（変異）。** 変異は、ツールの1手（`attemptOk`）にだけ入れた。参照の実行は、コードの決まりのまま比べる。
+
+| 変異 | `withinReference`（この形） | 条件を1つ外した形 |
+| :-- | :-- | :-- |
+| 移動が `Delete` をせずに `Put` だけをする | 破れを見つける（`initDryRunShapes`、b だけの始め） | 「始めに無かったキーの写しの数」の条件を外すと、b だけの始めでは見逃す |
+| 移動が中身を変える（payload + 1） | 破れを見つける（`initDryRunShapes`） | 中身の条件を外すと見逃す |
+
+`keyMigrationTwoCopies_test.qnt` の `rowWithinIsTightTest` は、同じことを決まった状態で確かめる。`Put` だけで `Delete` が無い、元のキーで中身が変わる、行き先の中身がどの写しとも違う、どちらにも無いキーにある、行が消える、の5つを、どれも `rowWithin` が断る。
+
+**決まった筋書き。** `keyMigrationTwoCopies_test.qnt` の `stopBetweenTheCopiesTest` が、反例の途中の状態まで進めて止める。その状態が元の形では破れ、写しごとの形では通ることを確かめる。続けて次の実行を最後まで流し、表が止めずに流した実行と同じになることも確かめる（`converges`、`dryRunMatches`）。
+
+### 9.3 Quint：`n` をランダムな `init` から外し、`initDryRunShapes` から始める
+
+`n` を `init` のランダムな表に入れると、run 1 の `wVerifyForward` が 400 のうち 10 から 2 に減り、ci-runs.txt の決まり（4回以上）を下回った。`n` は k が動けないと必ず止まるので、forward の `--verify` が通りにくくなるためである。設計 4.2 の代わりの手として、`n` を `init` から外し、`initDryRunShapes`（2.2、2.3、拒否の形を含む決まった始め）を足した。CI の run を2本足した（ci-runs.txt の 10 と 11）。
+
+### 9.4 変異の確かめ（dry-run）
+
+| 変異 | 落ちたもの |
+| :-- | :-- |
+| Scala：main の dry-run（作り直す前） | `KeyMigrationDryRunPropertySpec` の P1（種 271056914）、`KeyMigrationSpec` の 2.2 と 2.3 の回帰テスト |
+| Quint M1：中身の違う写しが、dry-run の中でキーを空ける（2.3 の前の誤り） | `dryRunCopiesOfAWinnerThatWaitsTest`、`dryRunWaitsForAConflictTest`、`initDryRunShapes` の `dryRunMatches` |
+| Quint M2：勝者でない写しを、勝者の結果を見ずに統合と数える（2.2 の前の誤り） | `dryRunCopiesOfAWinnerThatWaitsTest`、`initDryRunShapes` の `dryRunMatches` |
+| Scala：`ResolverKeyPlan` の #831 の行き先を変える | `ResolverKeyPlanPropertySpec` |
+
+### 9.5 性質テストの生成器
+
+`java.util.Random` は、近い種に対して最初の値がほぼ同じになる。そのため、最初の版の生成器は snapshot の表を1つも作っていなかった（「merge snapshot」の witness が 0）。種を `SplittableRandom` で混ぜてから使う形に直した。直した後の 200 通りで、16 の形がどれも6回以上出る。
+
+### 9.6 レビューの後（#1044）
+
+**dry-run の所要（Devin 4713805293）。** 9.4 までの版の dry-run と `--execute` は、回ごとに保留中のすべての行を行き先でまとめ直していた。同じ行き先を多くの行が求めると、行き先ごとに1回で1行しか進まないので、所要は行の数の2乗で増える。`--reverse` で 1.3.0 のキーを共有する id が多い表がこの形になる。DynamoDB Local で、1つの行き先を求める行の dry-run を測った。
+
+| 行の数 | 直す前 | 直した後 |
+| :-- | --: | --: |
+| 10,000 | 1,047 ms | — |
+| 20,000 | 3,393 ms | 125 ms |
+| 50,000 | 37,628 ms | 455 ms |
+
+直し方：回の計算を `KeyMigration.Rounds` にまとめ、`execute` と dry-run の両方から使う。行き先ごとに、元のキーの順の並びを1回だけ作る。回が終わるたびに、その回の行の行き先と元のキーだけを見直す。行き先が「次の回に出せる」かどうかは、その行き先の並びの先頭、その行き先が保留中の行の元のキーか、予約の3つで決まり、どれも、その行き先を行き先か元のキーに持つ行が保留から出たときにしか変わらないからである。回ごとの行の集合は、前の `readyOf` と同じになる。`KeyMigrationRoundsSpec` が、2,000 通りの候補の集合と、途中で行き先を予約する場合について、回ごとに前の式と同じであることを確かめる。10 万行が1つの行き先を求める場合も、10 万行の連鎖も、`Rounds` は 150 ミリ秒ほどで終える。`--execute` の判定（`placement`、`moveOne`、回ごとに試す行の集合）は変わらない。
+
+**`finishedWithinReference`（Devin 4713805377）。** n130 を k130 へ移し、n831 の統合を試みの上限であきらめて終わる実行は、正しい終わり方である（n831 は残りに出て、次の実行が統合する）。`finishedWithinReference` の後半は「始めのままで一覧に出ている」を求めていたので、これを拒んだ。元帥の判断を受けて、後半を「始めと参照の終わりの間（`rowWithin`）にあり、写しのどれかが一覧に出ている」に広げた。緩めた範囲は 9.2 と同じ、同じ行の2つ以上の写しが別々の回で動く途中の状態で、ここでは、あきらめて終わった実行に当てる。写しが1つの行では、元の形と同じ判定になる。
+
+- 決まった筋書き：`keyMigrationTwoCopies_test.qnt` の `giveUpOnTheSecondCopyTest`。n831 をあきらめて終わった表を確かめ、続けて次の実行を最後まで流す。次の実行で n831 が統合され、表は止めずに流した実行と同じになる（`converges`、`dryRunMatches`）。
+- 変異（`finishedWithinReference` だけで確かめた）：
+
+| 変異 | この形 | 条件を外した形 |
+| :-- | :-- | :-- |
+| あきらめた行を一覧に出さない（`record`） | 破れを見つける（`initDryRunShapes`） | 「一覧に出ている」を外すと見逃す |
+| n の移動が `Delete` をせずに `Put` だけをし、n831 をあきらめる | 破れを見つける（筋書き） | `rowWithin` を外すと見逃す |
+| n の移動が中身を変え、n831 をあきらめる | 破れを見つける（筋書き） | `rowWithin` を外すと見逃す |
+
+**文書（Devin 4713805458、4713805560）。** MiMa で除外した5つのクラスを、リリースノートの Unreleased に書いた。`customize.md` の dry-run の段落に、予測が成り立つのはほかの書き手がいない表だけで、手順では書き手を止める前に流すので下見として読む、と書いた。

@@ -113,13 +113,13 @@ violation keyMigrationWriters.qnt --main keyMigrationWriters --init initGStale -
 
 ディレクトリの `*_test.qnt` でない `.qnt` は、どれも `ci-runs.txt` のどこかの行のファイルとして現れること。現れない仕様があれば落とす（仕様を足したのに run を書き忘れた場合）。ディレクトリに `.qnt` があって `ci-runs.txt` が無い場合も落とす。
 
-### key-migration の run（9本）
+### key-migration の run（11本）
 
 [docs/design/key-migration-quint-results.md](key-migration-quint-results.md) の run から、CI の時間に収まる回数を選んだ。不変条件を1本ずつ流す代わりに、本体の不変条件をまとめた `safety`（届かない分岐の直しの後は19個）を流す（`idempotent` だけは `safety` に入っていないので別に流す）。種は結果の文書と同じ `0x7`。所要は 2026-11-26 に手元（Apple Silicon、14コア、負荷の平均 22 前後）で測った実時間。
 
 | # | 期待 | モデル | 不変条件 | 回数 × 手数 | 確かめる witness | 手元の所要 |
 | :-- | :-- | :-- | :-- | :-- | :-- | :-- |
-| 1 | pass | `keyMigration`、`init` | `safety` | 400 × 120 | `wMoved` `wMerged` `wBlocked` `wConflict` `wRejected` `wProgress` `wFinishedAfterStop` `wRoundTrip` `wVerifyForward` `wVerifyReverse` `wIndexLag` `wMergedAfterLost` `wCycleRemaining` `wFinishedForward` `wConflictExtraJournal` `wConflictExtraSnapshot` | 43秒（直しの後 57秒） |
+| 1 | pass | `keyMigration`、`init` | `safety` | 400 × 120 | `wMoved` `wMerged` `wBlocked` `wConflict` `wRejected` `wProgress` `wFinishedAfterStop` `wRoundTrip` `wVerifyForward` `wVerifyReverse` `wIndexLag` `wMergedAfterLost` `wCycleRemaining` `wFinishedForward` `wConflictExtraJournal` `wConflictExtraSnapshot` `wDryRunShortfall` `wDryRun23` | 43秒（直しの後 57秒、#1028 の後 49秒） |
 | 2 | pass | `keyMigration`、`initSharedPair` | `safety` | 2,000 × 60 | `wGaveUpShared` `wRejectedShared` `wFinishedAfterStop` `wGaveUp` | 34秒（直しの後 38秒） |
 | 3 | pass | `keyMigration`、`init` | `idempotent` | 300 × 60 | なし | 12秒 |
 | 4 | pass | `keyMigration`、`initSharedPair` | `idempotent` | 500 × 60 | なし | 11秒 |
@@ -128,17 +128,20 @@ violation keyMigrationWriters.qnt --main keyMigrationWriters --init initGStale -
 | 7 | violation | `keyMigrationWriters`、`initGStale` / `stepG` | `noLossW` | 2,000 × 80 | なし | 3秒 |
 | 8 | pass | `keyMigrationWriters`、`initW` / `stepD` | `noLossW` `noDuplicate` `outcomesTruthful` `reservedRespected` `keysKnown` `unknownStays` `contentsKept` `finishedReported` `unreversibleStays` `verifyReverseShared` `verifySoundW` `progress` | 400 × 120 | `wGone` | 19秒 |
 | 9 | pass | `keyMigrationWriters`、`initD` / `stepD` | 8 と同じ12個 | 2,000 × 60 | `wGone` `wGoneShared` `wOutcomeUnknown` | 12秒 |
+| 10 | pass | `keyMigration`、`initDryRunShapes` | `safety` | 1,000 × 60 | `wDryRun22` `wDryRun23` `wDryRunShortfall` `wBetweenCopies` `wFinishedAfterStop` `wMergedAfterLost` `wGaveUp` | 36秒 |
+| 11 | pass | `keyMigration`、`initDryRunShapes` | `idempotent` | 300 × 60 | なし | 9秒 |
 
 - 1 で通った witness の回数（400 のうち）：`wMoved` 400、`wMerged` 259、`wBlocked` 346、`wConflict` 138、`wRejected` 292、`wGaveUp` 5、`wProgress` 189、`wFinishedAfterStop` 78、`wRoundTrip` 177、`wVerifyForward` 11、`wVerifyReverse` 159、`wIndexLag` 400、`wMergedAfterLost` 21、`wCycleRemaining` 239、`wFinishedForward` 385。`wGaveUpShared` と `wRejectedShared` は 0 で、結果の文書の 1,000 回と同じく `init` では通らないので、2 で確かめる
 - 2 で通った回数（2,000 のうち）：`wGaveUpShared` 10、`wRejectedShared` 489、`wFinishedAfterStop` 382。1,000 回では `wGaveUpShared` が 4 だったので、2,000 回に増やした（R-8）
 - 届かない分岐の直し（[設計](key-migration-quint-unreachable-branches.md)）で、1 に `wConflictExtraJournal` 33 と `wConflictExtraSnapshot` 28 を足し、`wGaveUp` を 1 から 2 へ移した。直しで `init` の乱数の使われ方が変わり、1 の `wGaveUp` は 5 から 4 になって決まりの境目に来た。2 では 2,000 のうち 23 通る。直しの後の 1 のほかの回数：`wMerged` 231、`wBlocked` 353、`wConflict` 176、`wRejected` 282、`wFinishedAfterStop` 77、`wRoundTrip` 179、`wVerifyForward` 10、`wVerifyReverse` 158、`wMergedAfterLost` 22、`wCycleRemaining` 248、`wFinishedForward` 381
+- #1028（dry-run の作り直し）で、`safety` に `withinDryRun` と `dryRunMatches` を足し（21個）、10 と 11 を足した。1 に `wDryRunShortfall` 277 と `wDryRun23` 26 を足した。宇宙に行 n を足し、`init` のランダムな表からは外した（n を入れると `wVerifyForward` が 400 のうち 2 になり、決まりの4回を下回った）。#1028 の後の 1 のほかの回数：`wMerged` 233、`wBlocked` 345、`wConflict` 137、`wRejected` 287、`wProgress` 213、`wFinishedAfterStop` 73、`wRoundTrip` 182、`wVerifyForward` 5、`wVerifyReverse` 154、`wMergedAfterLost` 14、`wCycleRemaining` 232、`wFinishedForward` 384、`wConflictExtraJournal` 25、`wConflictExtraSnapshot` 23。2 は `wGaveUpShared` 17、`wRejectedShared` 476、`wFinishedAfterStop` 384、`wGaveUp` 24。10 は 1,000 のうち `wDryRun22` 86、`wDryRun23` 322、`wDryRunShortfall` 315、`wBetweenCopies` 128、`wFinishedAfterStop` 209、`wMergedAfterLost` 119、`wGaveUp` 7。`wDryRun22` は 1 では 400 のうち 0 なので、10 で確かめる
 - 8 と 9 は、ツールが走る間にアプリが削除だけをするモデル（`stepD`）。`Gone` と `settle` の「outcome unknown」に届く。8 で `wGone` は 400 のうち 39、9 で `wGone` 344、`wGoneShared` 28、`wOutcomeUnknown` 9（2,000 のうち）。8 の `wGoneShared` と `wOutcomeUnknown` は 0 なので、8 には入れない
 - `wCleanAfterGaveUp` は、1 で 1 回、2 で 2 回しか通らないので一覧に入れない（R-8）。この経路は `keyMigrationGaveUp_test.qnt` の `finishThenRerunTest` が決まった筋書きで毎回通す
 - 4 は、`idempotent` を `rejectShared` が真になりうる `initSharedPair` でも流すために足した（R-12）
 - 5 と 6 の `wAppWrote` は 0 で、一覧に入れない。手順を守るアプリのモデルでは、`recoverAndWrite` はインデックスが行を示していないときだけ起き、それが起きないことがこのモデルの結論だから
 - 7 は負の対照。古い値を返す読み取りで JournalHead が無効なら、手順を守っても上書きが起きる（結果の文書の A1）。この run が違反を見つけなくなったら、書き手のモデルが何も確かめなくなった兆しなので、落とす
 - 結果の文書の run（`safety` の 1,000 × 120 で 123秒、不変条件ごとの 500 × 120 など）より回数を減らした。CI の run は、仕様の変更で反例が出ないこと、経路が通ることの回帰の検査で、広い探索は結果の文書の run が受け持つ
-- 合計は手元で約125秒（直しの後、ほかの作業で負荷の平均 30 前後の手元で約178秒）。`--seed` を付けると評価器は1スレッドで動く（レビューの実測で CPU 約 102%）ので、`ubuntu-latest` の1コアの速さで決まる。手元の2〜3倍の4〜6分と見る。実装の後、CI の実測で回数を見直す
+- 合計は手元で約125秒（直しの後、ほかの作業で負荷の平均 30 前後の手元で約178秒、#1028 の後は約279秒）。main の CI の `quint` ジョブは、#1028 の前に約5分半（準備を含む）で、制限は15分。`--seed` を付けると評価器は1スレッドで動く（レビューの実測で CPU 約 102%）ので、`ubuntu-latest` の1コアの速さで決まる。手元の2〜3倍の4〜6分と見る。実装の後、CI の実測で回数を見直す
 
 ### 種を固定する
 

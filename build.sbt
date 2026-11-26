@@ -1,5 +1,6 @@
 import Dependencies._
 import Dependencies.Versions._
+import com.typesafe.tools.mima.core._
 
 ThisBuild / organization := "io.github.j5ik2o"
 ThisBuild / organizationName := "io.github.j5ik2o"
@@ -194,6 +195,13 @@ lazy val `base-v2` = (project in file("base/base-v2"))
   .settings(
     publishedModuleSettings,
     name := "pekko-persistence-dynamodb-base-v2",
+    // #1044 (PR-B of #1028) removes KeyMigration.Occupant and its cases Free, SameRow, OtherRow, and OtherItem, the
+    // view of a target key of the dry-run that it replaces. They are private to object KeyMigration, so no code
+    // outside it can name them.
+    mimaBinaryIssueFilters ++= Seq("Occupant", "Free$", "SameRow$", "OtherRow", "OtherRow$", "OtherItem$").map { name =>
+      ProblemFilters
+        .exclude[MissingClassProblem](s"com.github.j5ik2o.pekko.persistence.dynamodb.migration.KeyMigration$$$name")
+    },
     libraryDependencies ++= Seq(
       slf4j.api,
       softwareamazon.dynamodb,

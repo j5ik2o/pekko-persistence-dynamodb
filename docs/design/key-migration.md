@@ -98,10 +98,13 @@ journal と snapshot の表の行の、主キー（`pkey`, `skey`）だけを変
 12. 順方向・PlainText の `--verify` が一致したなら、初めのすべての論理的な行が新しいキーに1つだけある（`verifySound`）。
 13. `--reverse` の `--verify` は、キーを共有する組の id が2つ以上表にある間は一致しない（`verifyReverseShared`）。
 14. 1.3.0 がキーを作れない id の行は、`--reverse` で動かない（`unreversibleStays`）。
-15. 行がよそへ行かない（`withinReference`、全状態）。同じ条件の実行が始まってから、各論理的な行は、起点のときのままか、起点から止めずに流した結果のままか、のどちらか。
-16. 終わった実行は手前で止まる（`finishedWithinReference`、あきらめた実行を含む）。各論理的な行は、止めずに流した結果のままか、起点のままで一覧に出ているか、のどちらか。
+15. 行がよそへ行かない（`withinReference`、全状態）。同じ条件の実行が始まってから、各論理的な行は、起点のときのままか、起点から止めずに流した結果のままか、写しごとにその間にある（`rowWithin`、#1028）。写しの間というのは、各写しが、起点のキーに起点の中身のままか、止めずに流した結果のキーに、その結果の中身か元のキーを離れた写しの中身であり、起点に無かったキーの写しが、元のキーを離れた写しより多くないこと。写しが1つの行では、起点のままか結果のままかと同じ。同じ行の2つの写しが別々の回で動く途中（n130 が k130 へ移り、n831 がまだ）だけを許す。
+16. 終わった実行は手前で止まる（`finishedWithinReference`、あきらめた実行を含む）。各論理的な行は、止めずに流した結果のままか、起点と結果の間（`rowWithin`。写しが1つなら起点のまま）にあって写しのどれかが一覧に出ているか、のどちらか。起点と結果の間で終わるのは、写しが別々の回で動き、後の写しをあきらめた実行（n130 が k130 へ移り、n831 をあきらめて一覧に出す。#1044 の Devin の指摘）。
 17. 初めの写しの中身の違いは、まとめで消えない（`versionsKept`、レビュー O-F1）。
 18. 動ける行は動く（`progress`、レビュー O-F2）。全 id を選び、動けない行の無い起点から、あきらめなしで終わった実行は、残りを出さず、全行を置き場所に置く。
+19. 実行は dry-run の予測の手前で止まる（`withinDryRun`、全状態、#1028 の P2）。実行が動かした行は、その実行の起点の表の dry-run も動かし、統合した行は、dry-run も統合する。
+20. dry-run と実行は合う（`dryRunMatches`、終わった実行、#1028 の P1 と P2）。dry-run が残すとした行は残りに出る。dry-run が動かすか統合するとした行のうち、実行が動かさなかった行も残りに出る。DynamoDB の拒否もあきらめも無い実行（応答の消失と一時的な失敗は含む）では、動かした行、統合した行、残り、表のすべてが dry-run と同じ。
+21. 計画は行ごとに1つの行き先を与える（`planTargetsByRow`、純粋な値）。同じ行のどのキーから動いても行き先は1つで、行き先のキーではその行はその場にある。19 はこれを前提にする（`docs/design/key-migration-1028-output-and-arguments.md` 9.1）。
 
 ### 往復から除く組と、その中で守るもの
 
@@ -236,6 +239,7 @@ Quint のキーは文字列の名前で、リゾルバの計算はしない。�
 | `specs/key-migration/keyMigration.qnt` | 本体。表、インデックス、ツールの実行、停止、`--verify`。書き手はいない |
 | `specs/key-migration/keyMigration_test.qnt` | 純粋な関数のテスト（判定、ラウンド、まとめ、往復、プラグインが書かない属性による `Conflict`、`Gone` と予約、`settle` の「outcome unknown」、`truthful`） |
 | `specs/key-migration/keyMigrationGaveUp_test.qnt` | 決まった筋書き：逆向き＋共有の行き先＋勝者があきらめる・拒否される＋流し直し（レビュー C-F1、O-F6、R3） |
+| `specs/key-migration/keyMigrationTwoCopies_test.qnt` | 決まった筋書き：同じ行の2つの写しが同じ行き先へ別々の回で動く途中で止まり、流し直す（#1028）。`rowWithin` が途中の状態だけを許すことの確かめ |
 | `specs/key-migration/keyMigrationWriters.qnt` | 契約を外したモデル。アプリが書き込み・復旧・削除をする。`stepD` はツールが走る間にアプリが削除だけをする |
 | `specs/key-migration/keyMigrationWriters_test.qnt` | 契約を外したときの反例を、固定のトレースで示すテスト。`deleteBeforeAttemptGoneTest` は削除の下で不変条件が成り立つことを示す |
 | `specs/key-migration/ci-runs.txt` | CI の `quint` ジョブが流す `quint run` の一覧（`docs/design/quint-in-ci.md`） |
@@ -250,6 +254,7 @@ Quint のキーは文字列の名前で、リゾルバの計算はしない。�
 - 停止・応答の消失・一時的な失敗の合計は、1つのトレースで6回まで（`budget`）。
 - `rejectShared`（トレースごとに固定）：DynamoDB が h の `--reverse` の h130 への移動を拒否する（1.3.0 の長いキーで 400 KB を超える場合、レビュー R3）。`init` では偽、`initSharedPair` では4回に1回だけ真。`init` で偽にしたのは、`progress` と `roundTrip` の前提が「h は 1.3.0 のキーへ戻れる」だから。
 - `initSharedPair`：初めの表を `{hP: h, iP: i, a130: a, b130: b}` に固定する重みづけ。共有の行き先の経路をランダムな実行で通りやすくする。
+- `initDryRunShapes`：#1028 の形から始める重みづけ。n の2つの写しが k130 を求め（k が動けなければどちらも動かない、2.2）、a が b を待ち、bP に中身の違う b の写しを置ける（2.3）。e と f（拒否）も置ける。n は `init` のランダムな表には入れない。k が動けないと n も必ず止まり、順方向の `--verify` が通りにくくなって、run 1 の `wVerifyForward` が決まりの回数を下回るため。
 
 ### 8.3 コードとの対応
 
@@ -259,8 +264,12 @@ Quint のキーは文字列の名前で、リゾルバの計算はしない。�
 | `is831` | `ResolverKeyPlan.isIssue831Key`（:47-48）。Quint は `pkey` の比較をせず、#831 のキーを行ごとに与える |
 | `GROUP`、`sharedGroupsPresent` | `ResolverKeyPlan.sharedKeyGroup`（:80-84）、`KeyVerification.run` の `shared`（KeyVerification.scala:152-161） |
 | `scanCandidates`、`scanUnmovable` | `Session.scanTable`（KeyMigration.scala:625-、#1035 の後の行番号。以下同じ） |
-| `winnerOf` | `Session.winnerOf`（:845-846） |
-| `readyOf` | `execute` の `ready`（:875-881）。予約した行き先を外す |
+| `winnerOf` | `Rounds` の行き先ごとの並び（元のキーの順）の先頭 |
+| `readyOf` | `KeyMigration.Rounds.next`。`execute` と dry-run が同じ `Rounds` を使う。予約した行き先を外す（dry-run では予約は無い）。コードは、前の回の行が触った行き先だけを見直して同じ集合を作る（`KeyMigrationRoundsSpec` が、保留中のすべてをまとめ直す `readyOf` の式と回ごとに同じになることを確かめる） |
+| `predict` | `Session.dryRun` の予測（:748-）。行き先の仮の中身が空き → `Moved`、同じ行 → `differences` で `Merged` か `Conflict`、ほかの行 → `Blocked`。400 KB の拒否、応答の消失、一時的な失敗は予測しない |
+| `dryStep`、`dryRun` | `Session.dryRun` の回（:748-845）。進まなくなって残った候補は残り（コードは `findCycles` で循環と待つ行に分けて表示する） |
+| `withinDryRun`、`dryRunMatches` | #1028 の P2 と P1（`docs/design/key-migration-1028-output-and-arguments.md` 0節の4）。Scala では `KeyMigrationDryRunPropertySpec` |
+| `planTargetsByRow` | `ResolverKeyPlan.placement` の行き先が (id, 番号) だけで決まること。Scala では `ResolverKeyPlanPropertySpec` |
 | `reserves`、`Tool.reserved` | `execute` の `reserved`（:854）と、結果の処理（`Failed`、`Gone`） |
 | `nextRound` | `execute` のループと、残りを予約待ち・循環・待ちとする部分（:850-944） |
 | `attempt` | `moveOne` の1回の試み（:1134-1200）と、`put`・`delete` の条件 |
@@ -287,8 +296,8 @@ Quint のキーは文字列の名前で、リゾルバの計算はしない。�
 3. 試みの上限は 2（コードは 10）。上限の値は、`settle` に着くまでの長さだけを変える。
 4. `--verify` は表とインデックスを同時に1回見る。コードは表を Scan し、インデックスを Scan し、違う id を時間切れまで問い合わせ直す。時間切れ、問い合わせの失敗、インデックスの定義の検査、SHA-256 の衝突は入れていない。要約の一致は、行の完全な一致として扱った。
 5. インデックスはキーごとに単調に追いつく（7節）。
-6. dry-run は入れていない。dry-run の予測と `--execute` の結果が一致するかは確かめていない。
-7. 宇宙は13の論理的な行で、sequence number は 1 だけ。番号の抜けの報告（`IdSummary`）、`--segments`、`--max-rate`、`--scan-page-size`、進捗の表示、使用量は入れていない。
+6. dry-run は `dryRun` として入れた（#1028）。コードの dry-run は表に書かず、キーごとの仮の中身（空き、行と読むキー、行でない項目）を持つ。Quint は仮の中身を表で表し、統合は `mergeTx` で表す。統合は `differ` が比べる属性を変えないので、後の予測は同じになる。行でない項目（`BlockedByItem`）は入れていない（13）。
+7. 宇宙は14の論理的な行（n は `initDryRunShapes` と決まった筋書きだけで使う）で、sequence number は 1 だけ。番号の抜けの報告（`IdSummary`）、`--segments`、`--max-rate`、`--scan-page-size`、進捗の表示、使用量は入れていない。
 8. `--persistence-id` は、全 id か1つの id。
 9. 400 KB の超過は、新しいキーへの `Put`（f）と、`rejectShared` のときの h の h130 への `Put` だけ。snapshot のまとめで行き先へ `Put` するときの超過は入れていない。
 13. 行でない項目（C-F4）は入れていない。項目の分類は純粋な関数で、`BlockedByItem` は `Blocked` と同じく残りになり、予約もしないので、Quint の `Blocked` と同じ扱いになる。`--verify` は行でない項目が1つでもあれば一致としない（#1035）。これは `verifyPass` に条件を1つ足すだけで、行だけの表では `verifyPass` と同じなので、「`verifyPass` なら〜」の形の不変条件はそのまま成り立つ。
