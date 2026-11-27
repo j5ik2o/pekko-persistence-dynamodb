@@ -385,8 +385,8 @@ $ sbt -batch "snapshot-v2/runMain com.github.j5ik2o.pekko.persistence.dynamodb.s
 | `--reverse` | Move the rows under the new keys back to the keys of 1.3.0, or, with `--verify`, check for the keys of 1.3.0. |
 | `--persistence-id <id>` | Move only the rows of these `persistenceId`s. Repeat it for more. `--verify` does not take it. |
 | `--max-rate <n>` | Move at most `n` rows a second. In a dry-run, check at most `n` target keys a second. Each page of the scan, and each read that compares two copies, also takes one of the `n` a second; set `--scan-page-size` to bound the items of a page. With `--verify`, send at most `n` requests a second. `n` is a finite number of at least 0.001. |
-| `--parallelism <n>` | Move up to `n` rows at the same time (default 4). `--segments` does not change it. |
-| `--segments <n>` | Scan the table in `n` segments (default 1). The dry-run and `--execute` read them in parallel; `--verify` reads them one after another. |
+| `--parallelism <n>` | Move up to `n` rows at the same time (default 4). `--segments` does not change it. `n` is a whole number from 1 to 1000. |
+| `--segments <n>` | Scan the table in `n` segments (default 1). The dry-run and `--execute` read them in parallel; `--verify` reads them one after another. `n` is a whole number from 1 to 1000. |
 | `--scan-page-size <n>` | Read at most `n` items per scan request. |
 | `--progress` | Print the progress to the standard error. |
 
