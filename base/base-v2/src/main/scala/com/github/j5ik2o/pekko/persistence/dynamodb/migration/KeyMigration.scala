@@ -541,9 +541,10 @@ private[dynamodb] object KeyMigration {
     * It relies on two preconditions (#1048):
     *   - The reservations only grow: a target that `reserved` of `next` holds stays reserved in the later rounds. A
     *     target whose reservation was lifted is not in `touched` again, so its rows would never be ready.
-    *   - The stored keys (`from`) of the candidates are distinct, which the constructor requires. One consistent scan
-    *     returns each key once, so the candidates of a run hold each stored key once. With a repeated key, `pending`
-    *     would keep one of its rows and `done` of one row would remove the other.
+    *   - The stored keys (`from`) of the candidates are distinct. This is a precondition of the input, and the
+    *     constructor requires it, before any write. It does not follow from the consistent reads of the scan, which
+    *     hold for each page and not for the whole scan (review of #1049). With a repeated key, `pending` would keep one
+    *     of its rows and `done` of one row would remove the other.
     */
   private[migration] final class Rounds(candidates: Seq[Candidate]) {
     require(
