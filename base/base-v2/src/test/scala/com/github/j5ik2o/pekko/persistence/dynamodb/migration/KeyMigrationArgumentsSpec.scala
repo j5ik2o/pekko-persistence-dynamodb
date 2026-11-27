@@ -66,6 +66,70 @@ final class KeyMigrationArgumentsSpec extends AnyWordSpec with Matchers {
     }
   }
 
+  // 2147483648 does not fit an Int; 1000000 is the most segments that a DynamoDB Scan takes (#1041)
+  private val outOfRange    = Seq("0", "-1", "1001", "1000000", "1000001", "2147483648", "-2147483649")
+  private val notANumber    = Seq("abc", "1.5", "1e3", "")
+  private val countsInRange = Seq("1", "4", "999", "1000")
+
+  "--segments" should {
+    "be refused below 1, above 1000, and when it is not a whole number, for the moves and for --verify (#1041)" in {
+      (outOfRange ++ notANumber).foreach { value =>
+        withClue(value) {
+          an[IllegalArgumentException] should be thrownBy MigrationOptions.parse(Seq("--segments", value))
+          an[IllegalArgumentException] should be thrownBy MigrationOptions.parse(Seq("--verify", "--segments", value))
+        }
+      }
+      Seq(0, -1, 1001, Int.MaxValue).foreach { value =>
+        withClue(value) {
+          an[IllegalArgumentException] should be thrownBy MigrationSettings(execute = false, segments = value)
+          an[IllegalArgumentException] should be thrownBy VerifySettings(segments = value)
+        }
+      }
+    }
+
+    "say the range it accepts" in {
+      val e = the[IllegalArgumentException] thrownBy MigrationOptions.parse(Seq("--segments", "1001"))
+      e.getMessage should include("from 1 to 1000")
+    }
+
+    "be accepted from 1 to 1000" in {
+      countsInRange.foreach { value =>
+        withClue(value) {
+          MigrationOptions.parse(Seq("--segments", value)).settings.segments shouldBe value.toInt
+          MigrationOptions.parse(Seq("--verify", "--segments", value)).verify.map(_.segments) shouldBe Some(value.toInt)
+        }
+      }
+    }
+  }
+
+  "--parallelism" should {
+    "be refused below 1, above 1000, and when it is not a whole number (#1041)" in {
+      (outOfRange ++ notANumber).foreach { value =>
+        withClue(value) {
+          an[IllegalArgumentException] should be thrownBy MigrationOptions.parse(Seq("--parallelism", value))
+        }
+      }
+      Seq(0, -1, 1001, Int.MaxValue).foreach { value =>
+        withClue(value) {
+          an[IllegalArgumentException] should be thrownBy MigrationSettings(execute = false, parallelism = value)
+        }
+      }
+    }
+
+    "say the range it accepts" in {
+      val e = the[IllegalArgumentException] thrownBy MigrationOptions.parse(Seq("--parallelism", "1001"))
+      e.getMessage should include("from 1 to 1000")
+    }
+
+    "be accepted from 1 to 1000" in {
+      countsInRange.foreach { value =>
+        withClue(value) {
+          MigrationOptions.parse(Seq("--parallelism", value)).settings.parallelism shouldBe value.toInt
+        }
+      }
+    }
+  }
+
   "the reason of a row under an unknown key" should {
     "name the default format locale as a possible cause (#1028)" in {
       val thai = Locale.forLanguageTag("th-TH-u-nu-thai")

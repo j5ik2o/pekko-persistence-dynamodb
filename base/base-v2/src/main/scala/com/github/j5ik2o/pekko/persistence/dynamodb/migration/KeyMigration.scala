@@ -125,11 +125,26 @@ private[dynamodb] final case class MigrationSettings(
     maxAttempts: Int = 10,
     persistenceIds: Option[Set[String]] = None
 ) {
-  require(segments >= 1, "--segments must be at least 1")
-  require(parallelism >= 1, "--parallelism must be at least 1")
+  ThreadCount.check("--segments", segments)
+  ThreadCount.check("--parallelism", parallelism)
   maxRate.foreach(MaxRate.check)
   require(scanPageSize.forall(_ >= 1), "--scan-page-size must be at least 1")
   require(maxAttempts >= 1, "the number of attempts must be at least 1")
+}
+
+/** The values that `--segments` and `--parallelism` take (issue #1041). */
+private[dynamodb] object ThreadCount {
+
+  /** The moves and the dry-run scan the table with one thread for each segment, all started at once, and after the scan
+    * move or check the rows with up to `--parallelism` threads. A thousand threads is far above what the connections of
+    * the client serve at the same time, and far below the 1,000,000 segments that a DynamoDB Scan takes; a larger value
+    * can exhaust the memory of the JVM while it starts the threads. `--verify` reads the segments one after another,
+    * and takes the same range, so that `--segments` means one range.
+    */
+  val Maximum: Int = 1000
+
+  def check(name: String, value: Int): Unit =
+    require(value >= 1 && value <= Maximum, s"$name must be from 1 to $Maximum: $value")
 }
 
 /** The values that `--max-rate` takes, for the moves and for `--verify` (issue #1028). */

@@ -30,6 +30,9 @@ Replace `v1.4.0` and `<SHA>` with the approved version and commit. If the lookup
   `KeyMigration.Occupant`, `KeyMigration.Free`, `KeyMigration.SameRow`, `KeyMigration.OtherRow`, and
   `KeyMigration.OtherItem` are removed. They were private to `object KeyMigration` (the view of a target key of the
   old dry-run), so no code outside it could name them; MiMa lists them, and the build accepts the change.
+- Key migration tools (#1041): `--segments` and `--parallelism` must be whole numbers from 1 to 1000. The scan of the
+  moves and of the dry-run starts one thread for each segment at once, and the rows are then moved or checked with up
+  to `--parallelism` threads, so a larger value could exhaust the memory of the JVM while it starts the threads.
 
 ## 1.4.0
 

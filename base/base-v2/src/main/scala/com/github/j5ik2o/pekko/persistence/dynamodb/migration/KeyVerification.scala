@@ -35,7 +35,7 @@ private[dynamodb] final case class VerifySettings(
     scanPageSize: Option[Int] = None
 ) {
   require(timeout >= 1.second, "--verify-timeout must be at least 1 second")
-  require(segments >= 1, "--segments must be at least 1")
+  ThreadCount.check("--segments", segments)
   maxRate.foreach(MaxRate.check)
   require(scanPageSize.forall(_ >= 1), "--scan-page-size must be at least 1")
 }
