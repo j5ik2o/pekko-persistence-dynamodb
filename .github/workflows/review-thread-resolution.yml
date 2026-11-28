@@ -38,8 +38,4 @@ jobs:
       required_context: Check unresolved comments
       # Publish the status on Dependabot PRs too, so that a required status does not leave them waiting.
       skip_status_for_dependabot: "false"
-      # Codex は利用の上限に当たると、レビューの要約とは別に「上限に達した」旨の
-      # トップレベルのコメントを残す。指摘ではないので、返事を待たせない。
-      extra_ignored_auto_report_author_patterns: |
-        chatgpt-codex-connector	You have reached your Codex usage limits
       ci_ref: v1
