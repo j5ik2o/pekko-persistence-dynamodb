@@ -537,8 +537,20 @@ private[dynamodb] object KeyMigration {
     * reserved and no pending row holds it. Only the targets that the rows of the round before touched can change: a row
     * that leaves `pending` gives its target another first row, and frees its stored key for the rows that need it. So a
     * run costs about as many steps as it has rows, also when many rows need one target (review of #1044).
+    *
+    * It relies on two preconditions (#1048):
+    *   - The reservations only grow: a target that `reserved` of `next` holds stays reserved in the later rounds. A
+    *     target whose reservation was lifted is not in `touched` again, so its rows would never be ready.
+    *   - The stored keys (`from`) of the candidates are distinct. This is a precondition of the input, and the
+    *     constructor requires it, before any write. It does not follow from the consistent reads of the scan, which
+    *     hold for each page and not for the whole scan (review of #1049). With a repeated key, `pending` would keep one
+    *     of its rows and `done` of one row would remove the other.
     */
   private[migration] final class Rounds(candidates: Seq[Candidate]) {
+    require(
+      candidates.iterator.map(_.from).toSet.size == candidates.size,
+      "the candidates of the rounds must have distinct stored keys"
+    )
     private def order(c: Candidate): (String, String) = (c.from.partitionKey, c.from.sortKey)
 
     val pending: mutable.LinkedHashMap[StoredKey, Candidate] =

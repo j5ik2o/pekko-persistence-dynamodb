@@ -26,6 +26,9 @@ final class KeyMigrationRoundsSpec extends AnyWordSpec with Matchers {
 
   private def key(n: Int): StoredKey = StoredKey(s"p$n", s"s$n")
 
+  /** Keys of three partition keys, so that some rows differ in the sort key alone (#1048). */
+  private def sharedPartitionKey(n: Int): StoredKey = StoredKey(s"p${n % 3}", s"s$n")
+
   /** The rounds as `execute` computed them up to 47ee84ce: the whole of `pending`, grouped by target, each round. */
   private def reference(
       pending: mutable.LinkedHashMap[StoredKey, Candidate],
@@ -42,7 +45,24 @@ final class KeyMigrationRoundsSpec extends AnyWordSpec with Matchers {
   private def random(seed: Long): Random = new Random(new java.util.SplittableRandom(seed).nextLong())
 
   "the rounds" should {
-    "be those of the whole pending set, round by round, with targets reserved on the way (#1028)" in {
+    "be those of the whole pending set, round by round, with targets reserved on the way (#1028, #1048)" in {
+      val shapes = Seq[(String, Int => StoredKey)](
+        "own partition keys"    -> (n => key(n)),
+        "shared partition keys" -> (n => sharedPartitionKey(n))
+      )
+      shapes.foreach { case (shape, keyOf) => withClue(s"$shape: ")(rounds(keyOf) should be >= 5000) }
+    }
+
+    "refuse candidates whose stored keys repeat (#1048)" in {
+      val twice = Seq(
+        Candidate("A", 1L, key(1), key(2), KeyForm.Release130),
+        Candidate("B", 1L, key(1), key(3), KeyForm.Release130)
+      )
+      an[IllegalArgumentException] should be thrownBy new KeyMigration.Rounds(twice)
+    }
+
+    /** Plays 2000 random cases against `reference`, with reservations that only grow, and counts the rounds. */
+    def rounds(keyOf: Int => StoredKey): Int = {
       var rounds = 0
       (0 until 2000).foreach { i =>
         val rnd   = random(0x10440000L + i)
@@ -50,7 +70,7 @@ final class KeyMigrationRoundsSpec extends AnyWordSpec with Matchers {
         val froms = rnd.shuffle((1 to size).toVector).take(1 + rnd.nextInt(size))
         val candidates =
           froms
-            .map(f => Candidate(s"id$f", 1L, key(f), key(1 + rnd.nextInt(size)), KeyForm.Release130)).filter(c =>
+            .map(f => Candidate(s"id$f", 1L, keyOf(f), keyOf(1 + rnd.nextInt(size)), KeyForm.Release130)).filter(c =>
               c.from != c.to
             )
         val pending  = mutable.LinkedHashMap(candidates.map(c => c.from -> c): _*)
@@ -72,7 +92,7 @@ final class KeyMigrationRoundsSpec extends AnyWordSpec with Matchers {
           more = expected.nonEmpty
         }
       }
-      rounds should be >= 5000
+      rounds
     }
 
     "cost about one step per row when many rows need one target, and along a chain (review of #1044)" in {
